@@ -6,23 +6,20 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ================= CONFIG =================
-TOKEN = "8683855893:AAH31bQzoIS-vHJyt0SdKi7AWGFZeBUzcQE"
+TOKEN = "YOUR_BOT_TOKEN"
 ADMIN_ID = 6427415448
-
-if not TOKEN:
-    raise Exception("BOT_TOKEN topilmadi!")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-JSON_FILE = "movies.json"
+DB_FILE = "movies.json"
 
 admin_state = {}
 
 # ================= MENU =================
 menu = ReplyKeyboardMarkup(
     keyboard=[
-        [KeyboardButton(text="📂 Kinolar ro‘yxati")],
+        [KeyboardButton(text="📂 Kinolar")],
         [KeyboardButton(text="🔢 Kod orqali kino")],
         [KeyboardButton(text="⚙️ Admin panel")]
     ],
@@ -31,16 +28,16 @@ menu = ReplyKeyboardMarkup(
 
 # ================= DB =================
 def load():
-    if not os.path.exists(JSON_FILE):
+    if not os.path.exists(DB_FILE):
         return {}
     try:
-        with open(JSON_FILE, "r", encoding="utf-8") as f:
+        with open(DB_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except:
         return {}
 
 def save(data):
-    with open(JSON_FILE, "w", encoding="utf-8") as f:
+    with open(DB_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4, ensure_ascii=False)
 
 # ================= START =================
@@ -49,49 +46,49 @@ async def start(message: types.Message):
     await message.answer("🎬 Kino botga xush kelibsiz!", reply_markup=menu)
 
 # ================= LIST =================
-@dp.message(F.text == "📂 Kinolar ro‘yxati")
+@dp.message(F.text == "📂 Kinolar")
 async def list_movies(message: types.Message):
     data = load()
 
     if not data:
         return await message.answer("❌ Kino yo‘q")
 
-    text = ""
-    for k, v in data.items():
-        text += f"{k}. {v['name']}\n"
-
+    text = "\n".join([f"{k}. {v['name']}" for k, v in data.items()])
     await message.answer(text)
 
-# ================= CODE SEARCH =================
+# ================= CODE =================
 @dp.message(F.text == "🔢 Kod orqali kino")
 async def ask_code(message: types.Message):
     await message.answer("🔢 Kino kodini kiriting:")
 
 @dp.message(F.text.regexp(r"^\d+$"))
-async def get_by_code(message: types.Message):
+async def get_movie(message: types.Message):
     data = load()
     code = message.text
 
     if code in data:
         m = data[code]
+
         await message.answer_video(
             m["file_id"],
-            caption=f"{m['name']}\n{m['year']}\n{m['genre']}"
+            caption=f"🎬 {m['name']}\n📆 {m['year']}\n🎭 {m['genre']}"
         )
     else:
-        await message.answer("❌ Siz noto‘g‘ri ma’lumot kiritdingiz.")
+        await message.answer("❌ Noto‘g‘ri kod")
 
-# ================= ADMIN PANEL =================
+# ================= ADMIN =================
 @dp.message(F.text == "⚙️ Admin panel")
-async def admin_panel(message: types.Message):
+async def admin(message: types.Message):
+
     if message.from_user.id != ADMIN_ID:
         return await message.answer("❌ Siz admin emassiz")
 
-    await message.answer("⚙️ Admin panel:\n➕ Kino qo‘shish uchun 'add' yozing")
+    await message.answer("➕ Kino qo‘shish uchun 'add' yozing")
 
 # ================= ADD START =================
 @dp.message(F.text == "add")
 async def add_start(message: types.Message):
+
     if message.from_user.id != ADMIN_ID:
         return
 
@@ -99,7 +96,7 @@ async def add_start(message: types.Message):
 
     await message.answer("🎬 Kino nomini kiriting:")
 
-# ================= ADD FLOW (ENG MUHIM QISM) =================
+# ================= ADD FLOW =================
 @dp.message()
 async def add_flow(message: types.Message):
 
@@ -132,7 +129,11 @@ async def add_flow(message: types.Message):
         return
 
     # VIDEO
-    if state["step"] == "video" and message.video:
+    if state["step"] == "video":
+
+        if not message.video:
+            await message.answer("❌ Video yuboring")
+            return
 
         state["file_id"] = message.video.file_id
 
