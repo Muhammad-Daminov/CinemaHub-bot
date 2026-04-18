@@ -9,8 +9,7 @@ from aiogram.types import (
 )
 
 # ================= CONFIG =================
-TOKEN = "8683855893:AAH31bQzoIS-vHJyt0SdKi7AWGFZeBUzcQE"
-CHANNEL = "@cinemahubb_HD"
+TOKEN = os.getenv("BOT_TOKEN")
 ADMIN_ID = 6427415448
 
 if not TOKEN:
@@ -21,14 +20,14 @@ dp = Dispatcher()
 
 JSON_FILE = "movies.json"
 
-user_state = {}
+# ================= STATES =================
+admin_state = {}
 
 # ================= MENU =================
 menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📂 Kinolar ro‘yxati")],
-        [KeyboardButton(text="🎬 Kino nomi bilan qidirish")],
-        [KeyboardButton(text="🔢 Kod orqali qidirish")],
+        [KeyboardButton(text="🔢 Kod orqali kino")],
         [KeyboardButton(text="⚙️ Admin panel")]
     ],
     resize_keyboard=True
@@ -51,15 +50,15 @@ def save(data):
 # ================= START =================
 @dp.message(F.text == "/start")
 async def start(message: types.Message):
-    await message.answer("🎬 CinemaHub botga xush kelibsiz!", reply_markup=menu)
+    await message.answer("🎬 Kino botga xush kelibsiz!", reply_markup=menu)
 
 # ================= MOVIE LIST =================
-def movies_menu(data):
+def movie_buttons(data):
     kb = []
     for mid, m in data.items():
         kb.append([
             InlineKeyboardButton(
-                text=f"🎬 {m['name']}",
+                text=m["name"],
                 callback_data=f"movie:{mid}"
             )
         ])
@@ -69,9 +68,9 @@ def movies_menu(data):
 async def list_movies(message: types.Message):
     data = load()
     if not data:
-        return await message.answer("❌ Hozircha kino yo‘q.")
+        return await message.answer("❌ Kino yo‘q")
 
-    await message.answer("🎬 Kinolar:", reply_markup=movies_menu(data))
+    await message.answer("🎬 Kinolar:", reply_markup=movie_buttons(data))
 
 # ================= SHOW MOVIE =================
 @dp.callback_query(F.data.startswith("movie:"))
@@ -80,98 +79,118 @@ async def show_movie(call: types.CallbackQuery):
     data = load()
 
     if mid not in data:
-        return await call.answer("❌ Kino topilmadi", show_alert=True)
+        return await call.answer("❌ topilmadi", show_alert=True)
 
     m = data[mid]
 
-    caption = f"""🎬 <b>{m['name']}</b>
+    caption = f"""🎬 {m['name']}
 📆 {m['year']}
 🎭 {m['genre']}
 🔢 Kod: {mid}"""
 
-    await call.message.answer_video(
-        m["file_id"],
-        caption=caption,
-        parse_mode="HTML"
-    )
-
+    await call.message.answer_video(m["file_id"], caption=caption)
     await call.answer()
 
-# ================= SEARCH =================
-@dp.message(F.text == "🎬 Kino nomi bilan qidirish")
-async def ask_name(message: types.Message):
-    user_state[message.from_user.id] = "name"
-    await message.answer("🔍 Kino nomini kiriting:")
-
-@dp.message(F.text == "🔢 Kod orqali qidirish")
+# ================= CODE SEARCH =================
+@dp.message(F.text == "🔢 Kod orqali kino")
 async def ask_code(message: types.Message):
-    user_state[message.from_user.id] = "code"
     await message.answer("🔢 Kino kodini yuboring:")
 
 @dp.message()
-async def handler(message: types.Message):
+async def code_handler(message: types.Message):
     data = load()
-    uid = message.from_user.id
+    text = message.text.strip()
 
-    # NAME SEARCH
-    if user_state.get(uid) == "name":
-        for mid, m in data.items():
-            if message.text.lower() in m["name"].lower():
-                await message.answer_video(m["file_id"], caption=m["name"])
-                return
-        return await message.answer("❌ Kino topilmadi.")
-
-    # CODE SEARCH
-    if user_state.get(uid) == "code":
-        if message.text in data:
-            m = data[message.text]
-            await message.answer_video(m["file_id"], caption=m["name"])
+    if text.isdigit():
+        if text in data:
+            m = data[text]
+            await message.answer_video(
+                m["file_id"],
+                caption=f"{m['name']}"
+            )
         else:
-            await message.answer("❌ Bunday kod mavjud emas.")
-        return
+            await message.answer("❌ Siz noto‘g‘ri ma’lumot kiritdingiz.")
 
 # ================= ADMIN PANEL =================
-admin_kb = InlineKeyboardMarkup(
-    inline_keyboard=[
-        [InlineKeyboardButton(text="➕ Kino qo‘shish", callback_data="add_movie")],
-        [InlineKeyboardButton(text="📂 Kinolar soni", callback_data="admin_list")]
-    ]
+admin_kb = ReplyKeyboardMarkup(
+    keyboard=[
+        [KeyboardButton(text="➕ Kino qo‘shish")],
+        [KeyboardButton(text="📂 Kinolar soni")],
+        [KeyboardButton(text="🔙 Chiqish")]
+    ],
+    resize_keyboard=True
 )
 
 @dp.message(F.text == "⚙️ Admin panel")
 async def admin_panel(message: types.Message):
 
     if message.from_user.id != ADMIN_ID:
-        return await message.answer(
-            "❌ Siz admin emassiz yoki ruxsatingiz yo‘q."
-        )
+        return await message.answer("❌ Siz admin emassiz.")
 
     await message.answer("⚙️ Admin panel:", reply_markup=admin_kb)
 
-# ================= ADMIN ACTIONS =================
-@dp.callback_query(F.data == "add_movie")
-async def add_movie(call: types.CallbackQuery):
+# ================= ADD MOVIE FLOW =================
+@dp.message(F.text == "➕ Kino qo‘shish")
+async def add_start(message: types.Message):
 
-    if call.from_user.id != ADMIN_ID:
-        return await call.answer("❌ Ruxsat yo‘q", show_alert=True)
+    if message.from_user.id != ADMIN_ID:
+        return
 
-    await call.message.answer(
-        "🎬 Kino qo‘shish:\n"
-        "Video yuboring va quyidagicha yozing:\n"
-        "ID | NAME | YEAR | GENRE"
-    )
+    admin_state[message.from_user.id] = {"step": "name"}
+    await message.answer("🎬 Kino nomini kiriting:")
 
-    await call.answer()
+@dp.message()
+async def admin_flow(message: types.Message):
 
-@dp.callback_query(F.data == "admin_list")
-async def admin_list(call: types.CallbackQuery):
+    uid = message.from_user.id
 
-    if call.from_user.id != ADMIN_ID:
-        return await call.answer("❌ Ruxsat yo‘q", show_alert=True)
+    if uid not in admin_state:
+        return
 
-    data = load()
-    await call.message.answer(f"📂 Jami kinolar: {len(data)}")
-    await call.answer()
+    state = admin_state[uid]
+
+    # NAME
+    if state["step"] == "name":
+        state["name"] = message.text
+        state["step"] = "year"
+        await message.answer("📆 Yilni kiriting:")
+        return
+
+    # YEAR
+    if state["step"] == "year":
+        state["year"] = message.text
+        state["step"] = "genre"
+        await message.answer("🎭 Janrni kiriting:")
+        return
+
+    # GENRE
+    if state["step"] == "genre":
+        state["genre"] = message.text
+        state["step"] = "video"
+        await message.answer("🎬 Video yuboring:")
+        return
+
+    # VIDEO
+    if message.video and state["step"] == "video":
+
+        state["file_id"] = message.video.file_id
+
+        data = load()
+        movie_id = str(len(data) + 1)
+
+        data[movie_id] = {
+            "name": state["name"],
+            "year": state["year"],
+            "genre": state["genre"],
+            "file_id": state["file_id"]
+        }
+
+        save(data)
+
+        admin_state.pop(uid)
+
+        await message.answer("✅ Kino qo‘shildi!")
+        return
 
 # ================= RUN =================
 async def main():
