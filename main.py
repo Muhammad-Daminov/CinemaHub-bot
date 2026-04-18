@@ -9,7 +9,7 @@ from aiogram.types import (
 )
 
 # ================= CONFIG =================
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = "8683855893:AAH31bQzoIS-vHJyt0SdKi7AWGFZeBUzcQE"
 ADMIN_ID = 6427415448
 
 if not TOKEN:
