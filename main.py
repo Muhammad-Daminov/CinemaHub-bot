@@ -9,7 +9,7 @@ from aiogram.types import (
 )
 
 # ================= CONFIG =================
-TOKEN ="8683855893:AAH31bQzoIS-vHJyt0SdKi7AWGFZeBUzcQE"
+TOKEN = "8683855893:AAH31bQzoIS-vHJyt0SdKi7AWGFZeBUzcQE"
 CHANNEL = "@cinemahubb_HD"
 ADMIN_ID = 6427415448
 
@@ -20,9 +20,10 @@ bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
 JSON_FILE = "movies.json"
+
 user_state = {}
 
-# ================= MAIN MENU =================
+# ================= MENU =================
 menu = ReplyKeyboardMarkup(
     keyboard=[
         [KeyboardButton(text="📂 Kinolar ro‘yxati")],
@@ -68,7 +69,7 @@ def movies_menu(data):
 async def list_movies(message: types.Message):
     data = load()
     if not data:
-        return await message.answer("❌ Hozircha kino mavjud emas.")
+        return await message.answer("❌ Hozircha kino yo‘q.")
 
     await message.answer("🎬 Kinolar:", reply_markup=movies_menu(data))
 
@@ -100,7 +101,7 @@ async def show_movie(call: types.CallbackQuery):
 @dp.message(F.text == "🎬 Kino nomi bilan qidirish")
 async def ask_name(message: types.Message):
     user_state[message.from_user.id] = "name"
-    await message.answer("🔍 Kino nomini yozing:")
+    await message.answer("🔍 Kino nomini kiriting:")
 
 @dp.message(F.text == "🔢 Kod orqali qidirish")
 async def ask_code(message: types.Message):
@@ -141,23 +142,32 @@ admin_kb = InlineKeyboardMarkup(
 async def admin_panel(message: types.Message):
 
     if message.from_user.id != ADMIN_ID:
-        return await message.answer("❌ Siz admin emassiz.")
+        return await message.answer(
+            "❌ Siz admin emassiz yoki ruxsatingiz yo‘q."
+        )
 
     await message.answer("⚙️ Admin panel:", reply_markup=admin_kb)
 
 # ================= ADMIN ACTIONS =================
 @dp.callback_query(F.data == "add_movie")
 async def add_movie(call: types.CallbackQuery):
-    if call.from_user.id != ADMIN_ID:
-        return await call.answer()
 
-    await call.message.answer("🎬 Kino qo‘shish uchun video + ma’lumot yuboring.")
+    if call.from_user.id != ADMIN_ID:
+        return await call.answer("❌ Ruxsat yo‘q", show_alert=True)
+
+    await call.message.answer(
+        "🎬 Kino qo‘shish:\n"
+        "Video yuboring va quyidagicha yozing:\n"
+        "ID | NAME | YEAR | GENRE"
+    )
+
     await call.answer()
 
 @dp.callback_query(F.data == "admin_list")
 async def admin_list(call: types.CallbackQuery):
+
     if call.from_user.id != ADMIN_ID:
-        return await call.answer()
+        return await call.answer("❌ Ruxsat yo‘q", show_alert=True)
 
     data = load()
     await call.message.answer(f"📂 Jami kinolar: {len(data)}")
