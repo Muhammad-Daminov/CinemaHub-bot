@@ -6,7 +6,7 @@ from aiogram import Bot, Dispatcher, types, F
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 
 # ================= CONFIG =================
-TOKEN = "YOUR_BOT_TOKEN"
+TOKEN = "8683855893:AAH31bQzoIS-vHJyt0SdKi7AWGFZeBUzcQE"
 ADMIN_ID = 6427415448
 
 bot = Bot(token=TOKEN)
