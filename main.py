@@ -12,18 +12,13 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.fsm.context import FSMContext
-from aiogram.fsm.state import State, StatesGroup
-
-class UserStates(StatesGroup):
-    waiting_for_search_query = State()
 
 # 1. Sozlamalar
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
 ADMIN_ID = 6427415448
-CHANNEL_ID = "@cinemahubb_HD"  # Kanal usernamesi
+CHANNEL_ID = "@cinemahubb_HD"
 
 if sys.platform.startswith("win"):
     asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
@@ -32,6 +27,9 @@ bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
 # 2. FSM (Holatlar)
+class UserStates(StatesGroup):
+    waiting_for_search_query = State()
+
 class AdminStates(StatesGroup):
     waiting_for_kino_table = State()
     waiting_for_kino_video = State()
@@ -48,7 +46,7 @@ async def create_table():
     await conn.execute("""
     CREATE TABLE IF NOT EXISTS content (
         id SERIAL PRIMARY KEY,
-        type TEXT, -- 'kino' yoki 'part'
+        type TEXT,
         name TEXT,
         year TEXT,
         genre TEXT,
@@ -79,7 +77,7 @@ def kino_search_menu():
     return ReplyKeyboardMarkup(keyboard=[
         [KeyboardButton(text="🔎 Nomi orqali"), KeyboardButton(text="📅 Yili orqali")],
         [KeyboardButton(text="🎭 Janr orqali"), KeyboardButton(text="🔢 Kod orqali")],
-        [KeyboardButton(text="📜 Barcha kinolar"), KeyboardButton(text="⬅️ Ortga")]
+        [KeyboardButton(text="⬅️ Ortga")]
     ], resize_keyboard=True)
 
 # ================= START & SUB =================
@@ -101,14 +99,43 @@ async def check_sub_callback(c: types.CallbackQuery):
     else:
         await c.answer("❌ Hali a'zo emassiz!", show_alert=True)
 
-# ================= KINO BO'LIMI =================
+# ================= KINO BO'LIMI VA QIDIRUV =================
 @dp.message(F.text == "🎬 Kinolar")
 async def kino_section(m: types.Message):
     await m.answer("Kino qidirish turini tanlang:", reply_markup=kino_search_menu())
 
-@dp.message(F.text == "⬅️ Ortga")
-async def back_main(m: types.Message):
-    await m.answer("Asosiy menu:", reply_markup=main_menu())
+@dp.message(F.text.in_(["🔎 Nomi orqali", "📅 Yili orqali", "🎭 Janr orqali", "🔢 Kod orqali"]))
+async def start_search(m: types.Message, state: FSMContext):
+    await m.answer(f"Marhamat, {m.text.lower()}ni kiriting:")
+    await state.set_state(UserStates.waiting_for_search_query)
+
+@dp.message(UserStates.waiting_for_search_query)
+async def process_search(m: types.Message, state: FSMContext):
+    query = m.text
+    conn = await db_connect()
+    
+    if query.isdigit():
+        res = await conn.fetchrow("SELECT * FROM content WHERE id=$1", int(query))
+    else:
+        res = await conn.fetchrow("""
+            SELECT * FROM content 
+            WHERE name ILIKE $1 OR genre ILIKE $1 OR year ILIKE $1
+            LIMIT 1
+        """, f"%{query}%")
+    
+    await conn.close()
+
+    if res:
+        footer = "\n————————————————\n📢 Bizning kanal : @cinemahubb_HD\n————————————————\n🤖 Bizning bot: @cinemahub_hdbot\n————————————————"
+        if res['type'] == 'kino':
+            caption = f"🎬 Nomi: {res['name']}\n\n🗣 Til : {res['lang']}\n📆 Yil: {res['year']}\n🎭 Janr : {res['genre']}\n🌎 Davlati : {res['country']}\n{footer}"
+        else:
+            caption = f"📺 Serial: {res['parent_name']}\n🔢 Qism : {res['part_number']}-qism\n{footer}"
+        
+        await m.answer_video(res['file_id'], caption=caption)
+        await state.clear()
+    else:
+        await m.answer("❌ Hech narsa topilmadi. Qaytadan urinib ko'ring.")
 
 # ================= SERIAL BO'LIMI =================
 @dp.message(F.text == "📺 Seriallar")
@@ -139,17 +166,7 @@ async def show_parts(c: types.CallbackQuery):
     kb.adjust(4)
     await c.message.answer(f"🎬 {ser_name} seriali qismlari:", reply_markup=kb.as_markup())
 
-
-
-# Masalan, kinolar menyusi bosilganda
-@dp.message(F.text == "🎬 Kinolar")
-async def movies_search(m: types.Message, state: FSMContext):
-    await m.answer("Kino kodini yoki janrini yozing (Masalan: 12 yoki #Komediy):")
-    await state.set_state(UserStates.waiting_for_search_query) #dddd
-
-    
-
-# ================= ADMIN: QO'SHISH (/add) =================
+# ================= ADMIN QISMI =================
 @dp.message(F.text == "/add")
 async def admin_add(m: types.Message):
     if m.from_user.id != ADMIN_ID: return
@@ -159,7 +176,6 @@ async def admin_add(m: types.Message):
     ])
     await m.answer("Nima qo'shishni xohlaysiz?", reply_markup=kb)
 
-# KINO QO'SHISH
 @dp.callback_query(F.data == "add_kino")
 async def add_kino_start(c: types.CallbackQuery, state: FSMContext):
     form = "🎬Nomi : \n🗣Tili: \n📆 Yili: \n🎭Janr : \n🌎Davlati: "
@@ -191,7 +207,6 @@ async def save_kino(m: types.Message, state: FSMContext):
     await m.answer(f"✅ Kino saqlandi! Kod: {row['id']}")
     await state.clear()
 
-# SERIAL QO'SHISH (AVTOMATIK)
 @dp.callback_query(F.data == "add_serial")
 async def add_serial_start(c: types.CallbackQuery, state: FSMContext):
     await c.message.answer("Serial nomini kiriting:")
@@ -200,7 +215,7 @@ async def add_serial_start(c: types.CallbackQuery, state: FSMContext):
 @dp.message(AdminStates.waiting_for_serial_name)
 async def get_ser_name(m: types.Message, state: FSMContext):
     await state.update_data(ser_name=m.text)
-    await m.answer(f"🎬 {m.text} uchun videolarni ketma-ket yuboring. Bot o'zi qismlarni hisoblaydi.")
+    await m.answer(f"🎬 {m.text} uchun videolarni ketma-ket yuboring.")
     await state.set_state(AdminStates.waiting_for_serial_video)
 
 @dp.message(AdminStates.waiting_for_serial_video, F.video)
@@ -210,7 +225,6 @@ async def save_serial_parts(m: types.Message, state: FSMContext):
     conn = await db_connect()
     last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1", ser_name)
     current_part = (last_part or 0) + 1
-    
     await conn.execute("""
         INSERT INTO content(type, parent_name, part_number, file_id)
         VALUES('part', $1, $2, $3)
@@ -218,53 +232,28 @@ async def save_serial_parts(m: types.Message, state: FSMContext):
     await conn.close()
     await m.answer(f"✅ {current_part}-qism qabul qilindi!")
 
-
-# ================= KO'RISH (KINO VA SERIAL) =================
 @dp.callback_query(F.data.startswith("view_"))
 async def view_content(c: types.CallbackQuery):
     cid = int(c.data.split("_")[1])
     conn = await db_connect()
     res = await conn.fetchrow("SELECT * FROM content WHERE id=$1", cid)
     await conn.close()
-    
-    
-    footer = (
-        "\n————————————————\n"
-        "📢 Bizning kanal : @cinemahubb_HD\n"
-        "————————————————\n"
-        "🤖 Bizning bot: @cinemahub_hdbot\n"
-        "————————————————"
-    )
-    
+    footer = "\n————————————————\n📢 Bizning kanal : @cinemahubb_HD\n————————————————\n🤖 Bizning bot: @cinemahub_hdbot\n————————————————"
     if res['type'] == 'kino':
-        caption = (
-            f"🎬 Nomi: {res['name']}\n\n"
-            f"🗣️ Til : {res['lang']}\n"
-            f"📆 Yil: {res['year']}\n"
-            f"🎭 Janr : {res['genre']}\n"
-            f"🌎 Davlati : {res['country']}\n"
-            f"{footer}"
-        )
+        caption = f"🎬 Nomi: {res['name']}\n\n🗣 Til : {res['lang']}\n📆 Yil: {res['year']}\n🎭 Janr : {res['genre']}\n🌎 Davlati : {res['country']}\n{footer}"
     else:
-        # Serial qismlari uchun ham xuddi shu format
-        caption = (
-            f"📺 Serial: {res['parent_name']}\n"
-            f"🔢 Qism : {res['part_number']}-qism\n"
-            f"{footer}"
-        )
-    
-    # Videoni yangi caption bilan yuborish
+        caption = f"📺 Serial: {res['parent_name']}\n🔢 Qism : {res['part_number']}-qism\n{footer}"
     await c.message.answer_video(res['file_id'], caption=caption)
+
+@dp.message(F.text == "⬅️ Ortga")
+async def back_main(m: types.Message):
+    await m.answer("Asosiy menu:", reply_markup=main_menu())
 
 # ================= RUN =================
 async def main():
     await create_table()
     await bot.delete_webhook(drop_pending_updates=True)
-    print("Bot PRO Ultra rejimda ishga tushdi...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except:
-        pass
+    asyncio.run(main())
