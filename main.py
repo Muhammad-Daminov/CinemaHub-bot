@@ -261,6 +261,11 @@ from aiogram.types import (
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
+
+class UserStates(StatesGroup):
+    waiting_for_search_query = State()
 
 # 1. Sozlamalar
 load_dotenv()
@@ -383,6 +388,16 @@ async def show_parts(c: types.CallbackQuery):
     kb.adjust(4)
     await c.message.answer(f"🎬 {ser_name} seriali qismlari:", reply_markup=kb.as_markup())
 
+
+
+# Masalan, kinolar menyusi bosilganda
+@dp.message(F.text == "🎬 Kinolar")
+async def movies_search(m: types.Message, state: FSMContext):
+    await m.answer("Kino kodini yoki janrini yozing (Masalan: 12 yoki #Komediy):")
+    await state.set_state(UserStates.waiting_for_search_query) #dddd
+
+    
+
 # ================= ADMIN: QO'SHISH (/add) =================
 @dp.message(F.text == "/add")
 async def admin_add(m: types.Message):
@@ -452,6 +467,7 @@ async def save_serial_parts(m: types.Message, state: FSMContext):
     await conn.close()
     await m.answer(f"✅ {current_part}-qism qabul qilindi!")
 
+
 # ================= KO'RISH (KINO VA SERIAL) =================
 @dp.callback_query(F.data.startswith("view_"))
 async def view_content(c: types.CallbackQuery):
@@ -460,11 +476,33 @@ async def view_content(c: types.CallbackQuery):
     res = await conn.fetchrow("SELECT * FROM content WHERE id=$1", cid)
     await conn.close()
     
-    if res['type'] == 'kino':
-        caption = f"🎬Nomi : {res['name']}\n🗣Tili: {res['lang']}\n📆 Yili: {res['year']}\n🎭Janr : {res['genre']}\n🌎Davlati: {res['country']}"
-    else:
-        caption = f"📺 {res['parent_name']}\n🔢 Qism: {res['part_number']}"
     
+    footer = (
+        "\n————————————————\n"
+        "📢 Bizning kanal : @cinemahubb_HD\n"
+        "————————————————\n"
+        "🤖 Bizning bot: @cinemahub_hdbot\n"
+        "————————————————"
+    )
+    
+    if res['type'] == 'kino':
+        caption = (
+            f"🎬 Nomi: {res['name']}\n\n"
+            f"🗣️ Til : {res['lang']}\n"
+            f"📆 Yil: {res['year']}\n"
+            f"🎭 Janr : {res['genre']}\n"
+            f"🌎 Davlati : {res['country']}\n"
+            f"{footer}"
+        )
+    else:
+        # Serial qismlari uchun ham xuddi shu format
+        caption = (
+            f"📺 Serial: {res['parent_name']}\n"
+            f"🔢 Qism : {res['part_number']}-qism\n"
+            f"{footer}"
+        )
+    
+    # Videoni yangi caption bilan yuborish
     await c.message.answer_video(res['file_id'], caption=caption)
 
 # ================= RUN =================
