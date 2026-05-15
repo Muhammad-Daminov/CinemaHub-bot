@@ -34,24 +34,17 @@ class UserStates(StatesGroup):
 
 class AdminStates(StatesGroup):
     choosing_type = State()
-    waiting_kino_data = State()
-    waiting_serial_data = State()
+    waiting_kino_template = State() # Shablon uchun yangi holat
+    waiting_kino_video = State()
+    waiting_serial_name = State()
+    waiting_serial_videos = State()
+    choosing_del_method = State() # O'chirish usuli uchun
+    waiting_del_query = State() # O'chirish qiymati uchun
 
 async def db_connect():
     return await asyncpg.connect(DATABASE_URL)
 
 # ================= MENULAR =================
-
-def main_menu(user_id: int):
-    kb = ReplyKeyboardBuilder()
-    kb.button(text="🎬 Kinolar")
-    kb.button(text="📺 Seriallar")
-    kb.button(text="🔎 Qidirish")
-    if user_id == ADMIN_ID:
-        kb.button(text="➕ Qo'shish")
-        kb.button(text="📢 Reklama")
-    kb.adjust(2)
-    return kb.as_markup(resize_keyboard=True, is_persistent=True)
 
 def search_options():
     kb = ReplyKeyboardBuilder()
@@ -63,64 +56,140 @@ def search_options():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
-# ================= ADMIN: O'CHIRISH (/del) =================
 
+def main_menu(user_id: int):
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="🎬 Kinolar")
+    kb.button(text="📺 Seriallar")
+    kb.button(text="🔎 Qidirish")
+    if user_id == ADMIN_ID:
+        kb.button(text="➕ Qo'shish")
+        kb.button(text="🗑 O'chirish") # /del o'rniga tugma
+        kb.button(text="📢 Reklama")
+    kb.adjust(2)
+    return kb.as_markup(resize_keyboard=True, is_persistent=True)
+
+# ================= ADMIN: O'CHIRISH (YANGILANDI) =================
+
+@dp.message(F.text == "🗑 O'chirish", F.from_user.id == ADMIN_ID)
 @dp.message(F.text.startswith("/del"), F.from_user.id == ADMIN_ID)
-async def delete_content(m: types.Message):
-    try:
-        content_id = int(m.text.split()[1])
-        conn = await db_connect()
-        # Kinoni yoki serial qismini bazadagi ID orqali o'chirish
-        res = await conn.execute("DELETE FROM content WHERE id=$1", content_id)
-        await conn.close()
-        
-        if "DELETE 1" in res:
-            await m.answer(f"✅ Kod: {content_id} bo'lgan kontent o'chirildi!")
-        else:
-            await m.answer("❌ Bunday kodli kontent topilmadi.")
-    except:
-        await m.answer("⚠️ Format: `/del 123` (123 o'rniga o'chirmoqchi bo'lgan kontent kodingiz)")
+async def delete_start(m: types.Message, state: FSMContext):
+    kb = ReplyKeyboardBuilder()
+    kb.button(text="🔢 Kod orqali o'chirish")
+    kb.button(text="📝 Nomi orqali o'chirish")
+    kb.button(text="⬅️ Orqaga")
+    kb.adjust(2)
+    await m.answer("O'chirish usulini tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
+    await state.set_state(AdminStates.choosing_del_method)
 
-# ================= ADMIN: QO'SHISH =================
+@dp.message(AdminStates.choosing_del_method, F.text.contains("orqali o'chirish"))
+async def ask_del_query(m: types.Message, state: FSMContext):
+    method = "kodini" if "Kod" in m.text else "nomini"
+    await state.update_data(del_method=m.text)
+    await m.answer(f"O'chirmoqchi bo'lgan kontent {method} kiriting:")
+    await state.set_state(AdminStates.waiting_del_query)
+
+@dp.message(AdminStates.waiting_del_query)
+async def process_delete(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    method = data.get("del_method")
+    query = m.text.strip()
+    conn = await db_connect()
+    
+    if "Kod" in method:
+        if query.isdigit():
+            res = await conn.execute("DELETE FROM content WHERE id=$1", int(query))
+            msg = "✅ Kod bo'yicha o'chirildi!" if "1" in res else "❌ Topilmadi."
+        else: msg = "⚠️ Kod faqat raqam bo'ladi!"
+    else:
+        # Kino nomi yoki Serial nomini o'chirish
+        res = await conn.execute("DELETE FROM content WHERE name ILIKE $1 OR parent_name ILIKE $1", f"%{query}%")
+        msg = f"✅ '{query}' bo'yicha ma'lumotlar o'chirildi!"
+
+    await conn.close()
+    await m.answer(msg, reply_markup=main_menu(m.from_user.id))
+    await state.set_state(UserStates.main)
+
+# ================= ADMIN: QO'SHISH (YANGILANDI) =================
 
 @dp.message(F.text == "➕ Qo'shish", F.from_user.id == ADMIN_ID)
 async def admin_add_menu(m: types.Message, state: FSMContext):
     kb = ReplyKeyboardBuilder()
     kb.button(text="🎬 Yangi Kino")
-    kb.button(text="📺 Serial Qismi")
+    kb.button(text="📺 Serial")
     kb.button(text="⬅️ Bosh menyuga")
     kb.adjust(2)
     await m.answer("Nima qo'shmoqchisiz?", reply_markup=kb.as_markup(resize_keyboard=True))
     await state.set_state(AdminStates.choosing_type)
 
-@dp.message(AdminStates.waiting_kino_data, F.video)
-async def save_kino(m: types.Message, state: FSMContext):
+# --- KINO QO'SHISH ---
+@dp.message(AdminStates.choosing_type, F.text == "🎬 Yangi Kino")
+async def add_kino_step1(m: types.Message, state: FSMContext):
+    shablon = "🎬 Nomi:\n\n📆 Yili:\n🗣️ Tili:\n🎭 Janr:\n🌎 Davlati:"
+    await m.answer(f"Quyidagi shablonni to'ldirib yuboring:\n\n`{shablon}`", parse_mode="Markdown")
+    await state.set_state(AdminStates.waiting_kino_template)
+
+@dp.message(AdminStates.waiting_kino_template)
+async def add_kino_step2(m: types.Message, state: FSMContext):
+    await state.update_data(kino_info=m.text)
+    await m.answer("✅ Ma'lumotlar qabul qilindi. Endi videoni yuboring:")
+    await state.set_state(AdminStates.waiting_kino_video)
+
+@dp.message(AdminStates.waiting_kino_video, F.video)
+async def save_kino_final(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    info = data.get("kino_info")
     try:
-        data = m.caption.split("|")
-        name, year, genre, lang = data[0].strip(), data[1].strip(), data[2].strip(), data[3].strip()
+        lines = info.split("\n")
+        name = lines[0].replace("🎬 Nomi:", "").strip()
+        year = lines[2].replace("📆 Yili:", "").strip()
+        lang = lines[3].replace("🗣️ Tili:", "").strip()
+        genre = lines[4].replace("🎭 Janr:", "").strip()
+        country = lines[5].replace("🌎 Davlati:", "").strip()
+
         conn = await db_connect()
         last_id = await conn.fetchval("SELECT MAX(id) FROM content WHERE type='kino'")
         new_id = (last_id or 0) + 1
-        await conn.execute("INSERT INTO content(id, type, name, year, genre, lang, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6)", 
-                           new_id, name, year, genre, lang, m.video.file_id)
+        await conn.execute("INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
+                           new_id, name, year, genre, lang, country, m.video.file_id)
         await conn.close()
-        await m.answer(f"✅ Kino saqlandi! Kodi: {new_id}")
-    except: await m.answer("❌ Xato! Format: Nomi|Yili|Janri|Tili")
+        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi! Kodi: {new_id}", reply_markup=main_menu(m.from_user.id))
+        await state.set_state(UserStates.main)
+    except:
+        await m.answer("❌ Xato! Shablonni to'g'ri to'ldiring va qaytadan videoni yuboring.")
 
-@dp.message(AdminStates.waiting_serial_data, F.video)
-async def save_serial(m: types.Message, state: FSMContext):
-    try:
-        data = m.caption.split("|")
-        ser_name, part_num = data[0].strip(), int(data[1].strip())
-        conn = await db_connect()
-        # Serial qismlari uchun ham ID berish o'chirish oson bo'lishi uchun
-        await conn.execute("INSERT INTO content(type, parent_name, part_number, file_id) VALUES('part', $1, $2, $3)", 
-                           ser_name, part_num, m.video.file_id)
-        await conn.close()
-        await m.answer(f"✅ {ser_name} ning {part_num}-qismi saqlandi!")
-    except: await m.answer("❌ Xato! Format: Serial Nomi|Qism Raqami")
+# --- SERIAL QO'SHISH ---
+@dp.message(AdminStates.choosing_type, F.text == "📺 Serial")
+async def add_serial_step1(m: types.Message, state: FSMContext):
+    await m.answer("Serial nomini kiriting:")
+    await state.set_state(AdminStates.waiting_serial_name)
 
-# ================= HANDLERLAR =================
+@dp.message(AdminStates.waiting_serial_name)
+async def add_serial_step2(m: types.Message, state: FSMContext):
+    ser_name = m.text.strip()
+    await state.update_data(ser_name=ser_name)
+    await m.answer(f"🎬 '{ser_name}' uchun videolarni bittadan yuboring. \nBot o'zi qismlarni hisoblaydi. \nTugatgach '✅ Tamom' tugmasini bosing.",
+                   reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Tamom")]], resize_keyboard=True))
+    await state.set_state(AdminStates.waiting_serial_videos)
+
+@dp.message(AdminStates.waiting_serial_videos, F.video)
+async def save_serial_recursive(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    ser_name = data.get("ser_name")
+    conn = await db_connect()
+    last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1", ser_name)
+    new_part = (last_part or 0) + 1
+    await conn.execute("INSERT INTO content(type, parent_name, part_number, file_id) VALUES('part', $1, $2, $3)", 
+                       ser_name, new_part, m.video.file_id)
+    await conn.close()
+    await m.answer(f"✅ {new_part}-qism qabul qilindi! Navbatdagisini yuboring...")
+
+@dp.message(AdminStates.waiting_serial_videos, F.text == "✅ Tamom")
+async def finish_serial_add(m: types.Message, state: FSMContext):
+    await m.answer("✅ Serial qismlari muvaffaqiyatli saqlandi!", reply_markup=main_menu(m.from_user.id))
+    await state.set_state(UserStates.main)
+
+# ================= FOYDALANUVCHI QISMI (O'ZGARMADI) =================
 
 @dp.message(F.text == "/start")
 async def start_cmd(m: types.Message, state: FSMContext):
@@ -151,7 +220,6 @@ async def send_movie_by_name(m: types.Message):
     res = await conn.fetchrow("SELECT * FROM content WHERE name ILIKE $1 AND type='kino'", name)
     await conn.close()
     if res:
-        # FOOTER QO'SHILDI
         caption = f"🎬 Nomi: {res['name']}\n📆 Yili: {res['year']}\n🎭 Janri: {res['genre']}\n🆔 Kod: {res['id']}{FOOTER_TEXT}"
         await m.answer_video(res['file_id'], caption=caption)
 
@@ -159,6 +227,12 @@ async def send_movie_by_name(m: types.Message):
 async def open_search(m: types.Message, state: FSMContext):
     await state.set_state(UserStates.search_menu)
     await m.answer("Qidiruv turini tanlang:", reply_markup=search_options())
+
+@dp.message(F.text.in_(["📅 Yili bo'yicha", "🎭 Janri bo'yicha", "🔢 Kodi bo'yicha", "📝 Nomi bo'yicha"]), UserStates.search_menu)
+async def set_search_type(m: types.Message, state: FSMContext):
+    await state.update_data(search_type=m.text)
+    await state.set_state(UserStates.waiting_query)
+    await m.answer(f"{m.text} uchun ma'lumot kiriting:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
 
 @dp.message(UserStates.waiting_query)
 async def execute_search(m: types.Message, state: FSMContext):
@@ -184,7 +258,6 @@ async def execute_search(m: types.Message, state: FSMContext):
     if not res: await m.answer("❌ Topilmadi.")
     else:
         for r in res:
-            # FOOTER QO'SHILDI
             await m.answer_video(r['file_id'], caption=f"🎬 {r['name']}\n🆔 Kod: {r['id']}{FOOTER_TEXT}")
 
 @dp.message(F.text == "📺 Seriallar")
@@ -211,7 +284,7 @@ async def serial_parts_groups(m: types.Message, state: FSMContext):
     kb = ReplyKeyboardBuilder()
     for i in range(1, count + 1, 10):
         end = min(i + 9, count)
-        kb.button(text=f"📦 {i}-{end} qismlar")
+        kb.button(text=f"🔢 {i}-{end} qismlar")
     kb.button(text="⬅️ Orqaga")
     kb.adjust(2)
     await m.answer(f"🎬 {ser_name} qismlari:", reply_markup=kb.as_markup(resize_keyboard=True))
@@ -226,7 +299,6 @@ async def send_all_parts(m: types.Message, state: FSMContext):
     parts = await conn.fetch("SELECT file_id, part_number FROM content WHERE parent_name=$1 AND part_number BETWEEN $2 AND $3 ORDER BY part_number ASC", ser_name, start, end)
     await conn.close()
     for p in parts:
-        # FOOTER QO'SHILDI
         await m.answer_video(p['file_id'], caption=f"📺 {ser_name} | {p['part_number']}-qism{FOOTER_TEXT}")
         await asyncio.sleep(0.4)
 
@@ -238,8 +310,6 @@ async def universal_back(m: types.Message, state: FSMContext):
         await show_serials(m, state)
     elif curr == UserStates.waiting_query.state:
         await open_search(m, state)
-    elif str(curr).startswith("AdminStates"):
-        await start_cmd(m, state)
     else:
         await start_cmd(m, state)
 
