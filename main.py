@@ -1,24 +1,18 @@
-import asyncio
-import os
-import sys
+import asyncio, os, re, sys
 import asyncpg
-import re
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.utils.keyboard import InlineKeyboardBuilder, ReplyKeyboardBuilder
-from aiogram.fsm.context import FSMContext
+from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.context import FSMContext
 from aiogram.fsm.storage.memory import MemoryStorage
-from aiogram.types import (
-    ReplyKeyboardMarkup, KeyboardButton,
-    InlineKeyboardMarkup, InlineKeyboardButton
-)
+from aiogram.types import ReplyKeyboardMarkup, KeyboardButton
 from dotenv import load_dotenv
 
-# 1. Sozlamalar
+# 1. SOZLAMALAR
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_ID = 6427415448
+ADMIN_ID = 6427415448 
 CHANNEL_ID = "@cinemahubb_HD"
 
 if sys.platform.startswith("win"):
@@ -27,232 +21,187 @@ if sys.platform.startswith("win"):
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
 
-# 2. Holatlar (States)
+# 2. HOLATLAR (FSM)
 class UserStates(StatesGroup):
-    waiting_for_search_query = State()
+    waiting_for_search = State()
+    current_serial = State()
 
 class AdminStates(StatesGroup):
-    waiting_for_kino_table = State()
+    waiting_for_kino_data = State()
     waiting_for_kino_video = State()
     waiting_for_serial_name = State()
     waiting_for_serial_video = State()
-    waiting_for_edit_data = State()
-    waiting_for_broadcast = State()
+    waiting_for_edit = State()
+    waiting_for_mail = State()
 
-# ================= DB QISMI =================
+# 3. MA'LUMOTLAR BAZASI
 async def db_connect():
     return await asyncpg.connect(DATABASE_URL)
 
-async def create_table():
+async def create_tables():
     conn = await db_connect()
-    # Foydalanuvchilar jadvali reklama uchun kerak
-    await conn.execute("CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY)")
     await conn.execute("""
     CREATE TABLE IF NOT EXISTS content (
         id SERIAL PRIMARY KEY,
-        type TEXT,
+        type TEXT, 
         name TEXT,
         year TEXT,
         genre TEXT,
         lang TEXT,
         country TEXT,
         file_id TEXT,
-        part_number INT DEFAULT NULL,
-        parent_name TEXT DEFAULT NULL
-    )
+        part_number INT,
+        parent_name TEXT,
+        kino_code INT UNIQUE
+    );
+    CREATE TABLE IF NOT EXISTS users (user_id BIGINT PRIMARY KEY);
     """)
     await conn.close()
 
-# ================= MENULAR (REPLY) =================
+# 4. MENYULAR
 def main_menu():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🎬 Kinolar"), KeyboardButton(text="📺 Seriallar")]
-    ], resize_keyboard=True)
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🎬 Kinolar"), KeyboardButton(text="📺 Seriallar")],
+            [KeyboardButton(text="🔎 Qidirish"), KeyboardButton(text="📊 Statistika")]
+        ],
+        resize_keyboard=True,
+        is_persistent=True # Tarjima Play botidek tugma ichida turadi
+    )
 
-def kino_search_menu():
-    return ReplyKeyboardMarkup(keyboard=[
-        [KeyboardButton(text="🔎 Nomi orqali"), KeyboardButton(text="📅 Yili orqali")],
-        [KeyboardButton(text="🎭 Janr orqali"), KeyboardButton(text="🔢 Kod orqali")],
-        [KeyboardButton(text="📜 Barcha kinolar"), KeyboardButton(text="⬅️ Ortga")]
-    ], resize_keyboard=True)
-
-# ================= QISMLARNI GURUHLASH MANTIGI =================
-def get_parts_group_menu(total_parts):
+def get_reply_list(items, prefix):
     kb = ReplyKeyboardBuilder()
-    for i in range(1, total_parts + 1, 10):
-        end = min(i + 9, total_parts)
-        kb.button(text=f"📦 {i}-{end} qismlar")
-    kb.button(text="⬅️ Seriallarga qaytish")
-    kb.adjust(2)
+    for item in items:
+        name = item['name'] if 'name' in item else item['parent_name']
+        kb.button(text=f"{prefix} {name}")
+    kb.button(text="⬅️ Bosh sahifa")
+    kb.adjust(2) # 1 qatorda 2 ta tugma
     return kb.as_markup(resize_keyboard=True)
 
-# ================= START & SUB =================
+# 5. HANDLERLAR (FOYDALANUVCHI)
 @dp.message(F.text == "/start")
 async def start_cmd(m: types.Message):
     conn = await db_connect()
     await conn.execute("INSERT INTO users(user_id) VALUES($1) ON CONFLICT DO NOTHING", m.from_user.id)
     await conn.close()
-    
-    await m.answer("🎬 Xush kelibsiz! Bo'limni tanlang:", reply_markup=main_menu())
+    await m.answer("🎬 Xush kelibsiz! Kerakli bo'limni tanlang:", reply_markup=main_menu())
 
-# ================= KINO VA QIDIRUV =================
 @dp.message(F.text == "🎬 Kinolar")
-async def kino_section(m: types.Message):
-    await m.answer("Kino qidirish turini tanlang:", reply_markup=kino_search_menu())
-
-@dp.message(F.text == "📜 Barcha kinolar")
-async def all_movies(m: types.Message):
+async def show_all_movies(m: types.Message):
     conn = await db_connect()
-    movies = await conn.fetch("SELECT id, name, year FROM content WHERE type='kino' ORDER BY id DESC")
+    movies = await conn.fetch("SELECT name FROM content WHERE type='kino' ORDER BY id DESC")
     await conn.close()
-    if not movies: return await m.answer("Kinolar yo'q")
-    
-    kb = InlineKeyboardBuilder()
-    for row in movies:
-        kb.button(text=f"{row['name']} ({row['year']})", callback_data=f"view_{row['id']}")
-    kb.adjust(1)
-    await m.answer("📜 Barcha kinolar:", reply_markup=kb.as_markup())
+    if not movies: return await m.answer("Hozircha kinolar yo'q.")
+    await m.answer("🍿 Kinolardan birini tanlang:", reply_markup=get_reply_list(movies, "🎬"))
 
-@dp.message(F.text.in_(["🔎 Nomi orqali", "📅 Yili orqali", "🎭 Janr orqali", "🔢 Kod orqali"]))
-async def ask_search(m: types.Message, state: FSMContext):
-    await m.answer(f"{m.text} bo'yicha qidiruv so'zini yuboring:", reply_markup=types.ReplyKeyboardRemove())
-    await state.set_state(UserStates.waiting_for_search_query)
-
-@dp.message(UserStates.waiting_for_search_query)
-async def process_search(m: types.Message, state: FSMContext):
-    query = m.text.strip()
+@dp.message(F.text.startswith("🎬 "))
+async def send_movie(m: types.Message):
+    name = m.text.replace("🎬 ", "")
     conn = await db_connect()
-    
-    if query.isdigit() and len(query) < 4: # Kod orqali
-        res = await conn.fetch("SELECT * FROM content WHERE id=$1", int(query))
-    elif query.isdigit() and len(query) == 4: # Yil orqali
-        res = await conn.fetch("SELECT * FROM content WHERE year=$1 AND type='kino'", query)
-    else: # Nomi yoki Janr
-        res = await conn.fetch("SELECT * FROM content WHERE (name ILIKE $1 OR genre ILIKE $1) AND type='kino'", f"%{query}%")
-    
+    res = await conn.fetchrow("SELECT * FROM content WHERE name=$1 AND type='kino'", name)
     await conn.close()
-    if not res:
-        await m.answer("❌ Topilmadi.", reply_markup=main_menu())
-    else:
-        kb = InlineKeyboardBuilder()
-        for row in res:
-            kb.button(text=f"{row['name'] or row['parent_name']}", callback_data=f"view_{row['id']}")
-        kb.adjust(1)
-        await m.answer("Natijalar:", reply_markup=kb.as_markup())
-    await state.clear()
+    if res:
+        cap = f"🎬 {res['name']}\n📆 {res['year']} | 🎭 {res['genre']}\n🆔 Kod: {res['kino_code']}"
+        await m.answer_video(res['file_id'], caption=cap)
 
-# ================= SERIAL BO'LIMI (TARTIBLANGAN) =================
 @dp.message(F.text == "📺 Seriallar")
-@dp.message(F.text == "⬅️ Seriallarga qaytish")
-async def serial_list(m: types.Message):
+async def show_serials(m: types.Message):
     conn = await db_connect()
-    names = await conn.fetch("SELECT parent_name FROM content WHERE type='part' GROUP BY parent_name ORDER BY MIN(id) ASC")
+    serials = await conn.fetch("SELECT DISTINCT parent_name FROM content WHERE type='part' ORDER BY parent_name")
     await conn.close()
-    
-    kb = ReplyKeyboardBuilder()
-    for row in names:
-        kb.button(text=f"📺 {row['parent_name']}")
-    kb.button(text="⬅️ Ortga")
-    kb.adjust(1)
-    await m.answer("📺 Serialni tanlang:", reply_markup=kb.as_markup())
+    if not serials: return await m.answer("Hozircha seriallar yo'q.")
+    await m.answer("📺 Serialni tanlang:", reply_markup=get_reply_list(serials, "📺"))
 
 @dp.message(F.text.startswith("📺 "))
 async def select_serial(m: types.Message, state: FSMContext):
-    ser_name = m.text.replace("📺 ", "")
+    name = m.text.replace("📺 ", "")
     conn = await db_connect()
-    count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1", ser_name)
+    count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1", name)
     await conn.close()
     
-    await state.update_data(current_ser=ser_name)
-    await m.answer(f"🎬 {ser_name} tanlandi. Qismlarni tanlang:", reply_markup=get_parts_group_menu(count))
+    await state.update_data(current_ser=name)
+    kb = ReplyKeyboardBuilder()
+    for i in range(1, count + 1, 10):
+        end = min(i + 9, count)
+        kb.button(text=f"📦 {i}-{end} qismlar")
+    kb.button(text="⬅️ Bosh sahifa")
+    kb.adjust(2)
+    await m.answer(f"🎬 {name} qismlarini tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
 
-@dp.message(F.text.contains("qismlar"))
-async def show_grouped_parts(m: types.Message, state: FSMContext):
+@dp.message(F.text.regexp(r'📦 \d+-\d+ qismlar'))
+async def send_parts_bulk(m: types.Message, state: FSMContext):
     data = await state.get_data()
     ser_name = data.get('current_ser')
     nums = re.findall(r'\d+', m.text)
     start, end = int(nums[0]), int(nums[1])
     
     conn = await db_connect()
-    parts = await conn.fetch("SELECT id, part_number FROM content WHERE parent_name=$1 AND part_number BETWEEN $2 AND $3 ORDER BY part_number ASC", ser_name, start, end)
+    parts = await conn.fetch("SELECT file_id, part_number FROM content WHERE parent_name=$1 AND part_number BETWEEN $2 AND $3 ORDER BY part_number ASC", ser_name, start, end)
     await conn.close()
     
-    kb = InlineKeyboardBuilder()
+    await m.answer(f"🚀 {ser_name} {start}-{end} qismlar yuborilmoqda...")
     for p in parts:
-        kb.button(text=f"{p['part_number']}-qism", callback_data=f"view_{p['id']}")
-    kb.adjust(4)
-    await m.answer(f"👇 {start}-{end} qismlar:", reply_markup=kb.as_markup())
+        await m.answer_video(p['file_id'], caption=f"📺 {ser_name} | {p['part_number']}-qism")
+        await asyncio.sleep(0.5)
 
-# ================= ADMIN: DEL / EDIT / BROADCAST =================
-@dp.message(F.text.startswith("/del") & (F.from_user.id == ADMIN_ID))
-async def delete_item(m: types.Message):
-    try:
-        idx = int(m.text.split()[1])
-        conn = await db_connect()
-        await conn.execute("DELETE FROM content WHERE id=$1", idx)
-        await conn.close()
-        await m.answer(f"✅ ID {idx} o'chirildi.")
-    except: await m.answer("Xato! Format: /del ID")
+@dp.message(F.text == "⬅️ Bosh sahifa")
+async def back_home(m: types.Message):
+    await m.answer("Asosiy menyu:", reply_markup=main_menu())
 
-@dp.message(F.text.startswith("/edit") & (F.from_user.id == ADMIN_ID))
-async def edit_item(m: types.Message, state: FSMContext):
-    try:
-        idx = int(m.text.split()[1])
-        await state.update_data(edit_id=idx)
-        await m.answer(f"ID {idx} uchun yangi ma'lumotlarni yuboring:\n\n`🎬Nomi : \n🗣Tili: \n📆 Yili: \n🎭Janr : \n🌎Davlati: `", parse_mode="Markdown")
-        await state.set_state(AdminStates.waiting_for_edit_data)
-    except: await m.answer("Format: /edit ID")
+# 6. ADMIN QISMI (KODLAR TARTIBI VA REKLAMA)
+@dp.message(F.text == "/send", F.from_user.id == ADMIN_ID)
+async def start_mail(m: types.Message, state: FSMContext):
+    await m.answer("Userlarga yuboriladigan xabarni kiriting:")
+    await state.set_state(AdminStates.waiting_for_mail)
 
-@dp.message(AdminStates.waiting_for_edit_data)
-async def save_edit(m: types.Message, state: FSMContext):
-    d = await state.get_data()
-    lines = {l.split(':')[0].strip(): l.split(':')[1].strip() for l in m.text.split('\n') if ':' in l}
-    conn = await db_connect()
-    await conn.execute("UPDATE content SET name=$1, lang=$2, year=$3, genre=$4, country=$5 WHERE id=$6",
-                       lines.get("🎬Nomi"), lines.get("🗣Tili"), lines.get("📆 Yili"), lines.get("🎭Janr"), lines.get("🌎Davlati"), d['edit_id'])
-    await conn.close()
-    await m.answer("✅ Yangilandi!")
-    await state.clear()
-
-@dp.message(F.text == "/send" & (F.from_user.id == ADMIN_ID))
-async def send_all(m: types.Message, state: FSMContext):
-    await m.answer("Barcha userlarga yuboriladigan xabarni kiriting:")
-    await state.set_state(AdminStates.waiting_for_broadcast)
-
-@dp.message(AdminStates.waiting_for_broadcast)
-async def do_broadcast(m: types.Message, state: FSMContext):
+@dp.message(AdminStates.waiting_for_mail)
+async def broadcast(m: types.Message, state: FSMContext):
     conn = await db_connect()
     users = await conn.fetch("SELECT user_id FROM users")
     await conn.close()
     for u in users:
         try: await m.copy_to(u['user_id'])
         except: continue
-    await m.answer("✅ Reklama tarqatildi.")
+    await m.answer("✅ Xabar yuborildi.")
     await state.clear()
 
-# ... (Kino/Serial qo'shish handlerlari kodingizdagi kabi qoladi, faqat admin_id tekshiruvi bilan)
-# [Ko'rish (view_content) va back_main handlerlari ham tartiblandi]
+@dp.message(F.text == "/add", F.from_user.id == ADMIN_ID)
+async def add_start(m: types.Message):
+    kb = InlineKeyboardBuilder()
+    kb.button(text="🎬 Kino", callback_data="add_k")
+    kb.button(text="📺 Serial", callback_data="add_s")
+    await m.answer("Nima qo'shasiz?", reply_markup=kb.as_markup())
 
-@dp.callback_query(F.data.startswith("view_"))
-async def view_content(c: types.CallbackQuery):
-    cid = int(c.data.split("_")[1])
+@dp.callback_query(F.data == "add_k")
+async def add_k_form(c: types.CallbackQuery, state: FSMContext):
+    await c.message.answer("Kino ma'lumotlarini yuboring (Shablon: Nomi: Yili: Janri:)")
+    await state.set_state(AdminStates.waiting_for_kino_data)
+
+@dp.message(AdminStates.waiting_for_kino_data)
+async def save_k_data(m: types.Message, state: FSMContext):
+    await state.update_data(k_info=m.text)
+    await m.answer("Endi kino videosini yuboring:")
+    await state.set_state(AdminStates.waiting_for_kino_video)
+
+@dp.message(AdminStates.waiting_for_kino_video, F.video)
+async def save_k_final(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    info = data['k_info'].split(':')
     conn = await db_connect()
-    res = await conn.fetchrow("SELECT * FROM content WHERE id=$1", cid)
+    # Faqat kinolar uchun kodlash
+    last_code = await conn.fetchval("SELECT MAX(kino_code) FROM content WHERE type='kino'")
+    new_code = (last_code or 0) + 1
+    await conn.execute("""
+        INSERT INTO content(type, name, year, genre, file_id, kino_code)
+        VALUES('kino', $1, $2, $3, $4, $5)
+    """, info[0], info[1], info[2], m.video.file_id, new_code)
     await conn.close()
-    
-    footer = "\n————————————————\n📢 @cinemahubb_HD\n🤖 @cinemahub_hdbot\n————————————————"
-    if res['type'] == 'kino':
-        caption = f"🎬 {res['name']}\n📆 {res['year']} | 🎭 {res['genre']}\n{footer}"
-    else:
-        caption = f"📺 {res['parent_name']} | 🔢 {res['part_number']}-qism\n{footer}"
-    await c.message.answer_video(res['file_id'], caption=caption)
+    await m.answer(f"✅ Kino saqlandi. Kod: {new_code}")
+    await state.clear()
 
-@dp.message(F.text == "⬅️ Ortga")
-async def back_main(m: types.Message):
-    await m.answer("Asosiy menu:", reply_markup=main_menu())
-
+# 7. RUN
 async def main():
-    await create_table()
+    await create_tables()
     await bot.delete_webhook(drop_pending_updates=True)
     await dp.start_polling(bot)
 
