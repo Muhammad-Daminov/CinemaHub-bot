@@ -528,20 +528,21 @@ async def process_type(callback: types.CallbackQuery, state: FSMContext):
     await state.set_state(OrderState.waiting_content)
 
 @dp.message(OrderState.waiting_content, F.text | F.video | F.document)
-async def process_content(message: types.Message, state: FSMContext, bot):
+async def process_content(message: types.Message, state: FSMContext):
     user_data = await state.get_data()
     order_type = user_data.get("order_type")
     user_name = message.from_user.full_name
-    user_username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
     user_id = message.from_user.id
+    user_username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
     
+    # Xavfsiz bo'lishi uchun HTML formatga o'tkazdik
     admin_text = (
-        f"🚨 **Yangi Buyurtma Keldi!**\n\n"
-        f"👤 **Foydalanuvchi:** {user_name}\n"
-        f"🆔 **ID:** `{user_id}`\n"
-        f"🌐 **Username:** {user_username}\n"
-        f"🗂 **Turi:** {order_type}\n\n"
-        f"📝 **Buyurtma matni/mazmuni:**\n"
+        f"🚨 <b>Yangi Buyurtma Keldi!</b>\n\n"
+        f"👤 <b>Foydalanuvchi:</b> {user_name}\n"
+        f"🆔 <b>ID:</b> <code>{user_id}</code>\n"
+        f"🌐 <b>Username:</b> {user_username}\n"
+        f"🗂 <b>Turi:</b> {order_type}\n\n"
+        f"📝 <b>Buyurtma matni/mazmuni:</b>\n"
     )
     
     admin_kb = InlineKeyboardBuilder()
@@ -550,21 +551,22 @@ async def process_content(message: types.Message, state: FSMContext, bot):
     else:
         admin_kb.button(text="👤 Profilga O'tish", url=f"tg://user?id={user_id}")
 
-    # Xabarlar endi faqat ADMIN_ID2 ga boradi
+    # Xabarlar endi HTML formatda xatolarsiz ADMIN_ID2 ga boradi
     if message.text:
-        admin_text += f"\"{message.text}\""
-        await bot.send_message(chat_id=ADMIN_ID2, text=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
+        admin_text += f'"{message.text}"'
+        await bot.send_message(chat_id=ADMIN_ID2, text=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="HTML")
     elif message.video:
         caption = message.caption if message.caption else "Nom yozilmadi"
-        admin_text += f"\"{caption}\""
-        await bot.send_video(chat_id=ADMIN_ID2, video=message.video.file_id, caption=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
+        admin_text += f'"{caption}"'
+        await bot.send_video(chat_id=ADMIN_ID2, video=message.video.file_id, caption=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="HTML")
     elif message.document:
         caption = message.caption if message.caption else "Fayl yuborildi"
-        admin_text += f"\"{caption}\""
-        await bot.send_document(chat_id=ADMIN_ID2, document=message.document.file_id, caption=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
+        admin_text += f'"{caption}"'
+        await bot.send_document(chat_id=ADMIN_ID2, document=message.document.file_id, caption=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="HTML")
 
     thanks_labels = {"Kino": "kinoingizni", "Serial": "seriallingizni", "Multfilm": "multfilmingizni", "Drama": "dramangizni"}
     thanks_label = thanks_labels.get(order_type, "buyurtmangizni")
+    
     await message.answer(f"Rahmat, zakazingiz qabul qilindi! ✨\n{thanks_label.capitalize()} topganimizdan so'ng sizga albatta xabar beramiz.")
     await state.clear()
     
