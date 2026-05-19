@@ -7,6 +7,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from dotenv import load_dotenv
 
+
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -497,7 +498,23 @@ async def broadcast(m: types.Message, state: FSMContext, bot: Bot):
     await m.answer(f"✅ {count} ta foydalanuvchiga yuborildi!", reply_markup=main_menu(m.from_user.id))
     await state.set_state(UserStates.main)
 
+# --- RENDER UCHUN SOXTA PORT OCHISH (HIYLA) ---
+# Bu kod Render port qidirganda unga "port ochiq" deb javob beradi va boting o'chib qolmaydi
+async def start_fake_server():
+    from aiohttp import web
+    app = web.Application()
+    # Render avtomatik beradigan portni oladi, bo'lmasa 10000 portda ishlaydi
+    port = int(os.environ.get("PORT", 10000)) 
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
 async def main():
+    # Soxta serverni fonda ishga tushiramiz
+    await start_fake_server()
+    
+    # Botingni doimgi polling rejimi
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
