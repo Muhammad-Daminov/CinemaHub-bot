@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_ID = 6427415448
-ADMIN_ID2 = 8758663009
+ADMIN_ID = os.getenv("ADMIN_ID")
+ADMIN_ID2 = os.getenv("ADMIN_ID2")
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
