@@ -15,6 +15,27 @@ ADMIN_ID = 6427415448
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
 
+# --- MAJBURIY OBUNA SOZLAMALARI ---
+CHANNELS = ["@cinemahubb_HD"] 
+
+async def check_sub(user_id: int, bot: Bot) -> bool:
+    for channel in CHANNELS:
+        try:
+            member = await bot.get_chat_member(chat_id=channel, user_id=user_id)
+            if member.status in ["left", "kicked"]:
+                return False
+        except Exception:
+            continue
+    return True
+
+def get_sub_keyboard():
+    kb = InlineKeyboardBuilder()
+    for channel in CHANNELS:
+        kb.button(text="📢 Kanalga a'zo bo'lish", url=f"https://t.me/{channel.replace('@', '')}")
+    kb.button(text="✅ Tekshirish", callback_data="check_subscription")
+    kb.adjust(1)
+    return kb.as_markup()
+
 # --- REKLAMA MATNI (FOOTER) ---
 FOOTER_TEXT = (
     "\n\n————————————————\n"
@@ -30,16 +51,27 @@ class UserStates(StatesGroup):
     waiting_query = State()
     in_serial_list = State()
     viewing_parts = State()
+    in_drama_list = State()       # Drama uchun yangi holat
+    viewing_drama_parts = State() # Drama qismlari uchun yangi holat
     waiting_mailing = State()
 
 class AdminStates(StatesGroup):
     choosing_type = State()
-    waiting_kino_template = State() # Shablon uchun yangi holat
+    waiting_kino_template = State()
     waiting_kino_video = State()
+    
+    # Serial uchun
     waiting_serial_name = State()
+    waiting_serial_lang = State() # Serial tili uchun yangi holat
     waiting_serial_videos = State()
-    choosing_del_method = State() # O'chirish usuli uchun
-    waiting_del_query = State() # O'chirish qiymati uchun
+    
+    # Drama uchun
+    waiting_drama_name = State()
+    waiting_drama_lang = State()  # Drama tili uchun yangi holat
+    waiting_drama_videos = State()
+    
+    choosing_del_method = State()
+    waiting_del_query = State()
 
 async def db_connect():
     return await asyncpg.connect(DATABASE_URL)
@@ -56,20 +88,32 @@ def search_options():
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True)
 
-
 def main_menu(user_id: int):
     kb = ReplyKeyboardBuilder()
     kb.button(text="🎬 Kinolar")
     kb.button(text="📺 Seriallar")
+    kb.button(text="🎭 Dramalar") # Yangi tugma
     kb.button(text="🔎 Qidirish")
     if user_id == ADMIN_ID:
         kb.button(text="➕ Qo'shish")
-        kb.button(text="🗑 O'chirish") # /del o'rniga tugma
+        kb.button(text="🗑 O'chirish")
         kb.button(text="📢 Reklama")
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True, is_persistent=True)
 
-# ================= ADMIN: O'CHIRISH (YANGILANDI) =================
+# ================= OBUNA TASDIQLASH HANDLERI =================
+
+@dp.callback_query(F.data == "check_subscription")
+async def check_callback(call: types.CallbackQuery, state: FSMContext, bot: Bot):
+    if await check_sub(call.from_user.id, bot):
+        await call.answer("✅ Rahmat! Obuna tasdiqlandi.", show_alert=True)
+        await call.message.delete()
+        await state.set_state(UserStates.main)
+        await call.message.answer("🎬 Bot ochildi! Bo'limni tanlang:", reply_markup=main_menu(call.from_user.id))
+    else:
+        await call.answer("❌ Siz hali kanalga a'zo bo'lmagansiz!", show_alert=True)
+
+# ================= ADMIN: O'CHIRISH =================
 
 @dp.message(F.text == "🗑 O'chirish", F.from_user.id == ADMIN_ID)
 @dp.message(F.text.startswith("/del"), F.from_user.id == ADMIN_ID)
@@ -102,7 +146,6 @@ async def process_delete(m: types.Message, state: FSMContext):
             msg = "✅ Kod bo'yicha o'chirildi!" if "1" in res else "❌ Topilmadi."
         else: msg = "⚠️ Kod faqat raqam bo'ladi!"
     else:
-        # Kino nomi yoki Serial nomini o'chirish
         res = await conn.execute("DELETE FROM content WHERE name ILIKE $1 OR parent_name ILIKE $1", f"%{query}%")
         msg = f"✅ '{query}' bo'yicha ma'lumotlar o'chirildi!"
 
@@ -110,13 +153,14 @@ async def process_delete(m: types.Message, state: FSMContext):
     await m.answer(msg, reply_markup=main_menu(m.from_user.id))
     await state.set_state(UserStates.main)
 
-# ================= ADMIN: QO'SHISH (YANGILANDI) =================
+# ================= ADMIN: QO'SHISH =================
 
 @dp.message(F.text == "➕ Qo'shish", F.from_user.id == ADMIN_ID)
 async def admin_add_menu(m: types.Message, state: FSMContext):
     kb = ReplyKeyboardBuilder()
     kb.button(text="🎬 Yangi Kino")
     kb.button(text="📺 Serial")
+    kb.button(text="🎭 Drama") # Yangi tugma
     kb.button(text="⬅️ Bosh menyuga")
     kb.adjust(2)
     await m.answer("Nima qo'shmoqchisiz?", reply_markup=kb.as_markup(resize_keyboard=True))
@@ -166,8 +210,15 @@ async def add_serial_step1(m: types.Message, state: FSMContext):
 
 @dp.message(AdminStates.waiting_serial_name)
 async def add_serial_step2(m: types.Message, state: FSMContext):
-    ser_name = m.text.strip()
-    await state.update_data(ser_name=ser_name)
+    await state.update_data(ser_name=m.text.strip())
+    await m.answer("Serial tilini kiriting:")
+    await state.set_state(AdminStates.waiting_serial_lang)
+
+@dp.message(AdminStates.waiting_serial_lang)
+async def add_serial_step3(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    ser_name = data.get("ser_name")
+    await state.update_data(ser_lang=m.text.strip())
     await m.answer(f"🎬 '{ser_name}' uchun videolarni bittadan yuboring. \nBot o'zi qismlarni hisoblaydi. \nTugatgach '✅ Tamom' tugmasini bosing.",
                    reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Tamom")]], resize_keyboard=True))
     await state.set_state(AdminStates.waiting_serial_videos)
@@ -176,11 +227,12 @@ async def add_serial_step2(m: types.Message, state: FSMContext):
 async def save_serial_recursive(m: types.Message, state: FSMContext):
     data = await state.get_data()
     ser_name = data.get("ser_name")
+    ser_lang = data.get("ser_lang")
     conn = await db_connect()
-    last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1", ser_name)
+    last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1 AND type='part'", ser_name)
     new_part = (last_part or 0) + 1
-    await conn.execute("INSERT INTO content(type, parent_name, part_number, file_id) VALUES('part', $1, $2, $3)", 
-                       ser_name, new_part, m.video.file_id)
+    await conn.execute("INSERT INTO content(type, parent_name, part_number, lang, file_id) VALUES('part', $1, $2, $3, $4)", 
+                       ser_name, new_part, ser_lang, m.video.file_id)
     await conn.close()
     await m.answer(f"✅ {new_part}-qism qabul qilindi! Navbatdagisini yuboring...")
 
@@ -189,11 +241,57 @@ async def finish_serial_add(m: types.Message, state: FSMContext):
     await m.answer("✅ Serial qismlari muvaffaqiyatli saqlandi!", reply_markup=main_menu(m.from_user.id))
     await state.set_state(UserStates.main)
 
-# ================= FOYDALANUVCHI QISMI (O'ZGARMADI) =================
+# --- DRAMA QO'SHISH ---
+@dp.message(AdminStates.choosing_type, F.text == "🎭 Drama")
+async def add_drama_step1(m: types.Message, state: FSMContext):
+    await m.answer("Drama nomini kiriting:")
+    await state.set_state(AdminStates.waiting_drama_name)
+
+@dp.message(AdminStates.waiting_drama_name)
+async def add_drama_step2(m: types.Message, state: FSMContext):
+    await state.update_data(drama_name=m.text.strip())
+    await m.answer("Drama tilini kiriting:")
+    await state.set_state(AdminStates.waiting_drama_lang)
+
+@dp.message(AdminStates.waiting_drama_lang)
+async def add_drama_step3(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    drama_name = data.get("drama_name")
+    await state.update_data(drama_lang=m.text.strip())
+    await m.answer(f"🎬 '{drama_name}' uchun videolarni bittadan yuboring. \nBot o'zi qismlarni hisoblaydi. \nTugatgach '✅ Tamom' tugmasini bosing.",
+                   reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Tamom")]], resize_keyboard=True))
+    await state.set_state(AdminStates.waiting_drama_videos)
+
+@dp.message(AdminStates.waiting_drama_videos, F.video)
+async def save_drama_recursive(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    drama_name = data.get("drama_name")
+    drama_lang = data.get("drama_lang")
+    conn = await db_connect()
+    last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1 AND type='drama'", drama_name)
+    new_part = (last_part or 0) + 1
+    await conn.execute("INSERT INTO content(type, parent_name, part_number, lang, file_id) VALUES('drama', $1, $2, $3, $4)", 
+                       drama_name, new_part, drama_lang, m.video.file_id)
+    await conn.close()
+    await m.answer(f"✅ {new_part}-qism qabul qilindi! Navbatdagisini yuboring...")
+
+@dp.message(AdminStates.waiting_drama_videos, F.text == "✅ Tamom")
+async def finish_drama_add(m: types.Message, state: FSMContext):
+    await m.answer("✅ Drama qismlari muvaffaqiyatli saqlandi!", reply_markup=main_menu(m.from_user.id))
+    await state.set_state(UserStates.main)
+
+
+# ================= FOYDALANUVCHI QISMI =================
 
 @dp.message(F.text == "/start")
-async def start_cmd(m: types.Message, state: FSMContext):
+async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     await state.clear()
+    
+    # Obunani tekshirish
+    if not await check_sub(m.from_user.id, bot):
+        await m.answer("⚠️ Botdan foydalanish uchun homiy kanalimizga a'zo bo'lishingiz kerak!", reply_markup=get_sub_keyboard())
+        return
+
     await state.set_state(UserStates.main)
     conn = await db_connect()
     await conn.execute("INSERT INTO users(user_id) VALUES($1) ON CONFLICT DO NOTHING", m.from_user.id)
@@ -201,7 +299,10 @@ async def start_cmd(m: types.Message, state: FSMContext):
     await m.answer("🎬 KinoMarkaz HD botiga xush kelibsiz!", reply_markup=main_menu(m.from_user.id))
 
 @dp.message(F.text == "🎬 Kinolar")
-async def show_all_movies(m: types.Message):
+async def show_all_movies(m: types.Message, bot: Bot):
+    if not await check_sub(m.from_user.id, bot):
+        return await m.answer("⚠️ Botdan foydalanish uchun kanalimizga a'zo bo'ling!", reply_markup=get_sub_keyboard())
+
     conn = await db_connect()
     movies = await conn.fetch("SELECT name, year FROM content WHERE type='kino' ORDER BY id DESC")
     await conn.close()
@@ -213,18 +314,25 @@ async def show_all_movies(m: types.Message):
     await m.answer("Kinolardan birini tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
 
 @dp.message(F.text.startswith("🎥 "))
-async def send_movie_by_name(m: types.Message):
+async def send_movie_by_name(m: types.Message, bot: Bot):
+    if not await check_sub(m.from_user.id, bot):
+        return await m.answer("⚠️ Botdan foydalanish uchun kanalimizga a'zo bo'ling!", reply_markup=get_sub_keyboard())
+
     name_full = m.text.replace("🎥 ", "")
     name = re.sub(r' \(\d+\)', '', name_full).strip()
     conn = await db_connect()
     res = await conn.fetchrow("SELECT * FROM content WHERE name ILIKE $1 AND type='kino'", name)
     await conn.close()
     if res:
-        caption = f"🎬 Nomi: {res['name']}\n📆 Yili: {res['year']}\n🎭 Janri: {res['genre']}\n🆔 Kod: {res['id']}{FOOTER_TEXT}"
+        # Tili va Davlati qo'shilgan To'liq Format!
+        caption = (f"🎬 Nomi: {res['name']}\n📆 Yili: {res['year']}\n🗣️ Tili: {res['lang']}\n"
+                   f"🎭 Janri: {res['genre']}\n🌎 Davlati: {res['country']}\n🆔 Kod: {res['id']}{FOOTER_TEXT}")
         await m.answer_video(res['file_id'], caption=caption)
 
 @dp.message(F.text == "🔎 Qidirish")
-async def open_search(m: types.Message, state: FSMContext):
+async def open_search(m: types.Message, state: FSMContext, bot: Bot):
+    if not await check_sub(m.from_user.id, bot):
+        return await m.answer("⚠️ Botdan foydalanish uchun kanalimizga a'zo bo'ling!", reply_markup=get_sub_keyboard())
     await state.set_state(UserStates.search_menu)
     await m.answer("Qidiruv turini tanlang:", reply_markup=search_options())
 
@@ -235,9 +343,9 @@ async def set_search_type(m: types.Message, state: FSMContext):
     await m.answer(f"{m.text} uchun ma'lumot kiriting:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
 
 @dp.message(UserStates.waiting_query)
-async def execute_search(m: types.Message, state: FSMContext):
+async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
     if m.text == "⬅️ Orqaga":
-        await open_search(m, state)
+        await open_search(m, state, bot)
         return
     data = await state.get_data()
     stype = data.get("search_type")
@@ -258,10 +366,15 @@ async def execute_search(m: types.Message, state: FSMContext):
     if not res: await m.answer("❌ Topilmadi.")
     else:
         for r in res:
-            await m.answer_video(r['file_id'], caption=f"🎬 {r['name']}\n🆔 Kod: {r['id']}{FOOTER_TEXT}")
+            caption = (f"🎬 Nomi: {r['name']}\n📆 Yili: {r['year']}\n🗣️ Tili: {r['lang']}\n"
+                       f"🎭 Janri: {r['genre']}\n🌎 Davlati: {r['country']}\n🆔 Kod: {r['id']}{FOOTER_TEXT}")
+            await m.answer_video(r['file_id'], caption=caption)
 
+# --- SERIAL QISMI ---
 @dp.message(F.text == "📺 Seriallar")
-async def show_serials(m: types.Message, state: FSMContext):
+async def show_serials(m: types.Message, state: FSMContext, bot: Bot):
+    if not await check_sub(m.from_user.id, bot):
+        return await m.answer("⚠️ Botdan foydalanish uchun kanalimizga a'zo bo'ling!", reply_markup=get_sub_keyboard())
     await state.set_state(UserStates.in_serial_list)
     conn = await db_connect()
     names = await conn.fetch("SELECT parent_name FROM content WHERE type='part' GROUP BY parent_name ORDER BY MIN(id) ASC")
@@ -279,7 +392,7 @@ async def serial_parts_groups(m: types.Message, state: FSMContext):
     await state.update_data(current_ser=ser_name)
     await state.set_state(UserStates.viewing_parts)
     conn = await db_connect()
-    count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1", ser_name)
+    count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1 AND type='part'", ser_name)
     await conn.close()
     kb = ReplyKeyboardBuilder()
     for i in range(1, count + 1, 10):
@@ -296,32 +409,80 @@ async def send_all_parts(m: types.Message, state: FSMContext):
     nums = re.findall(r'\d+', m.text)
     start, end = int(nums[0]), int(nums[1])
     conn = await db_connect()
-    parts = await conn.fetch("SELECT file_id, part_number FROM content WHERE parent_name=$1 AND part_number BETWEEN $2 AND $3 ORDER BY part_number ASC", ser_name, start, end)
+    parts = await conn.fetch("SELECT file_id, part_number, lang FROM content WHERE parent_name=$1 AND type='part' AND part_number BETWEEN $2 AND $3 ORDER BY part_number ASC", ser_name, start, end)
     await conn.close()
     for p in parts:
-        await m.answer_video(p['file_id'], caption=f"📺 {ser_name} | {p['part_number']}-qism{FOOTER_TEXT}")
+        await m.answer_video(p['file_id'], caption=f"📺 {ser_name} | {p['part_number']}-qism\n🗣️ Tili: {p['lang']}{FOOTER_TEXT}")
+        await asyncio.sleep(0.4)
+
+# --- DRAMA QISMI (YANGI) ---
+@dp.message(F.text == "🎭 Dramalar")
+async def show_dramas(m: types.Message, state: FSMContext, bot: Bot):
+    if not await check_sub(m.from_user.id, bot):
+        return await m.answer("⚠️ Botdan foydalanish uchun kanalimizga a'zo bo'ling!", reply_markup=get_sub_keyboard())
+    await state.set_state(UserStates.in_drama_list)
+    conn = await db_connect()
+    names = await conn.fetch("SELECT parent_name FROM content WHERE type='drama' GROUP BY parent_name ORDER BY MIN(id) ASC")
+    await conn.close()
+    kb = ReplyKeyboardBuilder()
+    for row in names:
+        kb.button(text=f"🎭 {row['parent_name']}")
+    kb.button(text="⬅️ Bosh menyuga")
+    kb.adjust(2)
+    await m.answer("🎭 Dramani tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
+
+@dp.message(F.text.startswith("🎭 "), UserStates.in_drama_list)
+async def drama_parts_groups(m: types.Message, state: FSMContext):
+    drama_name = m.text.replace("🎭 ", "")
+    await state.update_data(current_drama=drama_name)
+    await state.set_state(UserStates.viewing_drama_parts)
+    conn = await db_connect()
+    count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1 AND type='drama'", drama_name)
+    await conn.close()
+    kb = ReplyKeyboardBuilder()
+    for i in range(1, count + 1, 10):
+        end = min(i + 9, count)
+        kb.button(text=f"🔢 {i}-{end} qismlar")
+    kb.button(text="⬅️ Orqaga")
+    kb.adjust(2)
+    await m.answer(f"🎬 {drama_name} qismlari:", reply_markup=kb.as_markup(resize_keyboard=True))
+
+@dp.message(F.text.contains("qismlar"), UserStates.viewing_drama_parts)
+async def send_all_drama_parts(m: types.Message, state: FSMContext):
+    data = await state.get_data()
+    drama_name = data.get('current_drama')
+    nums = re.findall(r'\d+', m.text)
+    start, end = int(nums[0]), int(nums[1])
+    conn = await db_connect()
+    parts = await conn.fetch("SELECT file_id, part_number, lang FROM content WHERE parent_name=$1 AND type='drama' AND part_number BETWEEN $2 AND $3 ORDER BY part_number ASC", drama_name, start, end)
+    await conn.close()
+    for p in parts:
+        await m.answer_video(p['file_id'], caption=f"🎭 {drama_name} | {p['part_number']}-qism\n🗣️ Tili: {p['lang']}{FOOTER_TEXT}")
         await asyncio.sleep(0.4)
 
 # --- SMART BACK ---
 @dp.message(F.text.in_(["⬅️ Orqaga", "⬅️ Bosh menyuga"]))
-async def universal_back(m: types.Message, state: FSMContext):
+async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
     curr = await state.get_state()
     if curr == UserStates.viewing_parts.state:
-        await show_serials(m, state)
+        await show_serials(m, state, bot)
+    elif curr == UserStates.viewing_drama_parts.state:
+        await show_dramas(m, state, bot)
     elif curr == UserStates.waiting_query.state:
-        await open_search(m, state)
+        await open_search(m, state, bot)
     else:
-        await start_cmd(m, state)
+        await start_cmd(m, state, bot)
 
+# --- REKLAMA ---
 @dp.message(F.text == "📢 Reklama", F.from_user.id == ADMIN_ID)
 async def start_mail(m: types.Message, state: FSMContext):
     await m.answer("Xabarni kiriting:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
     await state.set_state(UserStates.waiting_mailing)
 
 @dp.message(UserStates.waiting_mailing, F.from_user.id == ADMIN_ID)
-async def broadcast(m: types.Message, state: FSMContext):
+async def broadcast(m: types.Message, state: FSMContext, bot: Bot):
     if m.text == "⬅️ Orqaga":
-        await start_cmd(m, state)
+        await start_cmd(m, state, bot)
         return
     conn = await db_connect()
     users = await conn.fetch("SELECT user_id FROM users")
