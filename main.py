@@ -6,8 +6,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from dotenv import load_dotenv
-from threading import Thread
-from flask import Flask
+
 
 
 load_dotenv()
