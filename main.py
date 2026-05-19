@@ -11,8 +11,8 @@ from dotenv import load_dotenv
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
-ADMIN_ID = os.getenv("ADMIN_ID")
-ADMIN_ID2 = os.getenv("ADMIN_ID2")
+ADMIN_ID = int(os.getenv("ADMIN_ID"))
+ADMIN_ID2 = int(os.getenv("ADMIN_ID2"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
@@ -96,10 +96,11 @@ def main_menu(user_id: int):
     kb.button(text="📺 Seriallar")
     kb.button(text="🎭 Dramalar") # Yangi tugma
     kb.button(text="🔎 Qidirish")
-    if user_id == ADMIN_ID:
+    if user_id == ADMIN_ID or user_id == ADMIN_ID2:
         kb.button(text="➕ Qo'shish")
         kb.button(text="🗑 O'chirish")
         kb.button(text="📢 Reklama")
+    kb.button(text="✍️ Zakaz berish")
     kb.adjust(2)
     return kb.as_markup(resize_keyboard=True, is_persistent=True)
 
