@@ -172,41 +172,46 @@ async def admin_add_menu(m: types.Message, state: FSMContext):
     await m.answer("Nima qo'shmoqchisiz?", reply_markup=kb.as_markup(resize_keyboard=True))
     await state.set_state(AdminStates.choosing_type)
 
-# --- KINO QO'SHISH ---
-@dp.message(AdminStates.choosing_type, F.text == "🎬 Yangi Kino")
-async def add_kino_step1(m: types.Message, state: FSMContext):
-    shablon = "🎬 Nomi:\n\n📆 Yili:\n🗣️ Tili:\n🎭 Janr:\n🌎 Davlati:"
-    await m.answer(f"Quyidagi shablonni to'ldirib yuboring:\n\n`{shablon}`", parse_mode="Markdown")
-    await state.set_state(AdminStates.waiting_kino_template)
-
-@dp.message(AdminStates.waiting_kino_template)
-async def add_kino_step2(m: types.Message, state: FSMContext):
-    await state.update_data(kino_info=m.text)
-    await m.answer("✅ Ma'lumotlar qabul qilindi. Endi videoni yuboring:")
-    await state.set_state(AdminStates.waiting_kino_video)
-
 @dp.message(AdminStates.waiting_kino_video, F.video)
 async def save_kino_final(m: types.Message, state: FSMContext):
     data = await state.get_data()
-    info = data.get("kino_info")
+    info = data.get("kino_info", "")
     try:
-        lines = info.split("\n")
-        name = lines[0].replace("🎬 Nomi:", "").strip()
-        year = lines[2].replace("📆 Yili:", "").strip()
-        lang = lines[3].replace("🗣️ Tili:", "").strip()
-        genre = lines[4].replace("🎭 Janr:", "").strip()
-        country = lines[5].replace("🌎 Davlati:", "").strip()
+        # RegEx orqali matn ichidan kalit so'zlarni aqlli qidirish
+        name_match = re.search(r"(?:Nomi|🎬)\s*:\s*(.+)", info, re.IGNORECASE)
+        year_match = re.search(r"(?:Yili|📆)\s*:\s*(\d+)", info, re.IGNORECASE)
+        lang_match = re.search(r"(?:Tili|🗣️|Til)\s*:\s*(.+)", info, re.IGNORECASE)
+        genre_match = re.search(r"(?:Janr|🎭)\s*:\s*(.+)", info, re.IGNORECASE)
+        country_match = re.search(r"(?:Davlati|🌎|Davlat)\s*:\s*(.+)", info, re.IGNORECASE)
+
+        # Agar nom yoki yil topilmasa, shablon xato deb hisoblanadi
+        if not name_match or not year_match:
+            raise ValueError("Kino nomi yoki yili aniqlanmadi!")
+
+        name = name_match.group(1).strip()
+        year = year_match.group(1).strip()
+        lang = lang_match.group(1).strip() if lang_match else "O'zbekcha"
+        genre = genre_match.group(1).strip() if genre_match else "Noma'lum"
+        country = country_match.group(1).strip() if country_match else "Noma'lum"
 
         conn = await db_connect()
         last_id = await conn.fetchval("SELECT MAX(id) FROM content WHERE type='kino'")
         new_id = (last_id or 0) + 1
-        await conn.execute("INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
-                           new_id, name, year, genre, lang, country, m.video.file_id)
+        
+        await conn.execute(
+            "INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
+            new_id, name, year, genre, lang, country, m.video.file_id
+        )
         await conn.close()
-        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi! Kodi: {new_id}", reply_markup=main_menu(m.from_user.id))
+        
+        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi!\n🆔 Kod: {new_id}", reply_markup=main_menu(m.from_user.id))
         await state.set_state(UserStates.main)
-    except:
-        await m.answer("❌ Xato! Shablonni to'g'ri to'ldiring va qaytadan videoni yuboring.")
+        
+    except Exception as e:
+        # Xatolik aniq nimaligini bilishimiz uchun print qilamiz
+        print(f"Kino saqlashda xato: {e}")
+        await m.answer("❌ Xato! Shablonni to'g'ri to'ldiring va qaytadan videoni yuboring.\n\n"
+                       "Misol shablon:\n🎬 Nomi: Musavvir\n📆 Yili: 2018\n🗣️ Tili: O'zbekcha\n🎭 Janr: Drama\n🌎 Davlati: Xitoy")
 
 # --- SERIAL QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "📺 Serial")
@@ -591,11 +596,19 @@ async def start_fake_server():
     print(f"Soxta server {port}-portda ishga tushdi.")
 
 async def main():
-    # 1. Telegram menyusi uchun buyruqlarni o'rnatamiz
-    commands = [
-        BotCommand(command="start", description="Botni qayta ishga tushirish (Restart)")
-    ]
-    await bot.set_my_commands(commands)
+    # 🚨 DIQQAT: BotCommand obyektlarini to'g'ri shaklda ro'yxatga olamiz
+    try:
+        from aiogram.types import BotCommand
+        
+        my_commands = [
+            BotCommand(command="start", description="Botni qayta ishga tushirish (Restart)")
+        ]
+        
+        # Telegram serveriga buyruqni majburlab yuboramiz
+        await bot.set_my_commands(commands=my_commands)
+        print("✅ Bot menyusi (BotCommand) muvaffaqiyatli o'rnatildi!")
+    except Exception as e:
+        print(f"❌ Menyu o'rnatishda xatolik yuz berdi: {e}")
 
     # 🚀 Soxta serverni fonda ishga tushiramiz (Render va UptimeRobot uchun)
     await start_fake_server()
