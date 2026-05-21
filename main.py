@@ -7,8 +7,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BotCommand
 from dotenv import load_dotenv
 
-
-
 load_dotenv()
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 DATABASE_URL = os.getenv("DATABASE_URL")
@@ -54,8 +52,8 @@ class UserStates(StatesGroup):
     waiting_query = State()
     in_serial_list = State()
     viewing_parts = State()
-    in_drama_list = State()       # Drama uchun yangi holat
-    viewing_drama_parts = State() # Drama qismlari uchun yangi holat
+    in_drama_list = State()       
+    viewing_drama_parts = State() 
     waiting_mailing = State()
 
 class AdminStates(StatesGroup):
@@ -65,12 +63,12 @@ class AdminStates(StatesGroup):
     
     # Serial uchun
     waiting_serial_name = State()
-    waiting_serial_lang = State() # Serial tili uchun yangi holat
+    waiting_serial_lang = State() 
     waiting_serial_videos = State()
     
     # Drama uchun
     waiting_drama_name = State()
-    waiting_drama_lang = State()  # Drama tili uchun yangi holat
+    waiting_drama_lang = State()  
     waiting_drama_videos = State()
     
     choosing_del_method = State()
@@ -97,14 +95,12 @@ def main_menu(user_id: int):
     kb.button(text="📺 Seriallar")
     kb.button(text="🎭 Dramalar") 
     kb.button(text="🔎 Qidirish")
-    if user_id == ADMIN_ID or user_id == ADMIN_ID2:
+    if user_id in [ADMIN_ID, ADMIN_ID2]:
         kb.button(text="➕ Qo'shish")
         kb.button(text="🗑 O'chirish")
         kb.button(text="📢 Reklama")
     kb.button(text="✍️ Zakaz berish")
     kb.adjust(2)
-    
-    # ⚠️ DIQQAT: is_persistent=True parametrini mutloq o'chirib tashladik!
     return kb.as_markup(resize_keyboard=True)
 
 # ================= OBUNA TASDIQLASH HANDLERI =================
@@ -121,8 +117,8 @@ async def check_callback(call: types.CallbackQuery, state: FSMContext, bot: Bot)
 
 # ================= ADMIN: O'CHIRISH =================
 
-@dp.message(F.text == "🗑 O'chirish", F.from_user.id == ADMIN_ID)
-@dp.message(F.text.startswith("/del"), F.from_user.id == ADMIN_ID)
+@dp.message(F.text == "🗑 O'chirish", F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
+@dp.message(F.text.startswith("/del"), F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
 async def delete_start(m: types.Message, state: FSMContext):
     kb = ReplyKeyboardBuilder()
     kb.button(text="🔢 Kod orqali o'chirish")
@@ -161,30 +157,42 @@ async def process_delete(m: types.Message, state: FSMContext):
 
 # ================= ADMIN: QO'SHISH =================
 
-@dp.message(F.text == "➕ Qo'shish", F.from_user.id == ADMIN_ID)
+@dp.message(F.text == "➕ Qo'shish", F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
 async def admin_add_menu(m: types.Message, state: FSMContext):
     kb = ReplyKeyboardBuilder()
     kb.button(text="🎬 Yangi Kino")
     kb.button(text="📺 Serial")
-    kb.button(text="🎭 Drama") # Yangi tugma
+    kb.button(text="🎭 Drama") 
     kb.button(text="⬅️ Bosh menyuga")
     kb.adjust(2)
     await m.answer("Nima qo'shmoqchisiz?", reply_markup=kb.as_markup(resize_keyboard=True))
     await state.set_state(AdminStates.choosing_type)
+
+# --- KINO QO'SHISH ---
+@dp.message(AdminStates.choosing_type, F.text == "🎬 Yangi Kino")
+async def add_kino_step1(m: types.Message, state: FSMContext):
+    shablon = "🎬 Nomi:\n\n📆 Yili:\n🗣️ Tili:\n🎭 Janr:\n🌎 Davlati:"
+    await m.answer(f"Quyidagi shablonni to'ldirib yuboring:\n\n`{shablon}`", parse_mode="Markdown")
+    await state.set_state(AdminStates.waiting_kino_template)
+
+@dp.message(AdminStates.waiting_kino_template)
+async def add_kino_step2(m: types.Message, state: FSMContext):
+    await state.update_data(kino_info=m.text)
+    await m.answer("✅ Ma'lumotlar qabul qilindi. Endi videoni yuboring:")
+    await state.set_state(AdminStates.waiting_kino_video)
 
 @dp.message(AdminStates.waiting_kino_video, F.video)
 async def save_kino_final(m: types.Message, state: FSMContext):
     data = await state.get_data()
     info = data.get("kino_info", "")
     try:
-        # RegEx orqali matn ichidan kalit so'zlarni aqlli qidirish
+        # AQLLI QIDIRUV (RegEx)
         name_match = re.search(r"(?:Nomi|🎬)\s*:\s*(.+)", info, re.IGNORECASE)
         year_match = re.search(r"(?:Yili|📆)\s*:\s*(\d+)", info, re.IGNORECASE)
         lang_match = re.search(r"(?:Tili|🗣️|Til)\s*:\s*(.+)", info, re.IGNORECASE)
         genre_match = re.search(r"(?:Janr|🎭)\s*:\s*(.+)", info, re.IGNORECASE)
         country_match = re.search(r"(?:Davlati|🌎|Davlat)\s*:\s*(.+)", info, re.IGNORECASE)
 
-        # Agar nom yoki yil topilmasa, shablon xato deb hisoblanadi
         if not name_match or not year_match:
             raise ValueError("Kino nomi yoki yili aniqlanmadi!")
 
@@ -197,21 +205,15 @@ async def save_kino_final(m: types.Message, state: FSMContext):
         conn = await db_connect()
         last_id = await conn.fetchval("SELECT MAX(id) FROM content WHERE type='kino'")
         new_id = (last_id or 0) + 1
-        
-        await conn.execute(
-            "INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
-            new_id, name, year, genre, lang, country, m.video.file_id
-        )
+        await conn.execute("INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
+                           new_id, name, year, genre, lang, country, m.video.file_id)
         await conn.close()
-        
-        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi!\n🆔 Kod: {new_id}", reply_markup=main_menu(m.from_user.id))
+        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi! Kodi: {new_id}", reply_markup=main_menu(m.from_user.id))
         await state.set_state(UserStates.main)
-        
     except Exception as e:
-        # Xatolik aniq nimaligini bilishimiz uchun print qilamiz
         print(f"Kino saqlashda xato: {e}")
         await m.answer("❌ Xato! Shablonni to'g'ri to'ldiring va qaytadan videoni yuboring.\n\n"
-                       "Misol shablon:\n🎬 Nomi: Musavvir\n📆 Yili: 2018\n🗣️ Tili: O'zbekcha\n🎭 Janr: Drama\n🌎 Davlati: Xitoy")
+                       "Misol:\n🎬 Nomi: Musavvir\n📆 Yili: 2018\n🗣️ Tili: O'zbekcha\n🎭 Janr: Drama\n🌎 Davlati: Xitoy")
 
 # --- SERIAL QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "📺 Serial")
@@ -298,7 +300,6 @@ async def finish_drama_add(m: types.Message, state: FSMContext):
 async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     await state.clear()
     
-    # Obunani tekshirish
     if not await check_sub(m.from_user.id, bot):
         await m.answer("⚠️ Botdan foydalanish uchun homiy kanalimizga a'zo bo'lishingiz kerak!", reply_markup=get_sub_keyboard())
         return
@@ -335,7 +336,6 @@ async def send_movie_by_name(m: types.Message, bot: Bot):
     res = await conn.fetchrow("SELECT * FROM content WHERE name ILIKE $1 AND type='kino'", name)
     await conn.close()
     if res:
-        # Tili va Davlati qo'shilgan To'liq Format!
         caption = (f"🎬 Nomi: {res['name']}\n📆 Yili: {res['year']}\n🗣️ Tili: {res['lang']}\n"
                    f"🎭 Janri: {res['genre']}\n🌎 Davlati: {res['country']}\n🆔 Kod: {res['id']}{FOOTER_TEXT}")
         await m.answer_video(res['file_id'], caption=caption)
@@ -374,7 +374,9 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
     else:
         res = await conn.fetch("SELECT * FROM content WHERE name ILIKE $1 AND type='kino'", f"%{query}%")
     await conn.close()
-    if not res: await m.answer("❌ Topilmadi.")
+    
+    if not res: 
+        await m.answer("❌ Topilmadi.")
     else:
         for r in res:
             caption = (f"🎬 Nomi: {r['name']}\n📆 Yili: {r['year']}\n🗣️ Tili: {r['lang']}\n"
@@ -426,7 +428,7 @@ async def send_all_parts(m: types.Message, state: FSMContext):
         await m.answer_video(p['file_id'], caption=f"📺 {ser_name} | {p['part_number']}-qism\n🗣️ Tili: {p['lang']}{FOOTER_TEXT}")
         await asyncio.sleep(0.4)
 
-# --- DRAMA QISMI (YANGI) ---
+# --- DRAMA QISMI ---
 @dp.message(F.text == "🎭 Dramalar")
 async def show_dramas(m: types.Message, state: FSMContext, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
@@ -485,12 +487,12 @@ async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
         await start_cmd(m, state, bot)
 
 # --- REKLAMA ---
-@dp.message(F.text == "📢 Reklama", F.from_user.id == ADMIN_ID)
+@dp.message(F.text == "📢 Reklama", F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
 async def start_mail(m: types.Message, state: FSMContext):
     await m.answer("Xabarni kiriting:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
     await state.set_state(UserStates.waiting_mailing)
 
-@dp.message(UserStates.waiting_mailing, F.from_user.id == ADMIN_ID)
+@dp.message(UserStates.waiting_mailing, F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
 async def broadcast(m: types.Message, state: FSMContext, bot: Bot):
     if m.text == "⬅️ Orqaga":
         await start_cmd(m, state, bot)
@@ -508,8 +510,7 @@ async def broadcast(m: types.Message, state: FSMContext, bot: Bot):
     await m.answer(f"✅ {count} ta foydalanuvchiga yuborildi!", reply_markup=main_menu(m.from_user.id))
     await state.set_state(UserStates.main)
 
-
-# ---------------- ZAKAZ TIZIMI KODI (FAQAT YANGI ADMIN UCHUN) ----------------
+# ---------------- ZAKAZ TIZIMI KODI ----------------
 class OrderState(StatesGroup):
     choosing_type = State()
     waiting_content = State()
@@ -558,7 +559,6 @@ async def process_content(message: types.Message, state: FSMContext, bot):
     else:
         admin_kb.button(text="👤 Profilga O'tish", url=f"tg://user?id={user_id}")
 
-    # Xabarlar endi faqat ADMIN_ID2 ga boradi
     if message.text:
         admin_text += f"\"{message.text}\""
         await bot.send_message(chat_id=ADMIN_ID2, text=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
@@ -576,13 +576,11 @@ async def process_content(message: types.Message, state: FSMContext, bot):
     await message.answer(f"Rahmat, zakazingiz qabul qilindi! ✨\n{thanks_label.capitalize()} topganimizdan so'ng sizga albatta xabar beramiz.")
     await state.clear()
     
-
 # --- RENDER UCHUN SOXTA PORT OCHISH ---
 async def start_fake_server():
     from aiohttp import web
     app = web.Application()
     
-    # Bosh sahifaga so'rov kelganda UptimeRobot uchun javob qaytarish
     async def home(request):
         return web.Response(text="Bot faol!")
         
@@ -596,24 +594,17 @@ async def start_fake_server():
     print(f"Soxta server {port}-portda ishga tushdi.")
 
 async def main():
-    # 🚨 DIQQAT: BotCommand obyektlarini to'g'ri shaklda ro'yxatga olamiz
     try:
         from aiogram.types import BotCommand
-        
         my_commands = [
             BotCommand(command="start", description="Botni qayta ishga tushirish (Restart)")
         ]
-        
-        # Telegram serveriga buyruqni majburlab yuboramiz
         await bot.set_my_commands(commands=my_commands)
         print("✅ Bot menyusi (BotCommand) muvaffaqiyatli o'rnatildi!")
     except Exception as e:
         print(f"❌ Menyu o'rnatishda xatolik yuz berdi: {e}")
 
-    # 🚀 Soxta serverni fonda ishga tushiramiz (Render va UptimeRobot uchun)
     await start_fake_server()
-
-    # Botingizni doimiy polling rejimi
     print("Bot muvaffaqiyatli ishga tushdi...")
     await dp.start_polling(bot)
 
