@@ -498,7 +498,7 @@ async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
     elif curr == UserStates.waiting_query.state:
         await open_search(m, state, bot)
     else:
-        await m.answer("📋 Asosiy menyu:")
+        await m.answer("📋 Asosiy menyu:", reply_markup=main_menu(m.from_user.id))
 
 # --- REKLAMA ---
 @dp.message(F.text == "📢 Reklama", F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
