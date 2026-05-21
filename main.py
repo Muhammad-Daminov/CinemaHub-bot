@@ -487,18 +487,20 @@ async def send_all_drama_parts(m: types.Message, state: FSMContext):
         await m.answer_video(p['file_id'], caption=f"🎭 {drama_name} | {p['part_number']}-qism\n🗣️ Tili: {p['lang']}{FOOTER_TEXT}")
         await asyncio.sleep(0.4)
 
-# --- SMART BACK ---
-@dp.message(F.text.in_(["⬅️ Orqaga", "⬅️ Bosh menyuga"]))
+# --- SMART BACK (XATOSIZ VA BAQUVVAT VARIANT) ---
+@dp.message(F.text.in_(["⬅️ Orqaga", "⬅️ Bosh menyuga", "Orqaga", "Bosh menyuga"]))
 async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
     curr = await state.get_state()
-    if curr == UserStates.viewing_parts.state:
-        await show_serials(m, state, bot)
-    elif curr == UserStates.viewing_drama_parts.state:
-        await show_dramas(m, state, bot)
-    elif curr == UserStates.waiting_query.state:
-        await open_search(m, state, bot)
-    else:
-        await m.answer("📋 Asosiy menyu:", reply_markup=main_menu(m.from_user.id))
+    
+    # Har qanday holatda ham (State) orqaga qaytganda avvalgi keraksiz ma'lumotlarni tozalaymiz
+    if curr:
+        await state.clear()
+        
+    # Foydalanuvchini asosiy holatga o'tkazamiz
+    await state.set_state(UserStates.main)
+    
+    # Ortiqcha tekshiruvlarsiz to'g'ridan-to'g'ri bosh menyuni qaytaramiz
+    await m.answer("📋 Asosiy menyu:", reply_markup=main_menu(m.from_user.id))
 
 # --- REKLAMA ---
 @dp.message(F.text == "📢 Reklama", F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
