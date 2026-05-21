@@ -95,7 +95,7 @@ def main_menu(user_id: int):
     kb = ReplyKeyboardBuilder()
     kb.button(text="🎬 Kinolar")
     kb.button(text="📺 Seriallar")
-    kb.button(text="🎭 Dramalar") # Yangi tugma
+    kb.button(text="🎭 Dramalar") 
     kb.button(text="🔎 Qidirish")
     if user_id == ADMIN_ID or user_id == ADMIN_ID2:
         kb.button(text="➕ Qo'shish")
@@ -103,7 +103,9 @@ def main_menu(user_id: int):
         kb.button(text="📢 Reklama")
     kb.button(text="✍️ Zakaz berish")
     kb.adjust(2)
-    return kb.as_markup(resize_keyboard=True, is_persistent=True)
+    
+    # ⚠️ DIQQAT: is_persistent=True parametrini mutloq o'chirib tashladik!
+    return kb.as_markup(resize_keyboard=True)
 
 # ================= OBUNA TASDIQLASH HANDLERI =================
 
@@ -589,6 +591,12 @@ async def start_fake_server():
     print(f"Soxta server {port}-portda ishga tushdi.")
 
 async def main():
+    # 1. Telegram menyusi uchun buyruqlarni o'rnatamiz
+    commands = [
+        BotCommand(command="start", description="Botni qayta ishga tushirish (Restart)")
+    ]
+    await bot.set_my_commands(commands)
+
     # 🚀 Soxta serverni fonda ishga tushiramiz (Render va UptimeRobot uchun)
     await start_fake_server()
 
