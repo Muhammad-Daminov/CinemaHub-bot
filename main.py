@@ -168,33 +168,39 @@ async def admin_add_menu(m: types.Message, state: FSMContext):
     await m.answer("Nima qo'shmoqchisiz?", reply_markup=kb.as_markup(resize_keyboard=True))
     await state.set_state(AdminStates.choosing_type)
 
-# --- KINO QO'SHISH ---
+# --- KINO QO'SHISH (MUTLOQ XATOSIZ VARIANT) ---
+
 @dp.message(AdminStates.choosing_type, F.text == "🎬 Yangi Kino")
 async def add_kino_step1(m: types.Message, state: FSMContext):
     shablon = "🎬 Nomi:\n\n📆 Yili:\n🗣️ Tili:\n🎭 Janr:\n🌎 Davlati:"
     await m.answer(f"Quyidagi shablonni to'ldirib yuboring:\n\n`{shablon}`", parse_mode="Markdown")
+    # Admin holatini shablon kutish rejimiga o'tkazamiz
     await state.set_state(AdminStates.waiting_kino_template)
 
 @dp.message(AdminStates.waiting_kino_template)
 async def add_kino_step2(m: types.Message, state: FSMContext):
+    # Admin yuborgan matnni saqlab qo'yamiz
     await state.update_data(kino_info=m.text)
     await m.answer("✅ Ma'lumotlar qabul qilindi. Endi videoni yuboring:")
+    # Admin holatini video kutish rejimiga o'tkazamiz
     await state.set_state(AdminStates.waiting_kino_video)
 
 @dp.message(AdminStates.waiting_kino_video, F.video)
 async def save_kino_final(m: types.Message, state: FSMContext):
     data = await state.get_data()
     info = data.get("kino_info", "")
+    
     try:
-        # AQLLI QIDIRUV (RegEx)
+        # RegEx orqali matn ichidan kalit so'zlarni aqlli qidirish
         name_match = re.search(r"(?:Nomi|🎬)\s*:\s*(.+)", info, re.IGNORECASE)
         year_match = re.search(r"(?:Yili|📆)\s*:\s*(\d+)", info, re.IGNORECASE)
         lang_match = re.search(r"(?:Tili|🗣️|Til)\s*:\s*(.+)", info, re.IGNORECASE)
         genre_match = re.search(r"(?:Janr|🎭)\s*:\s*(.+)", info, re.IGNORECASE)
         country_match = re.search(r"(?:Davlati|🌎|Davlat)\s*:\s*(.+)", info, re.IGNORECASE)
 
+        # Agar eng asosiylari (nomi va yili) topilmasa, xatoga otamiz
         if not name_match or not year_match:
-            raise ValueError("Kino nomi yoki yili aniqlanmadi!")
+            raise ValueError("Kino nomi yoki yili shablonda topilmadi!")
 
         name = name_match.group(1).strip()
         year = year_match.group(1).strip()
@@ -202,18 +208,23 @@ async def save_kino_final(m: types.Message, state: FSMContext):
         genre = genre_match.group(1).strip() if genre_match else "Noma'lum"
         country = country_match.group(1).strip() if country_match else "Noma'lum"
 
+        # Bazaga ulanish va saqlash
         conn = await db_connect()
         last_id = await conn.fetchval("SELECT MAX(id) FROM content WHERE type='kino'")
         new_id = (last_id or 0) + 1
-        await conn.execute("INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
-                           new_id, name, year, genre, lang, country, m.video.file_id)
+        
+        await conn.execute(
+            "INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
+            new_id, name, year, genre, lang, country, m.video.file_id
+        )
         await conn.close()
-        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi! Kodi: {new_id}", reply_markup=main_menu(m.from_user.id))
+        
+        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi!\n🆔 Kod: {new_id}", reply_markup=main_menu(m.from_user.id))
         await state.set_state(UserStates.main)
+        
     except Exception as e:
         print(f"Kino saqlashda xato: {e}")
-        await m.answer("❌ Xato! Shablonni to'g'ri to'ldiring va qaytadan videoni yuboring.\n\n"
-                       "Misol:\n🎬 Nomi: Musavvir\n📆 Yili: 2018\n🗣️ Tili: O'zbekcha\n🎭 Janr: Drama\n🌎 Davlati: Xitoy")
+        await m.answer("❌ Xato! Shablonni to'g'ri to'ldiring va qaytadan videoni yuboring.\n\n")
 
 # --- SERIAL QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "📺 Serial")
@@ -232,7 +243,7 @@ async def add_serial_step3(m: types.Message, state: FSMContext):
     data = await state.get_data()
     ser_name = data.get("ser_name")
     await state.update_data(ser_lang=m.text.strip())
-    await m.answer(f"🎬 '{ser_name}' uchun videolarni bittadan yuboring. \nBot o'zi qismlarni hisoblaydi. \nTugatgach '✅ Tamom' tugmasini bosing.",
+    await m.answer(f"🎬 '{ser_name}' uchun videolarni bittadan yuboring. \nTugatgach '✅ Tamom' tugmasini bosing.",
                    reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Tamom")]], resize_keyboard=True))
     await state.set_state(AdminStates.waiting_serial_videos)
 
@@ -247,7 +258,7 @@ async def save_serial_recursive(m: types.Message, state: FSMContext):
     await conn.execute("INSERT INTO content(type, parent_name, part_number, lang, file_id) VALUES('part', $1, $2, $3, $4)", 
                        ser_name, new_part, ser_lang, m.video.file_id)
     await conn.close()
-    await m.answer(f"✅ {new_part}-qism qabul qilindi! Navbatdagisini yuboring...")
+    await m.answer(f"✅ {new_part}-qism qabul qilindi! yuboring...")
 
 @dp.message(AdminStates.waiting_serial_videos, F.text == "✅ Tamom")
 async def finish_serial_add(m: types.Message, state: FSMContext):
@@ -271,7 +282,7 @@ async def add_drama_step3(m: types.Message, state: FSMContext):
     data = await state.get_data()
     drama_name = data.get("drama_name")
     await state.update_data(drama_lang=m.text.strip())
-    await m.answer(f"🎬 '{drama_name}' uchun videolarni bittadan yuboring. \nBot o'zi qismlarni hisoblaydi. \nTugatgach '✅ Tamom' tugmasini bosing.",
+    await m.answer(f"🎬 '{drama_name}' uchun videolarni bittadan yuboring.. \nTugatgach '✅ Tamom' tugmasini bosing.",
                    reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="✅ Tamom")]], resize_keyboard=True))
     await state.set_state(AdminStates.waiting_drama_videos)
 
@@ -286,7 +297,7 @@ async def save_drama_recursive(m: types.Message, state: FSMContext):
     await conn.execute("INSERT INTO content(type, parent_name, part_number, lang, file_id) VALUES('drama', $1, $2, $3, $4)", 
                        drama_name, new_part, drama_lang, m.video.file_id)
     await conn.close()
-    await m.answer(f"✅ {new_part}-qism qabul qilindi! Navbatdagisini yuboring...")
+    await m.answer(f"✅ {new_part}-qism qabul qilindi! yuboring...")
 
 @dp.message(AdminStates.waiting_drama_videos, F.text == "✅ Tamom")
 async def finish_drama_add(m: types.Message, state: FSMContext):
@@ -301,14 +312,17 @@ async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     await state.clear()
     
     if not await check_sub(m.from_user.id, bot):
-        await m.answer("⚠️ Botdan foydalanish uchun homiy kanalimizga a'zo bo'lishingiz kerak!", reply_markup=get_sub_keyboard())
+        await m.answer("⚠️ Botdan foydalanish uchun kanalimizga a'zo bo'lishingiz kerak!", reply_markup=get_sub_keyboard())
         return
 
     await state.set_state(UserStates.main)
     conn = await db_connect()
     await conn.execute("INSERT INTO users(user_id) VALUES($1) ON CONFLICT DO NOTHING", m.from_user.id)
     await conn.close()
-    await m.answer("🎬 KinoMarkaz HD botiga xush kelibsiz!", reply_markup=main_menu(m.from_user.id))
+
+    user_name = m.from_user.full_name
+
+    await m.answer(f"👋Assalamu Alaykum hurmatli, {user_name}!\n\n🎬 KinoMarkaz HD botiga xush kelibsiz! ✨", reply_markup=main_menu(m.from_user.id))
 
 @dp.message(F.text == "🎬 Kinolar")
 async def show_all_movies(m: types.Message, bot: Bot):
@@ -484,7 +498,7 @@ async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
     elif curr == UserStates.waiting_query.state:
         await open_search(m, state, bot)
     else:
-        await start_cmd(m, state, bot)
+        await m.answer("📋 Asosiy menyu:")
 
 # --- REKLAMA ---
 @dp.message(F.text == "📢 Reklama", F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
