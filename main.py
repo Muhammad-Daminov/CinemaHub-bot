@@ -202,7 +202,8 @@ async def save_kino_final(m: types.Message, state: FSMContext):
             raise ValueError("Kino nomi yoki yili shablonda topilmadi! Iltimos, shablonni to'g'ri to'ldiring.")
 
         name = name_match.group(1).strip()
-        year = year_match.group(1).strip()
+        raw_year = year_match.group(1).strip()
+        year = int(raw_year) if raw_year.isdigit() else 0  # Agar faqat raqam bo'lsa songa o'giradi, bo'lmasa 0 qiladi
         lang = lang_match.group(1).strip() if lang_match else "O'zbekcha"
         genre = genre_match.group(1).strip() if genre_match else "Noma'lum"
         country = country_match.group(1).strip() if country_match else "Noma'lum"
