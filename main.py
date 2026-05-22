@@ -191,16 +191,15 @@ async def save_kino_final(m: types.Message, state: FSMContext):
     info = data.get("kino_info", "")
     
     try:
-        # RegEx orqali matn ichidan kalit so'zlarni aqlli qidirish
-        name_match = re.search(r"(?:Nomi|🎬)\s*:\s*(.+)", info, re.IGNORECASE)
-        year_match = re.search(r"(?:Yili|📆)\s*:\s*(\d+)", info, re.IGNORECASE)
-        lang_match = re.search(r"(?:Tili|🗣️|Til)\s*:\s*(.+)", info, re.IGNORECASE)
-        genre_match = re.search(r"(?:Janr|🎭)\s*:\s*(.+)", info, re.IGNORECASE)
-        country_match = re.search(r"(?:Davlati|🌎|Davlat)\s*:\s*(.+)", info, re.IGNORECASE)
+        # RegEx orqali matn ichidan kalit so'zlarni o'ta moslashuvchan va aqlli qidirish
+        name_match = re.search(r"(?:🎬\s*Nomi|🎬|Nomi)\s*[:\s]\s*(.+)", info, re.IGNORECASE)
+        year_match = re.search(r"(?:📆\s*Yili|📆|Yili)\s*[:\s]\s*(\d+)", info, re.IGNORECASE)
+        lang_match = re.search(r"(?:🗣️\s*Tili|🗣️|Tili|Til)\s*[:\s]\s*(.+)", info, re.IGNORECASE)
+        genre_match = re.search(r"(?:🎭\s*Janri|🎭|Janr)\s*[:\s]\s*(.+)", info, re.IGNORECASE)
+        country_match = re.search(r"(?:🌎\s*Davlati|🌎|Davlat)\s*[:\s]\s*(.+)", info, re.IGNORECASE)
 
-        # Agar eng asosiylari (nomi va yili) topilmasa, xatoga otamiz
         if not name_match or not year_match:
-            raise ValueError("Kino nomi yoki yili shablonda topilmadi!")
+            raise ValueError("Kino nomi yoki yili shablonda topilmadi! Iltimos, shablonni to'g'ri to'ldiring.")
 
         name = name_match.group(1).strip()
         year = year_match.group(1).strip()
@@ -213,10 +212,19 @@ async def save_kino_final(m: types.Message, state: FSMContext):
         last_id = await conn.fetchval("SELECT MAX(id) FROM content WHERE type='kino'")
         new_id = (last_id or 0) + 1
         
-        await conn.execute(
-            "INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
-            new_id, name, year, genre, lang, country, m.video.file_id
-        )
+        try:
+            # 1-Urinish: Agar bazada yil maydoni VARCHAR/TEXT bo'lsa
+            await conn.execute(
+                "INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
+                new_id, name, year, genre, lang, country, m.video.file_id
+            )
+        except asyncpg.exceptions.DatatypeMismatchError:
+            # 2-Urinish: Agar bazada yil maydoni INTEGER (Raqam) bo'lsa, avtomatik int() qilib saqlaydi
+            await conn.execute(
+                "INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
+                new_id, name, int(year), genre, lang, country, m.video.file_id
+            )
+            
         await conn.close()
         
         await m.answer(f"✅ Kino muvaffaqiyatli saqlandi!\n🆔 Kod: {new_id}", reply_markup=main_menu(m.from_user.id))
@@ -224,7 +232,7 @@ async def save_kino_final(m: types.Message, state: FSMContext):
         
     except Exception as e:
         print(f"Kino saqlashda xato: {e}")
-        await m.answer("❌ Xato! Shablonni to'g'ri to'ldiring va qaytadan videoni yuboring.\n\n")
+        await m.answer(f"❌ Xato yuz berdi: {e}\n\nShablonni qaytadan tekshirib to'ldiring va videoni yuboring.")
 
 # --- SERIAL QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "📺 Serial")
