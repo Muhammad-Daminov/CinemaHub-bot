@@ -233,6 +233,7 @@ async def save_kino_final(m: types.Message, state: FSMContext):
     except Exception as e:
         print(f"Kino saqlashda xato: {e}")
         await m.answer(f"❌ Xato yuz berdi: {e}\n\nShablonni qaytadan tekshirib to'ldiring va videoni yuboring.")
+# ================= ADMIN: SERIAL, DRAMA VA MULTIFILM QO'SHISH (MUKAMMAL VARIANT) =================
 
 # --- SERIAL QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "📺 Serial")
@@ -254,7 +255,7 @@ async def add_serial_step3(m: types.Message, state: FSMContext):
     
     kb = ReplyKeyboardBuilder()
     kb.button(text="✅ Tamom")
-    await m.answer(f"🎬 '{ser_name}' uchun videolarni bittadan yuboring.\nTugatgach '✅ Tamom' tugmasini bosing.",
+    await m.answer(f"🎬 '{ser_name}' uchun videolarni bittadan ketma-ket yuboring.\nHamma qism tugagach '✅ Tamom' tugmasini bosing.",
                    reply_markup=kb.as_markup(resize_keyboard=True))
     await state.set_state(AdminStates.waiting_serial_videos)
 
@@ -269,24 +270,22 @@ async def save_serial_recursive(m: types.Message, state: FSMContext):
         last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1 AND type='part'", ser_name)
         new_part = (last_part or 0) + 1
         
-        last_id = await conn.fetchval("SELECT MAX(id) FROM content")
-        new_id = (last_id or 0) + 1
-        
-        await conn.execute(
-            "INSERT INTO content(id, type, parent_name, name, part_number, lang, file_id) VALUES($1, 'part', $2, $3, $4, $5, $6)", 
-            new_id, ser_name, f"{ser_name} {new_part}-qism", new_part, ser_lang, m.video.file_id
+        # id yozilmaydi (baza o'zi beradi), year o'rniga None (NULL) beriladi
+        new_id = await conn.fetchval(
+            "INSERT INTO content(type, parent_name, name, part_number, lang, year, file_id) VALUES('part', $1, $2, $3, $4, $5, $6) RETURNING id", 
+            ser_name, f"{ser_name} {new_part}-qism", new_part, ser_lang, None, m.video.file_id
         )
-        await m.answer(f"✅ {new_part}-qism muvaffaqiyatli saqlandi! (Kod: {new_id})\nKeyingisini yuboring yoki '✅ Tamom' tugmasini bosing...")
+        await m.answer(f"✅ {new_part}-qism saqlandi!\n🆔 <b>Qism kodi:</b> <code>{new_id}</code>\n\nKeyingi qism videosini yuboring...", parse_mode="HTML")
     except Exception as e:
-        print(f"Serial saqlashda xato: {e}")
-        await m.answer(f"❌ Xatolik yuz berdi: {e}\nQayta yuborib ko'ring.")
+        await m.answer(f"❌ Bazaga yozishda xato: {e}")
     finally:
         await conn.close()
 
 @dp.message(AdminStates.waiting_serial_videos, F.text == "✅ Tamom")
 async def finish_serial_add(m: types.Message, state: FSMContext):
-    await m.answer("✅ Serialning barcha qismlari muvaffaqiyatli saqlandi va yakunlandi!", reply_markup=main_menu(m.from_user.id))
+    await m.answer("✅ Serialning barcha qismlari muvaffaqiyatli yakunlandi!", reply_markup=main_menu(m.from_user.id))
     await state.set_state(UserStates.main)
+
 
 # --- DRAMA QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "🎭 Drama")
@@ -308,7 +307,7 @@ async def add_drama_step3(m: types.Message, state: FSMContext):
     
     kb = ReplyKeyboardBuilder()
     kb.button(text="✅ Tamom")
-    await m.answer(f"🎬 '{drama_name}' uchun videolarni bittadan yuboring.\nTugatgach '✅ Tamom' tugmasini bosing.",
+    await m.answer(f"🎭 '{drama_name}' uchun videolarni bittadan yuboring.\nTugatgach '✅ Tamom' tugmasini bosing.",
                    reply_markup=kb.as_markup(resize_keyboard=True))
     await state.set_state(AdminStates.waiting_drama_videos)
 
@@ -323,17 +322,14 @@ async def save_drama_recursive(m: types.Message, state: FSMContext):
         last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1 AND type='drama'", drama_name)
         new_part = (last_part or 0) + 1
         
-        last_id = await conn.fetchval("SELECT MAX(id) FROM content")
-        new_id = (last_id or 0) + 1
-        
-        await conn.execute(
-            "INSERT INTO content(id, type, parent_name, name, part_number, lang, file_id) VALUES($1, 'drama', $2, $3, $4, $5, $6)", 
-            new_id, drama_name, f"{drama_name} {new_part}-qism", new_part, drama_lang, m.video.file_id
+        # id yozilmaydi, year o'rniga None (NULL) beriladi
+        new_id = await conn.fetchval(
+            "INSERT INTO content(type, parent_name, name, part_number, lang, year, file_id) VALUES('drama', $1, $2, $3, $4, $5, $6) RETURNING id", 
+            drama_name, f"{drama_name} {new_part}-qism", new_part, drama_lang, None, m.video.file_id
         )
-        await m.answer(f"✅ {new_part}-qism muvaffaqiyatli saqlandi! (Kod: {new_id})\nKeyingisini yuboring...")
+        await m.answer(f"✅ {new_part}-qism saqlandi!\n🆔 <b>Qism kodi:</b> <code>{new_id}</code>\n\nKeyingi qism videosini yuboring...", parse_mode="HTML")
     except Exception as e:
-        print(f"Drama saqlashda xato: {e}")
-        await m.answer(f"❌ Xatolik yuz berdi: {e}\nQayta yuborib ko'ring.")
+        await m.answer(f"❌ Bazaga yozishda xato: {e}")
     finally:
         await conn.close()
 
@@ -341,6 +337,7 @@ async def save_drama_recursive(m: types.Message, state: FSMContext):
 async def finish_drama_add(m: types.Message, state: FSMContext):
     await m.answer("✅ Drama qismlari muvaffaqiyatli yakunlandi!", reply_markup=main_menu(m.from_user.id))
     await state.set_state(UserStates.main)
+
 
 # --- MULTIFILM QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "🧸 Multifilm")
@@ -359,8 +356,7 @@ async def add_multifilm_step3(m: types.Message, state: FSMContext):
     data = await state.get_data()
     multi_name = data.get("multi_name")
     await state.update_data(multi_lang=m.text.strip())
-    await m.answer(f"🚀 '{multi_name}' multfilmi videosini yuboring (yoki kanaldan uzating):",
-                   reply_markup=types.ReplyKeyboardRemove()) 
+    await m.answer(f"🚀 '{multi_name}' multfilmi videosini yuboring:", reply_markup=types.ReplyKeyboardRemove()) 
     await state.set_state(AdminStates.waiting_multifilm_videos)
 
 @dp.message(AdminStates.waiting_multifilm_videos, F.video)
@@ -371,18 +367,15 @@ async def save_multifilm_single(m: types.Message, state: FSMContext):
     
     conn = await db_connect()
     try:
-        last_id = await conn.fetchval("SELECT MAX(id) FROM content")
-        new_id = (last_id or 0) + 1
-        
-        await conn.execute(
-            "INSERT INTO content(id, type, parent_name, name, part_number, lang, file_id) VALUES($1, 'multifilm', $2, $3, 1, $4, $5)", 
-            new_id, multi_name, multi_name, multi_lang, m.video.file_id
+        # id yozilmaydi, year o'rniga None (NULL) beriladi
+        new_id = await conn.fetchval(
+            "INSERT INTO content(type, parent_name, name, part_number, lang, year, file_id) VALUES('multifilm', $1, $2, 1, $3, $4, $5) RETURNING id", 
+            multi_name, multi_name, multi_lang, None, m.video.file_id
         )
-        await m.answer(f"✅ Multifilm muvaffaqiyatli saqlandi!\n🆔 Kod: {new_id}", reply_markup=main_menu(m.from_user.id))
+        await m.answer(f"✅ Multifilm muvaffaqiyatli saqlandi!\n\n🆔 <b>Multifilm kodi:</b> <code>{new_id}</code>", parse_mode="HTML", reply_markup=main_menu(m.from_user.id))
         await state.set_state(UserStates.main)
     except Exception as e:
-        print(f"Multifilm saqlashda xato: {e}")
-        await m.answer(f"❌ Xatolik yuz berdi: {e}\nQayta urinib ko'ring.")
+        await m.answer(f"❌ Xatolik yuz berdi: {e}")
     finally:
         await conn.close()
 
@@ -502,6 +495,8 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
                        f"🎭 Janri: {r['genre']}\n🌎 Davlati: {r['country']}\n🆔 Kod: {r['id']}{FOOTER_TEXT}")
             await m.answer_video(r['file_id'], caption=caption)
 
+# ================= FOYDALANUVCHILAR UCHUN: SERIAL, DRAMA VA MULTIFILM KO'RISH =================
+
 # --- SERIAL QISMI ---
 @dp.message(F.text == "📺 Seriallar")
 async def show_serials(m: types.Message, state: FSMContext, bot: Bot):
@@ -513,7 +508,8 @@ async def show_serials(m: types.Message, state: FSMContext, bot: Bot):
     await conn.close()
     kb = ReplyKeyboardBuilder()
     for row in names:
-        kb.button(text=f"📺 {row['parent_name']}")
+        if row['parent_name']:
+            kb.button(text=f"📺 {row['parent_name']}")
     kb.button(text="⬅️ Bosh menyuga")
     kb.adjust(2)
     await m.answer("📺 Serialni tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
@@ -526,6 +522,10 @@ async def serial_parts_groups(m: types.Message, state: FSMContext):
     conn = await db_connect()
     count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1 AND type='part'", sidebar_name)
     await conn.close()
+    
+    if not count:
+        return await m.answer("❌ Bu serialga tegishli qismlar topilmadi.")
+        
     kb = ReplyKeyboardBuilder()
     for i in range(1, count + 1, 10):
         end = min(i + 9, count)
@@ -558,7 +558,8 @@ async def show_dramas(m: types.Message, state: FSMContext, bot: Bot):
     await conn.close()
     kb = ReplyKeyboardBuilder()
     for row in names:
-        kb.button(text=f"🎭 {row['parent_name']}")
+        if row['parent_name']:
+            kb.button(text=f"🎭 {row['parent_name']}")
     kb.button(text="⬅️ Bosh menyuga")
     kb.adjust(2)
     await m.answer("🎭 Dramani tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
@@ -571,6 +572,10 @@ async def drama_parts_groups(m: types.Message, state: FSMContext):
     conn = await db_connect()
     count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1 AND type='drama'", drama_name)
     await conn.close()
+    
+    if not count:
+        return await m.answer("❌ Bu dramaga tegishli qismlar topilmadi.")
+        
     kb = ReplyKeyboardBuilder()
     for i in range(1, count + 1, 10):
         end = min(i + 9, count)
@@ -603,7 +608,8 @@ async def show_multis(m: types.Message, state: FSMContext, bot: Bot):
     await conn.close()
     kb = ReplyKeyboardBuilder()
     for row in names:
-        kb.button(text=f"🧸 {row['parent_name']}")
+        if row['parent_name']:
+            kb.button(text=f"🧸 {row['parent_name']}")
     kb.button(text="⬅️ Bosh menyuga")
     kb.adjust(2)
     await m.answer("🧸 Multfilmni tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
@@ -612,7 +618,6 @@ async def show_multis(m: types.Message, state: FSMContext, bot: Bot):
 async def multi_parts_groups(m: types.Message, state: FSMContext):
     multi_name = m.text.replace("🧸 ", "")
     conn = await db_connect()
-    # Multifilm bittalik formatda bo'lgani uchun to'g'ridan-to'g'ri uning videosini chiqaramiz
     res = await conn.fetchrow("SELECT * FROM content WHERE parent_name=$1 AND type='multifilm' LIMIT 1", multi_name)
     await conn.close()
     
@@ -620,8 +625,7 @@ async def multi_parts_groups(m: types.Message, state: FSMContext):
         caption = f"🧸 Multifilm: {res['parent_name']}\n🗣️ Tili: {res['lang']}\n🆔 Kod: {res['id']}{FOOTER_TEXT}"
         await m.answer_video(res['file_id'], caption=caption)
     else:
-        await m.answer("❌ Kechirasiz, bu multfilmlarga tegishli video fayl topilmadi.")
-
+        await m.answer("❌ Kechirasiz, bu multfilmga tegishli video fayl topilmadi.")
 # --- TO'G'RIDAN TO'G'RI KOD ORQALI QIDIRUV (MUKAMMAL VARIANT) ---
 @dp.message(StateFilter(UserStates.main, None), F.text.isdigit())
 async def direct_code_search(m: types.Message, state: FSMContext, bot: Bot):
