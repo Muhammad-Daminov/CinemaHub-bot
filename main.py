@@ -376,21 +376,18 @@ async def save_multifilm_single(m: types.Message, state: FSMContext):
 
 # ================= FOYDALANUVCHI QISMI =================
 
+# --- Shu qismni topasiz (taxminan 400-qatorlar atrofida) ---
 @dp.message(F.text == "/start")
 async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
-    await state.clear()
+    # ... bu yerdagi kodlar ...
     
-    if not await check_sub(m.from_user.id, bot):
-        await m.answer("⚠️ Botdan foydalanish uchun kanalimizga a'zo bo'lishingiz kerak!", reply_markup=get_sub_keyboard())
-        return
-
-    await state.set_state(UserStates.main)
-    conn = await db_connect()
-    await conn.execute("INSERT INTO users(user_id) VALUES($1) ON CONFLICT DO NOTHING", m.from_user.id)
-    await conn.close()
-
-    # RASMSIZ TOZA MATNLI START
+    # MATNNI SHU YERDA O'ZGARTIRASIZ:
     welcome_text = f"👋 Assalamu alaykum hurmatli {m.from_user.full_name} Kino_markaz HD 🎬botiga hush kelibsiz"
+    
+    await m.answer(
+        text=welcome_text,
+        reply_markup=main_menu(m.from_user.id)
+    )
     
     await m.answer(
         text=welcome_text,
