@@ -375,26 +375,24 @@ async def save_multifilm_single(m: types.Message, state: FSMContext):
 
 
 # ================= FOYDALANUVCHI QISMI =================
-
-# --- Shu qismni topasiz (taxminan 400-qatorlar atrofida) ---
 @dp.message(F.text == "/start")
 async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
-    # ... bu yerdagi kodlar ...
+    # FSM holatini tozalash (agar kerak bo'lsa)
+    await state.clear()
     
-    # MATNNI SHU YERDA O'ZGARTIRASIZ:
-    welcome_text = f"👋 Assalamu alaykum hurmatli {m.from_user.full_name} Kino_markaz HD 🎬botiga hush kelibsiz"
-    
-    await m.answer(
-        text=welcome_text,
-        reply_markup=main_menu(m.from_user.id)
+    # 1. Matnni chiroyli shaklda yig'amiz (\n - yangi qatorga tushiradi)
+    welcome_text = (
+        f"👋 Assalamu alaykum hurmatli **{m.from_user.full_name}**\n\n"
+        f"Kino_markaz HD 🎬 botiga xush kelibsiz!\n\n\n"
+        f"⚡ **KINO KODINI YUBORING!**"
     )
+    
     
     await m.answer(
         text=welcome_text,
         reply_markup=main_menu(m.from_user.id),
-        parse_mode="HTML"
+        parse_mode="Markdown"  # Qalin yozuvlar chiroyli chiqishi uchun
     )
-
 @dp.message(F.text == "🎬 Kinolar")
 async def show_all_movies(m: types.Message, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
