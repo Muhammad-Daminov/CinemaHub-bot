@@ -507,33 +507,62 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
     elif "Janri" in stype:
         res = await conn.fetch("SELECT * FROM content WHERE genre ILIKE $1 AND type='kino'", f"%{query}%")
     else: 
-        results = await conn.fetch(
-            "SELECT id, name, parent_name, type, part_number FROM content "
-            "WHERE name ILIKE $1 OR parent_name ILIKE $1 ORDER BY id DESC LIMIT 15", 
+        # === MANA SHU YERDAN BOSHLAB YANGLI AQLLI NOMI BO'YICHA QIDIRUV ISHLAYDI ===
+        
+        # 1. KINO VA MULTFILMLARNI QIDIRISH (Topilsa srazi videolarni ketma-ket tashlaydi)
+        movies_and_multis = await conn.fetch(
+            "SELECT * FROM content WHERE (name ILIKE $1 OR parent_name ILIKE $1) AND type IN ('kino', 'multifilm') ORDER BY id ASC", 
             f"%{query}%"
         )
-        await conn.close()
         
-        if not results:
-            await m.answer("😔 Afsuski, ushbu nomga tegishli hech qanday kontent topilmadi.")
+        if movies_and_multis:
+            await m.answer("🎬 So'ralgan kinolar/multfilmlar topildi, yuklanmoqda...")
+            for item in movies_and_multis:
+                if item['type'] == 'kino':
+                    caption = (f"🎬 Nomi: {item['name']}\n📆 Yili: {item['year']}\n🗣️ Tili: {item['lang']}\n"
+                               f"🎭 Janri: {item['genre']}\n🌎 Davlati: {item['country']}\n🆔 Kod: {item['id']}{FOOTER_TEXT}")
+                else:
+                    caption = f"🧸 Multifilm: {item['parent_name']}\n🗣️ Tili: {item['lang']}\n🆔 Kod: {item['id']}{FOOTER_TEXT}"
+                    
+                await m.answer_video(item['file_id'], caption=caption)
+                await asyncio.sleep(0.4) # Cheklovga tushmaslik uchun kichik pauza
+                
+            await conn.close()
+            await state.set_state(UserStates.main) # Ish bitgach asosiy menyuga qaytadi
             return
-            
-        context_text = "🔍 <b>Topilgan natijalar:</b>\n\n"
-        for item in results:
-            if item['type'] == 'kino':
-                context_text += f"🎬 <b>{item['name']}</b> — KODI: <code>{item['id']}</code>\n"
-            elif item['type'] == 'part':
-                context_text += f"📺 <b>{item['parent_name']} ({item['part_number']}-qism)</b> — KODI: <code>{item['id']}</code>\n"
-            elif item['type'] == 'drama':
-                context_text += f"🎭 <b>{item['parent_name']} ({item['part_number']}-qism)</b> — KODI: <code>{item['id']}</code>\n"
-            elif item['type'] == 'multifilm':
-                context_text += f"🧸 <b>{item['parent_name']} ({item['part_number']}-qism)</b> — KODI: <code>{item['id']}</code>\n"
-        
-        context_text += "\n🍿 Tomosha qilish uchun kerakli kino kodini shu yerga raqam shaklida yozib yuboring!"
-        await m.answer(context_text, parse_mode="HTML")
-        await state.set_state(UserStates.main)
-        return
 
+        # 2. SERIAL VA DRAMALARNI QIDIRISH (Topilsa menyuda faqat mos kelgan nomlarni tugma qilib chiqaradi)
+        distinct_series = await conn.fetch(
+            "SELECT parent_name, type FROM content WHERE parent_name ILIKE $1 AND type IN ('part', 'drama') GROUP BY parent_name, type", 
+            f"%{query}%"
+        )
+        
+        if distinct_series:
+            kb = ReplyKeyboardBuilder()
+            for row in distinct_series:
+                prefix = "📺" if row['type'] == 'part' else "🎭"
+                kb.button(text=f"{prefix} {row['parent_name']}")
+                
+            kb.button(text="⬅️ Orqaga")
+            kb.adjust(1) # Tugmalarni ustma-ust chiroyli chiqaradi
+            
+            # User tugmalardan birini bosganda sizning eski handlerlaringiz ishlashi uchun stateni moslaymiz
+            if distinct_series[0]['type'] == 'part':
+                await state.set_state(UserStates.in_serial_list)
+            else:
+                await state.set_state(UserStates.in_drama_list)
+                
+            await conn.close()
+            await m.answer("🔍 Qidiruv natijasi bo'yicha topilgan bo'limlar:", reply_markup=kb.as_markup(resize_keyboard=True))
+            return
+
+        # 3. AGAR HECH NARSA TOPILMASA
+        await conn.close()
+        await m.answer("😔 Kechirasiz, siz kiritgan nom bo'yicha hech qanday kontent topilmadi. Qayta urinib ko'ring:")
+        return
+        # === AQLLI QIDIRUV TUGADI ===
+
+    # Yili va Janri bo'yicha kinolar topilganda javob qaytarish qismi (Eski kodingiz)
     await conn.close()
     
     if not res: 
