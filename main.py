@@ -390,13 +390,7 @@ async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     await conn.close()
 
     # RASMSIZ TOZA MATNLI START
-    welcome_text = (
-        f"👋 <b>Assalamu Alaykum hurmatli, {m.from_user.full_name}!</b>\n\n"
-        "🎬 <b>Kino Markaz HD</b> botiga xush kelibsiz! Bu yerda siz eng so'nggi tarjima kinolar, "
-        "ommabop seriallar, sevimli dramalar va qiziqarli multfilmlarni mutlaqo bepul tomosha qilishingiz mumkin.\n\n"
-        "⚡ <b>Botdan foydalanish juda oddiy:</b> Shunchaki o'zingizga kerakli kino yoki serial "
-        "kodini yuboring va videoni bir zumda qabul qilib oling!"
-    )
+    welcome_text = f"👋 Assalamu alaykum hurmatli {m.from_user.full_name} Kino_markaz HD 🎬botiga hush kelibsiz"
     
     await m.answer(
         text=welcome_text,
