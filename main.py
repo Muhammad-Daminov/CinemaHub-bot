@@ -241,16 +241,15 @@ async def save_kino_final(m: types.Message, state: FSMContext):
         country = country_match.group(1).strip() if country_match else "Noma'lum"
 
         conn = await db_connect()
-        last_id = await conn.fetchval("SELECT MAX(id) FROM content")
-        new_id = (last_id or 0) + 1
         
-        await conn.execute(
-            "INSERT INTO content(id, type, name, year, genre, lang, country, file_id) VALUES($1, 'kino', $2, $3, $4, $5, $6, $7)", 
-            new_id, name, year, genre, lang, country, m.video.file_id
+        # O'ZGARTIRILGAN JOYI: ID qo'lda hisoblanmaydi, baza o'zi beradi va bizga qaytaradi
+        new_id = await conn.fetchval(
+            "INSERT INTO content(type, name, year, genre, lang, country, file_id) VALUES('kino', $1, $2, $3, $4, $5, $6) RETURNING id", 
+            name, year, genre, lang, country, m.video.file_id
         )
             
         await conn.close()
-        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi!\n🆔 Kod: {new_id}", reply_markup=main_menu(m.from_user.id))
+        await m.answer(f"✅ Kino muvaffaqiyatli saqlandi!\n🆔 <b>Kino kodi:</b> <code>{new_id}</code>", parse_mode="HTML", reply_markup=main_menu(m.from_user.id))
         await state.set_state(UserStates.main)
         
     except Exception as e:
