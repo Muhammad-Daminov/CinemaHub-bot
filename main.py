@@ -380,9 +380,28 @@ async def save_multifilm_single(m: types.Message, state: FSMContext):
         await conn.close()
 
 # ================= FOYDALANUVCHI QISMI (START) =================
-@dp.message(F.text == "/start")
+from aiogram.filters import CommandObject, Command
+
+# --- TO'G'RILANGAN START AMALI ---
+@dp.message(Command("start"))
 async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     await state.clear()
+    
+    user_id = m.from_user.id
+    conn = await db_connect()
+    
+    try:
+        # Foydalanuvchi bazada mavjudligini tekshiramiz
+        user_exists = await conn.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
+        
+        # Agar yangi foydalanuvchi bo'lsa, jadvalga qo'shamiz
+        if not user_exists:
+            await conn.execute("INSERT INTO users(user_id) VALUES($1)", user_id)
+            
+    except Exception as e:
+        print(f"Start buyrug'ida foydalanuvchini saqlashda xato: {e}")
+    finally:
+        await conn.close()
     
     welcome_text = (
         f"👋 Assalamu alaykum hurmatli {m.from_user.full_name}\n\n"
@@ -395,6 +414,7 @@ async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
         reply_markup=main_menu(m.from_user.id)
     )
 
+# --- KINOLAR RO'YXATI ---
 @dp.message(F.text == "🎬 Kinolar")
 async def show_all_movies(m: types.Message, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
@@ -405,11 +425,14 @@ async def show_all_movies(m: types.Message, bot: Bot):
     await conn.close()
     kb = ReplyKeyboardBuilder()
     for row in movies:
-        kb.button(text=f"🎥 {row['name']} ({row['year']})")
+        # Agar yil NULL bo'lsa, qavs ichida bo'sh qolmasligi uchun tekshiramiz
+        year_str = f" ({row['year']})" if row['year'] else ""
+        kb.button(text=f"🎥 {row['name']}{year_str}")
     kb.button(text="⬅️ Bosh menyuga")
     kb.adjust(2)
     await m.answer("Kinolardan birini tanlang:", reply_markup=kb.as_markup(resize_keyboard=True))
 
+# --- NOM BO'YICHA KINO YUBORISH ---
 @dp.message(F.text.startswith("🎥 "))
 async def send_movie_by_name(m: types.Message, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
@@ -421,10 +444,12 @@ async def send_movie_by_name(m: types.Message, bot: Bot):
     res = await conn.fetchrow("SELECT * FROM content WHERE name ILIKE $1 AND type='kino'", name)
     await conn.close()
     if res:
-        caption = (f"🎬 Nomi: {res['name']}\n📆 Yili: {res['year']}\n🗣️ Tili: {res['lang']}\n"
+        year_val = res['year'] if res['year'] else "Mavjud emas"
+        caption = (f"🎬 Nomi: {res['name']}\n📆 Yili: {year_val}\n🗣️ Tili: {res['lang']}\n"
                    f"🎭 Janri: {res['genre']}\n🌎 Davlati: {res['country']}\n🆔 Kod: {res['id']}{FOOTER_TEXT}")
         await m.answer_video(res['file_id'], caption=caption)
 
+# --- QIDIRUV MENYUSI ---
 @dp.message(F.text == "🔎 Qidirish")
 async def open_search(m: types.Message, state: FSMContext, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
@@ -432,12 +457,14 @@ async def open_search(m: types.Message, state: FSMContext, bot: Bot):
     await state.set_state(UserStates.search_menu)
     await m.answer("Qidiruv turini tanlang:", reply_markup=search_options())
 
+# --- QIDIRUV TURINI BELGILASH ---
 @dp.message(F.text.in_(["📅 Yili bo'yicha", "🎭 Janri bo'yicha", "📝 Nomi bo'yicha"]), UserStates.search_menu)
 async def set_search_type(m: types.Message, state: FSMContext):
     await state.update_data(search_type=m.text)
     await state.set_state(UserStates.waiting_query)
     await m.answer(f"{m.text} uchun ma'lumot kiriting:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
 
+# --- QIDIRUVNI AMALGA OSHIRISH ---
 @dp.message(UserStates.waiting_query)
 async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
     if m.text == "⬅️ Orqaga":
@@ -491,7 +518,8 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
         await m.answer("❌ Topilmadi.")
     else:
         for r in res:
-            caption = (f"🎬 Nomi: {r['name']}\n📆 Yili: {r['year']}\n🗣️ Tili: {r['lang']}\n"
+            year_val = r['year'] if r['year'] else "Mavjud emas"
+            caption = (f"🎬 Nomi: {r['name']}\n📆 Yili: {year_val}\n🗣️ Tili: {r['lang']}\n"
                        f"🎭 Janri: {r['genre']}\n🌎 Davlati: {r['country']}\n🆔 Kod: {r['id']}{FOOTER_TEXT}")
             await m.answer_video(r['file_id'], caption=caption)
 
