@@ -1,11 +1,13 @@
 import asyncio, os, re
+from threading import Thread
+from flask import Flask
 import asyncpg
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
-from aiogram.fsm.state import State, StatesGroup
+from aiogram.fsm.state import State, StatesGroup 
 from aiogram.fsm.context import FSMContext
 from aiogram.types import ReplyKeyboardMarkup, KeyboardButton, BotCommand, FSInputFile
-from aiogram.filters import StateFilter
+from aiogram.filters import StateFilter, Command, CommandObject 
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -16,6 +18,23 @@ ADMIN_ID2 = int(os.getenv("ADMIN_ID2"))
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
+
+# === RENDER UCHUN VEB SERVER ===
+app = Flask('')
+
+@app.route('/')
+def home():
+    return "Bot tirik va ishlamoqda!"
+
+def run():
+    import os
+    port = int(os.environ.get("PORT", 8080))
+    app.run(host='0.0.0.0', port=port)
+
+def keep_alive():
+    t = Thread(target=run)
+    t.start()
+# ===============================
 
 # --- MAJBURIY OBUNA SOZLAMALARI ---
 CHANNELS = ["@cinemahubb_HD"] 
@@ -58,6 +77,10 @@ class UserStates(StatesGroup):
     in_multifilm_list = State()      
     viewing_multifilm_parts = State() 
     waiting_mailing = State()
+
+class OrderState(StatesGroup):
+    choosing_type = State()   # Turini tanlash bosqichi (Kino, Serial...)
+    waiting_content = State()
 
 class AdminStates(StatesGroup):
     choosing_type = State()
@@ -683,44 +706,49 @@ async def direct_code_search(m: types.Message, state: FSMContext, bot: Bot):
     else:
         await m.answer("😔 Afsuski, bu kod bilan hech qanday kontent topilmadi. Raqamni tekshirib qayta urinib ko'ring.")
 
-# --- SMART BACK ---
-@dp.message(F.text.in_(["⬅️ Orqaga", "⬅️ Bosh menyuga", "Orqaga", "Bosh menyuga"]))
-async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
-    await state.clear()
-    await state.set_state(UserStates.main)
-    await m.answer("📋 Asosiy menyu:", reply_markup=main_menu(m.from_user.id))
-
-# --- REKLAMA ---
+# =====================================================================
+#                          REKLAMA TIZIMI
+# =====================================================================
 @dp.message(F.text == "📢 Reklama", F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
 async def start_mail(m: types.Message, state: FSMContext):
-    await m.answer("Xabarni kiriting:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
+    await m.answer(
+        "Xabarni kiriting (Matn, rasm, video yoki boshqa kanaldan forward qilishingiz mumkin):", 
+        reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True)
+    )
     await state.set_state(UserStates.waiting_mailing)
 
 @dp.message(UserStates.waiting_mailing, F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
 async def broadcast(m: types.Message, state: FSMContext, bot: Bot):
+    # Reklama ichidagi xususiy Orqaga tugmasi
     if m.text == "⬅️ Orqaga":
         await state.clear()
         await state.set_state(UserStates.main)
         await m.answer("Asosiy menyuga qaytildi:", reply_markup=main_menu(m.from_user.id))
         return
+        
     conn = await db_connect()
     users = await conn.fetch("SELECT user_id FROM users")
     await conn.close()
+    
+    msg = await m.answer("📢 Reklama yuborish boshlandi, iltimos kuting...")
     count = 0
+    
     for u in users:
         try: 
             await m.copy_to(u['user_id'])
             count += 1
             await asyncio.sleep(0.05)
-        except: continue
-    await m.answer(f"✅ {count} ta foydalanuvchiga yuborildi!", reply_markup=main_menu(m.from_user.id))
+        except: 
+            continue
+            
+    await msg.delete()
+    await m.answer(f"✅ Reklama {count} ta foydalanuvchiga muvaffaqiyatli yuborildi!", reply_markup=main_menu(m.from_user.id))
     await state.set_state(UserStates.main)
 
-# ---------------- ZAKAZ TIZIMI KODI ----------------
-class OrderState(StatesGroup):
-    choosing_type = State()
-    waiting_content = State()
 
+# =====================================================================
+#                ZAKAZ TIZIMI KODI (MUKAMMAL VARIANT)
+# =====================================================================
 @dp.message(F.text == "✍️ Zakaz berish")
 async def start_order(message: types.Message, state: FSMContext):
     kb = InlineKeyboardBuilder()
@@ -729,11 +757,87 @@ async def start_order(message: types.Message, state: FSMContext):
     kb.button(text="🎭 Drama", callback_data="order_type:Drama")
     kb.button(text="🧸 Multifilm", callback_data="order_type:Multifilm")
     kb.adjust(2)
-    await message.answer("Nimaga zakaz bermoqchisiz?", reply_markup=kb.as_markup())
+    
+    await state.set_state(OrderState.choosing_type)
+    await message.answer("Nimaga zakaz bermoqchisiz? Quyidagilardan birini tanlang:", reply_markup=kb.as_markup())
 
 
-# Botni ishga tushirish (Main logikasi oxiri)
+# 1. USER INLINE TUGMANI TANLAGANDA ISHLAYDIGAN HANDLER:
+@dp.callback_query(OrderState.choosing_type, F.data.startswith("order_type:"))
+async def order_type_selected(call: types.CallbackQuery, state: FSMContext):
+    selected_type = call.data.split(":")[1]
+    await state.update_data(ordered_type=selected_type) # Tanlangan turni xotiraga yozamiz
+    
+    await state.set_state(OrderState.waiting_content)
+    
+    back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True)
+    await call.message.delete()
+    
+    await call.message.answer(
+        f"✍️ Siz <b>{selected_type}</b> turini tanladingiz.\n\n"
+        f"Iltimos, qidirayotgan {selected_type.lower()}ingizning <b>nomini yozing</b> yoki u haqida bilishimiz uchun <b>qisqa video</b> (yoki rasm) yuboring:", 
+        parse_mode="HTML",
+        reply_markup=back_kb
+    )
+    await call.answer()
+
+
+# 2. USERDAN NOM (MATN), RASM YOKI VIDEO QABUL QILIB ADMINGA YUBORISH:
+@dp.message(OrderState.waiting_content)
+async def save_and_send_order(m: types.Message, state: FSMContext, bot: Bot):
+    # Zakaz ichidagi xususiy Orqaga tugmasi
+    if m.text == "⬅️ Orqaga":
+        await state.clear()
+        await state.set_state(UserStates.main)
+        await m.answer("Zakaz bekor qilindi. Bosh menyu:", reply_markup=main_menu(m.from_user.id))
+        return
+
+    user_data = await state.get_data()
+    ordered_type = user_data.get("ordered_type")
+    
+    # Admin2 ga boradigan foydalanuvchi haqidagi ma'lumotlar paneli
+    admin_alert = (
+        f"📥 <b>YANGI ZAKAZ TUSHDI!</b>\n\n"
+        f"👤 <b>Foydalanuvchi:</b> {m.from_user.full_name} (<a href='tg://user?id={m.from_user.id}'>Profil</a>)\n"
+        f"🆔 <b>User ID:</b> <code>{m.from_user.id}</code>\n"
+        f"🗂 <b>Tanlangan tur:</b> {ordered_type}\n"
+    )
+    
+    try:
+        # Zakaz faqat ADMIN_ID2 ga boradi
+        await bot.send_message(chat_id=ADMIN_ID2, text=admin_alert, parse_mode="HTML")
+        await m.copy_to(chat_id=ADMIN_ID2)
+    except Exception as e:
+        print(f"Zakazni Admin2 ga yuborishda xatolik: {e}")
+            
+    await m.answer(
+        "Tez orada zakazingizni topib, sizga xabar beramiz! 😊", 
+        reply_markup=main_menu(m.from_user.id)
+    )
+    await state.set_state(UserStates.main)
+
+
+# =====================================================================
+#          --- SMART BACK (ENG PASTDA TURISHI SHART) ---
+# =====================================================================
+@dp.message(F.text.in_(["⬅️ Orqaga", "⬅️ Bosh menyuga", "Orqaga", "Bosh menyuga"]))
+async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
+    await state.clear()
+    await state.set_state(UserStates.main)
+    await m.answer("📋 Asosiy menyu:", reply_markup=main_menu(m.from_user.id))
+
+
+
+# =====================================================================
+#             BOTNI ISHGA TUSHIRISH (MAIN LOGIKASI OXIRI)
+# =====================================================================
 async def main():
+    # Render o'chirib qo'ymasligi uchun veb-serverni fonda yoqamiz
+    keep_alive()
+    print("Veb-server muvaffaqiyatli ishga tushdi...")
+    
+    # Botni ishga tushirish
+    print("Bot polling rejimida ishlamoqda...")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
