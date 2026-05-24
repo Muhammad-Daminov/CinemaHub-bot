@@ -367,8 +367,7 @@ async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     await conn.execute("INSERT INTO users(user_id) VALUES($1) ON CONFLICT DO NOTHING", m.from_user.id)
     await conn.close()
 
-    # YANGI START KO'RINISHI
-    photo = FSInputFile("13102.webp") 
+    # RASMSIZ TOZA MATNLI START
     welcome_text = (
         f"👋 <b>Assalamu Alaykum hurmatli, {m.from_user.full_name}!</b>\n\n"
         "🎬 <b>Kino Markaz HD</b> botiga xush kelibsiz! Bu yerda siz eng so'nggi tarjima kinolar, "
@@ -377,9 +376,8 @@ async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
         "kodini yuboring va videoni bir zumda qabul qilib oling!"
     )
     
-    await m.answer_photo(
-        photo=photo,
-        caption=welcome_text,
+    await m.answer(
+        text=welcome_text,
         reply_markup=main_menu(m.from_user.id),
         parse_mode="HTML"
     )
@@ -447,7 +445,6 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
     elif "Janri" in stype:
         res = await conn.fetch("SELECT * FROM content WHERE genre ILIKE $1 AND type='kino'", f"%{query}%")
     else: 
-        # YANGI: Nomi bo'yicha UNIVERSAL QIDIRUV (Barcha kontent turlari bo'ylab)
         results = await conn.fetch(
             "SELECT id, name, parent_name, type, part_number FROM content "
             "WHERE name ILIKE $1 OR parent_name ILIKE $1 ORDER BY id DESC LIMIT 15", 
@@ -477,7 +474,6 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
 
     await conn.close()
     
-    # Yili va Janri uchun eskicha mantiq
     if not res: 
         await m.answer("❌ Topilmadi.")
     else:
@@ -504,11 +500,11 @@ async def show_serials(m: types.Message, state: FSMContext, bot: Bot):
 
 @dp.message(F.text.startswith("📺 "), UserStates.in_serial_list)
 async def serial_parts_groups(m: types.Message, state: FSMContext):
-    ser_name = m.text.replace("📺 ", "")
-    await state.update_data(current_ser=ser_name)
+    sidebar_name = m.text.replace("📺 ", "")
+    await state.update_data(current_ser=sidebar_name)
     await state.set_state(UserStates.viewing_parts)
     conn = await db_connect()
-    count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1 AND type='part'", ser_name)
+    count = await conn.fetchval("SELECT COUNT(*) FROM content WHERE parent_name=$1 AND type='part'", sidebar_name)
     await conn.close()
     kb = ReplyKeyboardBuilder()
     for i in range(1, count + 1, 10):
@@ -516,7 +512,7 @@ async def serial_parts_groups(m: types.Message, state: FSMContext):
         kb.button(text=f"🔢 {i}-{end} qismlar")
     kb.button(text="⬅️ Orqaga")
     kb.adjust(2)
-    await m.answer(f"🎬 {ser_name} qismlari:", reply_markup=kb.as_markup(resize_keyboard=True))
+    await m.answer(f"🎬 {sidebar_name} qismlari:", reply_markup=kb.as_markup(resize_keyboard=True))
 
 @dp.message(F.text.contains("qismlar"), UserStates.viewing_parts)
 async def send_all_parts(m: types.Message, state: FSMContext):
@@ -576,7 +572,7 @@ async def send_all_drama_parts(m: types.Message, state: FSMContext):
         await m.answer_video(p['file_id'], caption=f"🎭 {drama_name} | {p['part_number']}-qism\n🗣️ Tili: {p['lang']}{FOOTER_TEXT}")
         await asyncio.sleep(0.4)
 
-# --- MULTIFILM QISMI (YANGI) ---
+# --- MULTIFILM QISMI ---
 @dp.message(F.text == "🧸 Multifilmlar")
 async def show_multis(m: types.Message, state: FSMContext, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
@@ -621,7 +617,7 @@ async def send_all_multi_parts(m: types.Message, state: FSMContext):
         await m.answer_video(p['file_id'], caption=f"🧸 {multi_name} | {p['part_number']}-qism\n🗣️ Tili: {p['lang']}{FOOTER_TEXT}")
         await asyncio.sleep(0.4)
 
-# --- YANGI: TO'G'RIDAN TO'G'RI KOD ORQALI QIDIRUV (Barcha kontent turlari uchun) ---
+# --- TO'G'RIDAN TO'G'RI KOD ORQALI QIDIRUV ---
 @dp.message(StateFilter(UserStates.main, None), F.text.isdigit())
 async def direct_code_search(m: types.Message, state: FSMContext, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
@@ -688,62 +684,48 @@ async def start_order(message: types.Message, state: FSMContext):
     kb = InlineKeyboardBuilder()
     kb.button(text="🎬 Kino", callback_data="order_type:Kino")
     kb.button(text="📺 Serial", callback_data="order_type:Serial")
-    kb.button(text="🧸 Multfilm", callback_data="order_type:Multfilm")
     kb.button(text="🎭 Drama", callback_data="order_type:Drama")
+    kb.button(text="🧸 Multifilm", callback_data="order_type:Multifilm")
     kb.adjust(2)
-    await message.answer("Qaysi turdagi kontentga buyurtma bermoqchisiz? Tanlang:", reply_markup=kb.as_markup())
+    await message.answer("Nima buyurtma qilmoqchisiz? Quyidagilardan tanlang:", reply_markup=kb.as_markup())
     await state.set_state(OrderState.choosing_type)
 
 @dp.callback_query(F.data.startswith("order_type:"), OrderState.choosing_type)
-async def process_type(callback: types.CallbackQuery, state: FSMContext):
-    selected_type = callback.data.split(":")[1]
-    await state.update_data(order_type=selected_type)
-    type_labels = {"Kino": "kinoingizdan", "Serial": "seriallingizdan", "Multfilm": "multfilmingizdan", "Drama": "dramangizdan"}
-    label = type_labels.get(selected_type, "kontentingizdan")
-    await callback.message.answer(f"Qidirayotgan {label} qisqa video yoki nomini yozib qoldiring, biz uni topishga harakat qilamiz.")
-    await callback.answer()
+async def process_order_type(call: types.CallbackQuery, state: FSMContext):
+    order_type = call.data.split(":")[1]
+    await state.update_data(chosen_type=order_type)
+    await call.message.edit_text(f"✍️ Siz <b>{order_type}</b> bo'limini tanladingiz.\n\nIltimos, o'zingiz qidirayotgan kontent nomini va (agar bilsangiz) chiqqan yilini yozib yuboring:")
     await state.set_state(OrderState.waiting_content)
 
-@dp.message(OrderState.waiting_content, F.text | F.video | F.document)
-async def process_content(message: types.Message, state: FSMContext, bot):
-    user_data = await state.get_data()
-    order_type = user_data.get("order_type")
-    user_name = message.from_user.full_name
-    user_username = f"@{message.from_user.username}" if message.from_user.username else "Mavjud emas"
-    user_id = message.from_user.id
+@dp.message(OrderState.waiting_content)
+async def save_order_final(message: types.Message, state: FSMContext, bot: Bot):
+    data = await state.get_data()
+    order_type = data.get("chosen_type")
+    content_name = message.text.strip()
     
-    admin_text = (
-        f"🚨 **Yangi Buyurtma Keldi!**\n\n"
-        f"👤 **Foydalanuvchi:** {user_name}\n"
-        f"🆔 **ID:** `{user_id}`\n"
-        f"🌐 **Username:** {user_username}\n"
-        f"🗂 **Turi:** {order_type}\n\n"
-        f"📝 **Buyurtma matni/mazmuni:**\n"
+    # Buyurtma haqidagi xabar matni
+    report_text = (
+        "🔔 <b>YANGI BUYURTMA!</b>\n"
+        "---------------------------\n"
+        f"👤 <b>Foydalanuvchi:</b> {message.from_user.full_name} (<a href='tg://user?id={message.from_user.id}'>Ssilka</a>)\n"
+        f"🆔 <b>ID:</b> <code>{message.from_user.id}</code>\n"
+        f"🌐 <b>Username:</b> @{message.from_user.username if message.from_user.username else 'Yoq'}\n"
+        "---------------------------\n"
+        f"📂 <b>Turi:</b> {order_type}\n"
+        f"📝 <b>Nomi:</b> {content_name}"
     )
     
-    admin_kb = InlineKeyboardBuilder()
-    if message.from_user.username:
-        admin_kb.button(text="💬 Alohida Chat Ochish", url=f"https://t.me/{message.from_user.username}")
-    else:
-        admin_kb.button(text="👤 Profilga O'tish", url=f"tg://user?id={user_id}")
+    # Adminlarga yuborish
+    for admin in [ADMIN_ID, ADMIN_ID2]:
+        try:
+            await bot.send_message(chat_id=admin, text=report_text, parse_mode="HTML")
+        except Exception as e:
+            print(f"Adminga zakaz yuborishda xato: {e}")
+            
+    await message.answer("✅ Rahmat! Buyurtmangiz adminga muvaffaqiyatli yetkazildi. Tez orada botga qo'shishga harakat qilamiz.", reply_markup=main_menu(message.from_user.id))
+    await state.set_state(UserStates.main)
+    # ... (yuqoridagi barcha handlerlar, zakaz tizimi kodlari shu yerda tugaydi)
 
-    if message.text:
-        admin_text += f"\"{message.text}\""
-        await bot.send_message(chat_id=ADMIN_ID2, text=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
-    elif message.video:
-        caption = message.caption if message.caption else "Nom yozilmadi"
-        admin_text += f"\"{caption}\""
-        await bot.send_video(chat_id=ADMIN_ID2, video=message.video.file_id, caption=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
-    elif message.document:
-        caption = message.caption if message.caption else "Fayl yuborildi"
-        admin_text += f"\"{caption}\""
-        await bot.send_document(chat_id=ADMIN_ID2, document=message.document.file_id, caption=admin_text, reply_markup=admin_kb.as_markup(), parse_mode="Markdown")
-
-    thanks_labels = {"Kino": "kinoingizni", "Serial": "seriallingizni", "Multfilm": "multfilmingizni", "Drama": "dramangizni"}
-    thanks_label = thanks_labels.get(order_type, "buyurtmangizni")
-    await message.answer(f"Rahmat, zakazingiz qabul qilindi! ✨\n{thanks_label.capitalize()} topganimizdan so'ng sizga albatta xabar beramiz.")
-    await state.clear()
-    
 # --- RENDER UCHUN SOXTA PORT OCHISH ---
 async def start_fake_server():
     from aiohttp import web
@@ -761,9 +743,9 @@ async def start_fake_server():
     await site.start()
     print(f"Soxta server {port}-portda ishga tushdi.")
 
+# --- ASOSIY ISHGA TUSHIRISH FUNKSIYASI ---
 async def main():
     try:
-        from aiogram.types import BotCommand
         my_commands = [
             BotCommand(command="start", description="Botni qayta ishga tushirish (Restart)")
         ]
@@ -772,7 +754,9 @@ async def main():
     except Exception as e:
         print(f"❌ Menyu o'rnatishda xatolik yuz berdi: {e}")
 
+    # Soxta serverni ham fon rejimida ishga tushiramiz
     await start_fake_server()
+    
     print("Bot muvaffaqiyatli ishga tushdi...")
     await dp.start_polling(bot)
 
