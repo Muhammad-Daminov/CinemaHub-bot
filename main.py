@@ -79,7 +79,7 @@ class UserStates(StatesGroup):
     waiting_mailing = State()
 
 class OrderState(StatesGroup):
-    choosing_type = State()   # Turini tanlash bosqichi (Kino, Serial...)
+    choosing_type = State()
     waiting_content = State()
 
 class AdminStates(StatesGroup):
@@ -87,17 +87,14 @@ class AdminStates(StatesGroup):
     waiting_kino_template = State()
     waiting_kino_video = State()
     
-    # Serial uchun
     waiting_serial_name = State()
     waiting_serial_lang = State() 
     waiting_serial_videos = State()
     
-    # Drama uchun
     waiting_drama_name = State()
     waiting_drama_lang = State()  
     waiting_drama_videos = State()
     
-    # Multifilm uchun
     waiting_multifilm_name = State()
     waiting_multifilm_lang = State()
     waiting_multifilm_videos = State()
@@ -241,8 +238,6 @@ async def save_kino_final(m: types.Message, state: FSMContext):
         country = country_match.group(1).strip() if country_match else "Noma'lum"
 
         conn = await db_connect()
-        
-        # O'ZGARTIRILGAN JOYI: ID qo'lda hisoblanmaydi, baza o'zi beradi va bizga qaytaradi
         new_id = await conn.fetchval(
             "INSERT INTO content(type, name, year, genre, lang, country, file_id) VALUES('kino', $1, $2, $3, $4, $5, $6) RETURNING id", 
             name, year, genre, lang, country, m.video.file_id
@@ -255,7 +250,8 @@ async def save_kino_final(m: types.Message, state: FSMContext):
     except Exception as e:
         print(f"Kino saqlashda xato: {e}")
         await m.answer(f"❌ Xato yuz berdi: {e}\n\nShablonni qaytadan tekshirib to'ldiring va videoni yuboring.")
-# ================= ADMIN: SERIAL, DRAMA VA MULTIFILM QO'SHISH (MUKAMMAL VARIANT) =================
+
+# ================= ADMIN: SERIAL, DRAMA VA MULTIFILM QO'SHISH =================
 
 # --- SERIAL QO'SHISH ---
 @dp.message(AdminStates.choosing_type, F.text == "📺 Serial")
@@ -291,8 +287,6 @@ async def save_serial_recursive(m: types.Message, state: FSMContext):
     try:
         last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1 AND type='part'", ser_name)
         new_part = (last_part or 0) + 1
-        
-        # id yozilmaydi (baza o'zi beradi), year o'rniga None (NULL) beriladi
         new_id = await conn.fetchval(
             "INSERT INTO content(type, parent_name, name, part_number, lang, year, file_id) VALUES('part', $1, $2, $3, $4, $5, $6) RETURNING id", 
             ser_name, f"{ser_name} {new_part}-qism", new_part, ser_lang, None, m.video.file_id
@@ -343,8 +337,6 @@ async def save_drama_recursive(m: types.Message, state: FSMContext):
     try:
         last_part = await conn.fetchval("SELECT MAX(part_number) FROM content WHERE parent_name=$1 AND type='drama'", drama_name)
         new_part = (last_part or 0) + 1
-        
-        # id yozilmaydi, year o'rniga None (NULL) beriladi
         new_id = await conn.fetchval(
             "INSERT INTO content(type, parent_name, name, part_number, lang, year, file_id) VALUES('drama', $1, $2, $3, $4, $5, $6) RETURNING id", 
             drama_name, f"{drama_name} {new_part}-qism", new_part, drama_lang, None, m.video.file_id
@@ -389,7 +381,6 @@ async def save_multifilm_single(m: types.Message, state: FSMContext):
     
     conn = await db_connect()
     try:
-        # id yozilmaydi, year o'rniga None (NULL) beriladi
         new_id = await conn.fetchval(
             "INSERT INTO content(type, parent_name, name, part_number, lang, year, file_id) VALUES('multifilm', $1, $2, 1, $3, $4, $5) RETURNING id", 
             multi_name, multi_name, multi_lang, None, m.video.file_id
@@ -404,7 +395,6 @@ async def save_multifilm_single(m: types.Message, state: FSMContext):
 # ================= FOYDALANUVCHI QISMI (START) =================
 from aiogram.filters import CommandObject, Command
 
-# --- TO'G'RILANGAN START AMALI ---
 @dp.message(Command("start"))
 async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     await state.clear()
@@ -413,13 +403,9 @@ async def start_cmd(m: types.Message, state: FSMContext, bot: Bot):
     conn = await db_connect()
     
     try:
-        # Foydalanuvchi bazada mavjudligini tekshiramiz
         user_exists = await conn.fetchval("SELECT 1 FROM users WHERE user_id = $1", user_id)
-        
-        # Agar yangi foydalanuvchi bo'lsa, jadvalga qo'shamiz
         if not user_exists:
             await conn.execute("INSERT INTO users(user_id) VALUES($1)", user_id)
-            
     except Exception as e:
         print(f"Start buyrug'ida foydalanuvchini saqlashda xato: {e}")
     finally:
@@ -447,7 +433,6 @@ async def show_all_movies(m: types.Message, bot: Bot):
     await conn.close()
     kb = ReplyKeyboardBuilder()
     for row in movies:
-        # Agar yil NULL bo'lsa, qavs ichida bo'sh qolmasligi uchun tekshiramiz
         year_str = f" ({row['year']})" if row['year'] else ""
         kb.button(text=f"🎥 {row['name']}{year_str}")
     kb.button(text="⬅️ Bosh menyuga")
@@ -479,14 +464,12 @@ async def open_search(m: types.Message, state: FSMContext, bot: Bot):
     await state.set_state(UserStates.search_menu)
     await m.answer("Qidiruv turini tanlang:", reply_markup=search_options())
 
-# --- QIDIRUV TURINI BELGILASH ---
 @dp.message(F.text.in_(["📅 Yili bo'yicha", "🎭 Janri bo'yicha", "📝 Nomi bo'yicha"]), UserStates.search_menu)
 async def set_search_type(m: types.Message, state: FSMContext):
     await state.update_data(search_type=m.text)
     await state.set_state(UserStates.waiting_query)
     await m.answer(f"{m.text} uchun ma'lumot kiriting:", reply_markup=ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True))
 
-# --- QIDIRUVNI AMALGA OSHIRISH ---
 @dp.message(UserStates.waiting_query)
 async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
     if m.text == "⬅️ Orqaga":
@@ -507,9 +490,6 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
     elif "Janri" in stype:
         res = await conn.fetch("SELECT * FROM content WHERE genre ILIKE $1 AND type='kino'", f"%{query}%")
     else: 
-        # === MANA SHU YERDAN BOSHLAB YANGLI AQLLI NOMI BO'YICHA QIDIRUV ISHLAYDI ===
-        
-        # 1. KINO VA MULTFILMLARNI QIDIRISH (Topilsa srazi videolarni ketma-ket tashlaydi)
         movies_and_multis = await conn.fetch(
             "SELECT * FROM content WHERE (name ILIKE $1 OR parent_name ILIKE $1) AND type IN ('kino', 'multifilm') ORDER BY id ASC", 
             f"%{query}%"
@@ -525,13 +505,12 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
                     caption = f"🧸 Multifilm: {item['parent_name']}\n🗣️ Tili: {item['lang']}\n🆔 Kod: {item['id']}{FOOTER_TEXT}"
                     
                 await m.answer_video(item['file_id'], caption=caption)
-                await asyncio.sleep(0.4) # Cheklovga tushmaslik uchun kichik pauza
+                await asyncio.sleep(0.4)
                 
             await conn.close()
-            await state.set_state(UserStates.main) # Ish bitgach asosiy menyuga qaytadi
+            await state.set_state(UserStates.main)
             return
 
-        # 2. SERIAL VA DRAMALARNI QIDIRISH (Topilsa menyuda faqat mos kelgan nomlarni tugma qilib chiqaradi)
         distinct_series = await conn.fetch(
             "SELECT parent_name, type FROM content WHERE parent_name ILIKE $1 AND type IN ('part', 'drama') GROUP BY parent_name, type", 
             f"%{query}%"
@@ -544,9 +523,8 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
                 kb.button(text=f"{prefix} {row['parent_name']}")
                 
             kb.button(text="⬅️ Orqaga")
-            kb.adjust(1) # Tugmalarni ustma-ust chiroyli chiqaradi
+            kb.adjust(1)
             
-            # User tugmalardan birini bosganda sizning eski handlerlaringiz ishlashi uchun stateni moslaymiz
             if distinct_series[0]['type'] == 'part':
                 await state.set_state(UserStates.in_serial_list)
             else:
@@ -556,13 +534,10 @@ async def execute_search(m: types.Message, state: FSMContext, bot: Bot):
             await m.answer("🔍 Qidiruv natijasi bo'yicha topilgan bo'limlar:", reply_markup=kb.as_markup(resize_keyboard=True))
             return
 
-        # 3. AGAR HECH NARSA TOPILMASA
         await conn.close()
         await m.answer("😔 Kechirasiz, siz kiritgan nom bo'yicha hech qanday kontent topilmadi. Qayta urinib ko'ring:")
         return
-        # === AQLLI QIDIRUV TUGADI ===
 
-    # Yili va Janri bo'yicha kinolar topilganda javob qaytarish qismi (Eski kodingiz)
     await conn.close()
     
     if not res: 
@@ -705,7 +680,13 @@ async def multi_parts_groups(m: types.Message, state: FSMContext):
         await m.answer_video(res['file_id'], caption=caption)
     else:
         await m.answer("❌ Kechirasiz, bu multfilmga tegishli video fayl topilmadi.")
-# --- TO'G'RIDAN TO'G'RI KOD ORQALI QIDIRUV (MUKAMMAL VARIANT) ---
+
+
+# =====================================================================
+# ✅ O'ZGARTIRILGAN QISM BOSHLANISHI
+# Muammo: Kod bilan qidirganda serial/drama bo'lsa faqat 1 qism chiqardi.
+# Yechim: Avval o'sha qismni yuborib, keyin barcha qismlar menyusini ko'rsatadi.
+# =====================================================================
 @dp.message(StateFilter(UserStates.main, None), F.text.isdigit())
 async def direct_code_search(m: types.Message, state: FSMContext, bot: Bot):
     if not await check_sub(m.from_user.id, bot):
@@ -721,18 +702,54 @@ async def direct_code_search(m: types.Message, state: FSMContext, bot: Bot):
             caption = (f"🎬 Nomi: {item['name']}\n📆 Yili: {item['year']}\n🗣️ Tili: {item['lang']}\n"
                        f"🎭 Janri: {item['genre']}\n🌎 Davlati: {item['country']}\n🆔 Kod: {item['id']}{FOOTER_TEXT}")
             await m.answer_video(item['file_id'], caption=caption)
+
         elif item['type'] in ['part', 'drama', 'multifilm']:
             ctype = "📺 Serial" if item['type'] == 'part' else "🎭 Drama" if item['type'] == 'drama' else "🧸 Multifilm"
             
-            # Agar multfilm bo'lsa qism raqamini ko'rsatish shart emas
             if item['type'] == 'multifilm':
+                # Multifilm uchun o'zgarishsiz — faqat videoni yuboradi
                 caption = f"{ctype}: {item['parent_name']}\n🗣️ Tili: {item['lang']}\n🆔 Kod: {item['id']}{FOOTER_TEXT}"
+                await m.answer_video(item['file_id'], caption=caption)
             else:
+                # Serial yoki drama: avval shu qismni yuboramiz
                 caption = f"{ctype}: {item['parent_name']} | {item['part_number']}-qism\n🗣️ Tili: {item['lang']}\n🆔 Kod: {item['id']}{FOOTER_TEXT}"
+                await m.answer_video(item['file_id'], caption=caption)
                 
-            await m.answer_video(item['file_id'], caption=caption)
+                # Keyin barcha qismlar menyusini ko'rsatamiz
+                parent = item['parent_name']
+                content_type = item['type']  # 'part' yoki 'drama'
+                
+                conn2 = await db_connect()
+                count = await conn2.fetchval(
+                    "SELECT COUNT(*) FROM content WHERE parent_name=$1 AND type=$2",
+                    parent, content_type
+                )
+                await conn2.close()
+                
+                kb = ReplyKeyboardBuilder()
+                for i in range(1, count + 1, 10):
+                    end = min(i + 9, count)
+                    kb.button(text=f"🔢 {i}-{end} qismlar")
+                kb.button(text="⬅️ Orqaga")
+                kb.adjust(2)
+                
+                if content_type == 'part':
+                    await state.update_data(current_ser=parent)
+                    await state.set_state(UserStates.viewing_parts)
+                else:
+                    await state.update_data(current_drama=parent)
+                    await state.set_state(UserStates.viewing_drama_parts)
+                
+                await m.answer(
+                    f"📂 '{parent}' ning barcha qismlari:\n(Kerakli qismlarni tanlang)",
+                    reply_markup=kb.as_markup(resize_keyboard=True)
+                )
     else:
         await m.answer("😔 Afsuski, bu kod bilan hech qanday kontent topilmadi. Raqamni tekshirib qayta urinib ko'ring.")
+# =====================================================================
+# ✅ O'ZGARTIRILGAN QISM TUGASHI
+# =====================================================================
+
 
 # =====================================================================
 #                          REKLAMA TIZIMI
@@ -747,7 +764,6 @@ async def start_mail(m: types.Message, state: FSMContext):
 
 @dp.message(UserStates.waiting_mailing, F.from_user.id.in_([ADMIN_ID, ADMIN_ID2]))
 async def broadcast(m: types.Message, state: FSMContext, bot: Bot):
-    # Reklama ichidagi xususiy Orqaga tugmasi
     if m.text == "⬅️ Orqaga":
         await state.clear()
         await state.set_state(UserStates.main)
@@ -789,13 +805,10 @@ async def start_order(message: types.Message, state: FSMContext):
     await state.set_state(OrderState.choosing_type)
     await message.answer("Nimaga zakaz bermoqchisiz? Quyidagilardan birini tanlang:", reply_markup=kb.as_markup())
 
-
-# 1. USER INLINE TUGMANI TANLAGANDA ISHLAYDIGAN HANDLER:
 @dp.callback_query(OrderState.choosing_type, F.data.startswith("order_type:"))
 async def order_type_selected(call: types.CallbackQuery, state: FSMContext):
     selected_type = call.data.split(":")[1]
-    await state.update_data(ordered_type=selected_type) # Tanlangan turni xotiraga yozamiz
-    
+    await state.update_data(ordered_type=selected_type)
     await state.set_state(OrderState.waiting_content)
     
     back_kb = ReplyKeyboardMarkup(keyboard=[[KeyboardButton(text="⬅️ Orqaga")]], resize_keyboard=True)
@@ -809,11 +822,8 @@ async def order_type_selected(call: types.CallbackQuery, state: FSMContext):
     )
     await call.answer()
 
-
-# 2. USERDAN NOM (MATN), RASM YOKI VIDEO QABUL QILIB ADMINGA YUBORISH:
 @dp.message(OrderState.waiting_content)
 async def save_and_send_order(m: types.Message, state: FSMContext, bot: Bot):
-    # Zakaz ichidagi xususiy Orqaga tugmasi
     if m.text == "⬅️ Orqaga":
         await state.clear()
         await state.set_state(UserStates.main)
@@ -823,7 +833,6 @@ async def save_and_send_order(m: types.Message, state: FSMContext, bot: Bot):
     user_data = await state.get_data()
     ordered_type = user_data.get("ordered_type")
     
-    # Admin2 ga boradigan foydalanuvchi haqidagi ma'lumotlar paneli
     admin_alert = (
         f"📥 <b>YANGI ZAKAZ TUSHDI!</b>\n\n"
         f"👤 <b>Foydalanuvchi:</b> {m.from_user.full_name} (<a href='tg://user?id={m.from_user.id}'>Profil</a>)\n"
@@ -832,7 +841,6 @@ async def save_and_send_order(m: types.Message, state: FSMContext, bot: Bot):
     )
     
     try:
-        # Zakaz faqat ADMIN_ID2 ga boradi
         await bot.send_message(chat_id=ADMIN_ID2, text=admin_alert, parse_mode="HTML")
         await m.copy_to(chat_id=ADMIN_ID2)
     except Exception as e:
@@ -855,16 +863,12 @@ async def universal_back(m: types.Message, state: FSMContext, bot: Bot):
     await m.answer("📋 Asosiy menyu:", reply_markup=main_menu(m.from_user.id))
 
 
-
 # =====================================================================
 #             BOTNI ISHGA TUSHIRISH (MAIN LOGIKASI OXIRI)
 # =====================================================================
 async def main():
-    # Render o'chirib qo'ymasligi uchun veb-serverni fonda yoqamiz
     keep_alive()
     print("Veb-server muvaffaqiyatli ishga tushdi...")
-    
-    # Botni ishga tushirish
     print("Bot polling rejimida ishlamoqda...")
     await dp.start_polling(bot)
 
