@@ -1,0 +1,460 @@
+"""
+Admin-side writes for the Title/Episode/MediaFile catalog.
+
+Deliberately separate from app.services.content: that module owns the
+viewer-facing read/delivery paths, this one owns the mutating admin
+operations behind /api/admin. Keeping the write methods out of the
+service the public routes use means a bug in a catalog route can never
+reach them.
+
+Every query is explicit — no lazy relationship access anywhere, since
+these run under async SQLAlchemy where a lazy load raises
+MissingGreenlet. Deletes use Core `delete()` in child-first order
+rather than relying on ORM cascade, which would need the relationship
+loaded to work.
+"""
+from collections.abc import Sequence
+from dataclasses import dataclass, field
+from datetime import date, datetime, timedelta, timezone
+
+from sqlalchemy import delete, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.db.models.content import (
+    AudioLanguage,
+    ContentType,
+    Episode,
+    MediaFile,
+    PendingUpload,
+    Title,
+    VideoQuality,
+)
+from app.db.models.payment import PaymentReceipt, PaymentStatus
+from app.db.models.promo import PromoCode
+from app.db.models.user import Subscription, User
+from app.services.tmdb import tmdb_service
+
+ACTIVITY_DAYS = 7
+
+# Fields enrich_from_tmdb would overwrite. Editing one of these is what
+# earns a title its is_manual_override flag — housekeeping edits like
+# is_active or country must leave it enrichable.
+TMDB_MANAGED_FIELDS = {"name", "year", "genres", "poster_url", "description", "rating"}
+
+
+@dataclass
+class DashboardStats:
+    total_users: int
+    premium_users: int
+    total_titles: int
+    total_episodes: int
+    titles_by_type: dict[str, int] = field(default_factory=dict)
+    pending_receipts: int = 0
+    pending_uploads: int = 0
+    total_revenue: float = 0.0
+    active_promo_codes: int = 0
+
+
+class AdminContentService:
+    """Catalog mutations + dashboard aggregates for the admin dashboard."""
+
+    # ---------- titles ----------
+
+    async def create_title(
+        self,
+        session: AsyncSession,
+        name: str,
+        content_type: ContentType,
+        year: int | None = None,
+        genres: list[str] | None = None,
+        country: str | None = None,
+        description: str | None = None,
+        poster_url: str | None = None,
+        tmdb_id: int | None = None,
+        rating: float | None = None,
+    ) -> Title:
+        title = Title(
+            name=name.strip(),
+            content_type=content_type,
+            year=year,
+            genres=genres,
+            country=country,
+            description=description,
+            poster_url=poster_url,
+            tmdb_id=tmdb_id,
+            rating=rating,
+        )
+        session.add(title)
+        await session.flush()
+        return title
+
+    async def update_title(self, session: AsyncSession, title_id: int, **fields) -> Title | None:
+        """
+        Admin hand-edit. Flips is_manual_override only when the edit touches
+        a field TMDB would otherwise overwrite (TMDB_MANAGED_FIELDS), so
+        toggling is_active or fixing a country doesn't permanently freeze
+        the title out of enrichment.
+        """
+        title = await session.get(Title, title_id)
+        if title is None:
+            return None
+
+        for key, value in fields.items():
+            if not hasattr(title, key):
+                raise ValueError(f"Title has no field '{key}'")
+            setattr(title, key, value)
+
+        if "is_manual_override" not in fields and TMDB_MANAGED_FIELDS & fields.keys():
+            title.is_manual_override = True
+
+        await session.flush()
+        return title
+
+    async def set_title_active(self, session: AsyncSession, title_id: int, is_active: bool) -> Title | None:
+        title = await session.get(Title, title_id)
+        if title is None:
+            return None
+        title.is_active = is_active
+        await session.flush()
+        return title
+
+    async def delete_title(self, session: AsyncSession, title_id: int) -> bool:
+        """Removes the title with its episodes and their files. Returns False if it never existed."""
+        exists = (await session.execute(select(Title.id).where(Title.id == title_id))).scalar_one_or_none()
+        if exists is None:
+            return False
+
+        episode_ids = list(
+            (await session.execute(select(Episode.id).where(Episode.title_id == title_id))).scalars()
+        )
+        if episode_ids:
+            await session.execute(delete(MediaFile).where(MediaFile.episode_id.in_(episode_ids)))
+            await session.execute(delete(Episode).where(Episode.id.in_(episode_ids)))
+        await session.execute(delete(Title).where(Title.id == title_id))
+        await session.flush()
+        return True
+
+    async def list_titles(
+        self,
+        session: AsyncSession,
+        query: str | None = None,
+        content_type: ContentType | None = None,
+        is_active: bool | None = None,
+        page: int = 0,
+        page_size: int = 20,
+    ) -> tuple[list[tuple[Title, int, int]], int]:
+        """
+        Returns ((title, episode_count, file_count) rows, total_matching).
+
+        The counts come from correlated scalar subqueries rather than
+        relationship access — one round trip, and nothing lazy-loads.
+        """
+        episode_count = (
+            select(func.count(Episode.id)).where(Episode.title_id == Title.id).scalar_subquery()
+        )
+        file_count = (
+            select(func.count(MediaFile.id))
+            .join(Episode, Episode.id == MediaFile.episode_id)
+            .where(Episode.title_id == Title.id)
+            .scalar_subquery()
+        )
+
+        filters = []
+        if query:
+            filters.append(Title.name.ilike(f"%{query.strip()}%"))
+        if content_type is not None:
+            filters.append(Title.content_type == content_type)
+        if is_active is not None:
+            filters.append(Title.is_active.is_(is_active))
+
+        total = (
+            await session.execute(select(func.count(Title.id)).where(*filters))
+        ).scalar_one()
+
+        result = await session.execute(
+            select(Title, episode_count, file_count)
+            .where(*filters)
+            .order_by(Title.created_at.desc(), Title.id.desc())
+            .offset(page * page_size)
+            .limit(page_size)
+        )
+        return [(row[0], row[1], row[2]) for row in result.all()], total
+
+    # ---------- episodes ----------
+
+    async def add_episode(
+        self,
+        session: AsyncSession,
+        title_id: int,
+        season: int,
+        number: int,
+        name: str | None = None,
+        duration_minutes: int | None = None,
+    ) -> Episode:
+        episode = Episode(
+            title_id=title_id,
+            season=season,
+            number=number,
+            name=name,
+            duration_minutes=duration_minutes,
+        )
+        session.add(episode)
+        await session.flush()
+        return episode
+
+    async def get_or_create_episode(
+        self, session: AsyncSession, title_id: int, season: int, number: int
+    ) -> Episode:
+        """Used by the pending-upload attach flow, which must not fail on an existing episode."""
+        result = await session.execute(
+            select(Episode).where(
+                Episode.title_id == title_id, Episode.season == season, Episode.number == number
+            )
+        )
+        episode = result.scalar_one_or_none()
+        if episode is not None:
+            return episode
+        return await self.add_episode(session, title_id, season, number)
+
+    async def delete_episode(self, session: AsyncSession, episode_id: int) -> bool:
+        exists = (
+            await session.execute(select(Episode.id).where(Episode.id == episode_id))
+        ).scalar_one_or_none()
+        if exists is None:
+            return False
+        await session.execute(delete(MediaFile).where(MediaFile.episode_id == episode_id))
+        await session.execute(delete(Episode).where(Episode.id == episode_id))
+        await session.flush()
+        return True
+
+    async def list_episodes_with_counts(
+        self, session: AsyncSession, title_id: int
+    ) -> list[tuple[Episode, int]]:
+        file_count = (
+            select(func.count(MediaFile.id))
+            .where(MediaFile.episode_id == Episode.id)
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            select(Episode, file_count)
+            .where(Episode.title_id == title_id)
+            .order_by(Episode.season, Episode.number)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    # ---------- media files ----------
+
+    async def attach_file(
+        self,
+        session: AsyncSession,
+        episode_id: int,
+        file_id: str,
+        language: AudioLanguage,
+        quality: VideoQuality,
+        source_chat_id: int | None = None,
+        source_message_id: int | None = None,
+    ) -> MediaFile:
+        """
+        Adds a file to an episode. (episode, language, quality) is unique in
+        the schema, so a repeat upload for the same slot replaces the
+        file_id instead of raising an IntegrityError at the admin.
+        """
+        result = await session.execute(
+            select(MediaFile).where(
+                MediaFile.episode_id == episode_id,
+                MediaFile.language == language,
+                MediaFile.quality == quality,
+            )
+        )
+        media_file = result.scalar_one_or_none()
+
+        if media_file is not None:
+            media_file.file_id = file_id
+            if source_chat_id is not None:
+                media_file.source_chat_id = source_chat_id
+            if source_message_id is not None:
+                media_file.source_message_id = source_message_id
+        else:
+            media_file = MediaFile(
+                episode_id=episode_id,
+                file_id=file_id,
+                language=language,
+                quality=quality,
+                source_chat_id=source_chat_id,
+                source_message_id=source_message_id,
+            )
+            session.add(media_file)
+
+        await session.flush()
+        return media_file
+
+    async def detach_file(self, session: AsyncSession, file_id_pk: int) -> bool:
+        exists = (
+            await session.execute(select(MediaFile.id).where(MediaFile.id == file_id_pk))
+        ).scalar_one_or_none()
+        if exists is None:
+            return False
+        await session.execute(delete(MediaFile).where(MediaFile.id == file_id_pk))
+        await session.flush()
+        return True
+
+    async def list_files(self, session: AsyncSession, episode_id: int) -> list[MediaFile]:
+        result = await session.execute(
+            select(MediaFile).where(MediaFile.episode_id == episode_id).order_by(MediaFile.language)
+        )
+        return list(result.scalars())
+
+    # ---------- TMDB enrichment ----------
+
+    async def enrich_from_tmdb(self, session: AsyncSession, title_id: int) -> Title | None:
+        """
+        Fills TMDB metadata by searching on name+year. No match is not an
+        error — plenty of this catalog is local content TMDB has never
+        heard of, so we leave the row alone and report it unchanged.
+        Manually-overridden rows are never touched.
+        """
+        title = await session.get(Title, title_id)
+        if title is None or title.is_manual_override:
+            return title
+
+        results = await tmdb_service.search_movie(title.name, year=title.year)
+        if not results:
+            return title
+
+        details = await tmdb_service.get_movie_details(results[0]["id"])
+        release_date = details.get("release_date") or ""
+
+        title.tmdb_id = details.get("id")
+        title.poster_url = tmdb_service.build_poster_url(details.get("poster_path"))
+        title.description = details.get("overview")
+        title.rating = details.get("vote_average")
+        genres = [g["name"] for g in details.get("genres", [])]
+        if genres:
+            title.genres = genres
+        if title.year is None and release_date[:4].isdigit():
+            title.year = int(release_date[:4])
+
+        await session.flush()
+        return title
+
+    # ---------- dashboard ----------
+
+    async def dashboard_stats(self, session: AsyncSession) -> DashboardStats:
+        now = datetime.now(timezone.utc)
+
+        total_users = (await session.execute(select(func.count(User.id)))).scalar_one()
+        premium_users = (
+            await session.execute(
+                select(func.count(func.distinct(Subscription.user_id))).where(
+                    Subscription.expires_at > now
+                )
+            )
+        ).scalar_one()
+        total_titles = (await session.execute(select(func.count(Title.id)))).scalar_one()
+        total_episodes = (await session.execute(select(func.count(Episode.id)))).scalar_one()
+
+        by_type_result = await session.execute(
+            select(Title.content_type, func.count(Title.id)).group_by(Title.content_type)
+        )
+        titles_by_type = {row[0].value: row[1] for row in by_type_result.all()}
+
+        pending_receipts = (
+            await session.execute(
+                select(func.count(PaymentReceipt.id)).where(
+                    PaymentReceipt.status == PaymentStatus.PENDING
+                )
+            )
+        ).scalar_one()
+        pending_uploads = (
+            await session.execute(select(func.count(PendingUpload.id)))
+        ).scalar_one()
+        total_revenue = (
+            await session.execute(
+                select(func.coalesce(func.sum(PaymentReceipt.amount), 0)).where(
+                    PaymentReceipt.status == PaymentStatus.APPROVED
+                )
+            )
+        ).scalar_one()
+        active_promo_codes = (
+            await session.execute(select(func.count(PromoCode.id)).where(PromoCode.is_active.is_(True)))
+        ).scalar_one()
+
+        return DashboardStats(
+            total_users=total_users,
+            premium_users=premium_users,
+            total_titles=total_titles,
+            total_episodes=total_episodes,
+            titles_by_type=titles_by_type,
+            pending_receipts=pending_receipts,
+            pending_uploads=pending_uploads,
+            total_revenue=float(total_revenue),
+            active_promo_codes=active_promo_codes,
+        )
+
+    async def activity_last_7_days(self, session: AsyncSession) -> list[dict]:
+        """New users per day. Days with no signups are filled in as 0 so the chart has no gaps."""
+        today = datetime.now(timezone.utc).date()
+        since = today - timedelta(days=ACTIVITY_DAYS - 1)
+
+        day_column = func.date(User.created_at).label("day")
+        result = await session.execute(
+            select(day_column, func.count(User.id))
+            .where(func.date(User.created_at) >= since)
+            .group_by(day_column)
+            .order_by(day_column)
+        )
+        counts: dict[date, int] = {row[0]: row[1] for row in result.all()}
+
+        return [
+            {"date": since + timedelta(days=offset), "count": counts.get(since + timedelta(days=offset), 0)}
+            for offset in range(ACTIVITY_DAYS)
+        ]
+
+    async def premium_user_ids(self, session: AsyncSession, user_ids: Sequence[int]) -> set[int]:
+        """
+        Which of these users hold a live subscription — one query for a whole
+        page of the user list, rather than a per-row premium check.
+        """
+        if not user_ids:
+            return set()
+        result = await session.execute(
+            select(Subscription.user_id)
+            .where(
+                Subscription.user_id.in_(user_ids),
+                Subscription.expires_at > datetime.now(timezone.utc),
+            )
+            .distinct()
+        )
+        return set(result.scalars())
+
+    async def top_users(self, session: AsyncSession, limit: int = 5) -> list[dict]:
+        result = await session.execute(
+            select(User.telegram_id, User.username, User.balance)
+            .order_by(User.balance.desc())
+            .limit(limit)
+        )
+        return [
+            {"telegram_id": row[0], "username": row[1], "balance": float(row[2])}
+            for row in result.all()
+        ]
+
+    # ---------- pending uploads ----------
+
+    async def list_pending_uploads(self, session: AsyncSession, limit: int = 100) -> list[PendingUpload]:
+        result = await session.execute(
+            select(PendingUpload).order_by(PendingUpload.created_at.desc()).limit(limit)
+        )
+        return list(result.scalars())
+
+    async def delete_pending_upload(self, session: AsyncSession, pending_id: int) -> bool:
+        exists = (
+            await session.execute(select(PendingUpload.id).where(PendingUpload.id == pending_id))
+        ).scalar_one_or_none()
+        if exists is None:
+            return False
+        await session.execute(delete(PendingUpload).where(PendingUpload.id == pending_id))
+        await session.flush()
+        return True
+
+
+admin_content_service = AdminContentService()

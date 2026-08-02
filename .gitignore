@@ -1,0 +1,13 @@
+# Secrets — never commit: DB password, bot token, API keys
+.env
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+
+# Frontend build artefacts (also covered by webapp/.gitignore)
+webapp/node_modules/
+webapp/dist/

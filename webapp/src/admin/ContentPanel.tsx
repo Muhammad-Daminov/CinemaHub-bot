@@ -1,0 +1,182 @@
+/**
+ * Catalog browser. Stacked cards rather than a table — a 7-column table
+ * cannot fit a phone without horizontal scroll, which the Mini App must
+ * not have.
+ */
+import { Pencil, Plus, Power, Trash2 } from "lucide-react";
+import { useCallback, useEffect, useState } from "react";
+import { adminApi, ApiError } from "../lib/api";
+import type { AdminTitleListItem, ContentType } from "../types/admin";
+import { TitleEditor } from "./TitleEditor";
+import {
+  Badge,
+  Button,
+  CONTENT_TYPES,
+  EmptyState,
+  IconButton,
+  Notice,
+  Select,
+  TextInput,
+  contentTypeLabel,
+} from "./ui";
+
+type TypeFilter = ContentType | "all";
+type ActiveFilter = "all" | "active" | "hidden";
+
+const PAGE_SIZE = 20;
+
+export function ContentPanel() {
+  const [items, setItems] = useState<AdminTitleListItem[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(0);
+  const [query, setQuery] = useState("");
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
+  const [activeFilter, setActiveFilter] = useState<ActiveFilter>("all");
+  const [editingId, setEditingId] = useState<number | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const result = await adminApi.listTitles({
+        q: query || undefined,
+        content_type: typeFilter === "all" ? undefined : typeFilter,
+        is_active: activeFilter === "all" ? undefined : activeFilter === "active",
+        page,
+        page_size: PAGE_SIZE,
+      });
+      setItems(result.items);
+      setTotal(result.total);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Yuklashda xatolik.");
+    }
+  }, [query, typeFilter, activeFilter, page]);
+
+  useEffect(() => {
+    load();
+  }, [load]);
+
+  const handleToggle = async (id: number) => {
+    await adminApi.toggleTitle(id).catch(() => undefined);
+    load();
+  };
+
+  const handleDelete = async (item: AdminTitleListItem) => {
+    if (!window.confirm(`"${item.name}" o'chirilsinmi? Qismlari ham o'chadi.`)) return;
+    await adminApi.deleteTitle(item.id).catch(() => undefined);
+    load();
+  };
+
+  if (creating || editingId !== null) {
+    return (
+      <TitleEditor
+        titleId={editingId}
+        onClose={() => {
+          setCreating(false);
+          setEditingId(null);
+          load();
+        }}
+      />
+    );
+  }
+
+  const lastPage = Math.max(0, Math.ceil(total / PAGE_SIZE) - 1);
+
+  return (
+    <div className="space-y-3">
+      <div className="space-y-2">
+        <TextInput
+          value={query}
+          onChange={(value) => {
+            setPage(0);
+            setQuery(value);
+          }}
+          placeholder="Nomi bo'yicha qidirish…"
+        />
+        <div className="grid grid-cols-2 gap-2">
+          <Select<TypeFilter>
+            value={typeFilter}
+            onChange={(value) => {
+              setPage(0);
+              setTypeFilter(value);
+            }}
+            options={[{ value: "all", label: "Barcha turlar" }, ...CONTENT_TYPES]}
+          />
+          <Select<ActiveFilter>
+            value={activeFilter}
+            onChange={(value) => {
+              setPage(0);
+              setActiveFilter(value);
+            }}
+            options={[
+              { value: "all", label: "Barchasi" },
+              { value: "active", label: "Faol" },
+              { value: "hidden", label: "Yashirin" },
+            ]}
+          />
+        </div>
+        <Button full onClick={() => setCreating(true)}>
+          <span className="inline-flex items-center justify-center gap-1.5">
+            <Plus size={15} /> Yangi kontent
+          </span>
+        </Button>
+      </div>
+
+      {error && <Notice message={error} tone="error" />}
+
+      <p className="font-mono text-[11px] text-ink-dim">{total} ta natija</p>
+
+      {items.length === 0 ? (
+        <EmptyState message="Hech narsa topilmadi." />
+      ) : (
+        <ul className="space-y-2">
+          {items.map((item) => (
+            <li key={item.id} className="rounded-xl border border-surface-hi bg-surface p-3">
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-display text-sm font-medium text-ink">{item.name}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-1.5">
+                    <Badge>{contentTypeLabel(item.content_type)}</Badge>
+                    {item.year != null && (
+                      <span className="font-mono text-[11px] text-ink-dim">{item.year}</span>
+                    )}
+                    <Badge active={item.is_active}>{item.is_active ? "Faol" : "Yashirin"}</Badge>
+                  </div>
+                  <p className="mt-1 font-mono text-[11px] text-ink-dim">
+                    {item.episode_count} qism · {item.file_count} fayl
+                  </p>
+                </div>
+                <div className="flex shrink-0 gap-1.5">
+                  <IconButton label="Faollik" onClick={() => handleToggle(item.id)}>
+                    <Power size={15} />
+                  </IconButton>
+                  <IconButton label="Tahrirlash" onClick={() => setEditingId(item.id)}>
+                    <Pencil size={15} />
+                  </IconButton>
+                  <IconButton label="O'chirish" tone="danger" onClick={() => handleDelete(item)}>
+                    <Trash2 size={15} />
+                  </IconButton>
+                </div>
+              </div>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {lastPage > 0 && (
+        <div className="flex items-center justify-between pt-2">
+          <Button tone="ghost" disabled={page === 0} onClick={() => setPage((p) => p - 1)}>
+            Oldingi
+          </Button>
+          <span className="font-mono text-xs text-ink-dim">
+            {page + 1} / {lastPage + 1}
+          </span>
+          <Button tone="ghost" disabled={page >= lastPage} onClick={() => setPage((p) => p + 1)}>
+            Keyingi
+          </Button>
+        </div>
+      )}
+    </div>
+  );
+}

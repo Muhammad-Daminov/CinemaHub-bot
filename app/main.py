@@ -1,0 +1,131 @@
+"""
+Application entrypoint.
+
+Runs Aiogram in WEBHOOK mode behind FastAPI, rather than polling —
+Render's web service model expects one process bound to $PORT serving
+HTTP, and webhook mode lets the same FastAPI app both serve the Mini
+App's API and receive Telegram updates.
+"""
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+import asyncio
+
+from aiogram import Dispatcher
+from aiogram.fsm.storage.redis import RedisStorage
+from aiogram.types import Update
+from fastapi import FastAPI, Request, Response
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
+from app.api import admin as admin_api
+from app.api import auth as auth_api
+from app.api import movies as movies_api
+from app.bot.handlers import base as base_handlers
+from app.bot.handlers import catalog as catalog_handlers
+from app.bot.handlers import streaming as streaming_handlers
+from app.bot.handlers import payment as payment_handlers
+from app.bot.handlers import admin_payment as admin_payment_handlers
+from app.bot.handlers import promo as promo_handlers
+from app.bot.handlers import admin_promo as admin_promo_handlers
+from app.bot.handlers import admin_upload as admin_upload_handlers
+from app.bot.handlers import ai as ai_handlers
+from app.bot.instance import bot
+from app.bot.middlewares.db import DbSessionMiddleware
+from app.bot.middlewares.i18n import I18nMiddleware
+from app.bot.middlewares.throttling import ThrottlingMiddleware
+from app.core.config import settings
+from app.db.session import check_db_connection
+from app.services.ai import ai_service
+from app.services.auto_delete import run_auto_delete_worker
+from app.services.tmdb import tmdb_service
+
+dispatcher = Dispatcher(
+    storage=RedisStorage.from_url(settings.REDIS_URL, state_ttl=3600, data_ttl=3600)
+)
+
+# Order matters: throttling first (cheap, drops spam before it touches the DB),
+# then the DB session wrapper, then i18n (which reads the user's language
+# through that session), then routers.
+dispatcher.update.middleware(ThrottlingMiddleware())
+dispatcher.update.middleware(DbSessionMiddleware())
+dispatcher.update.middleware(I18nMiddleware())
+dispatcher.include_router(base_handlers.router)
+dispatcher.include_router(catalog_handlers.router)
+dispatcher.include_router(streaming_handlers.router)
+dispatcher.include_router(payment_handlers.router)
+dispatcher.include_router(admin_payment_handlers.router)
+dispatcher.include_router(promo_handlers.router)
+dispatcher.include_router(admin_promo_handlers.router)
+dispatcher.include_router(admin_upload_handlers.router)
+dispatcher.include_router(ai_handlers.router)
+
+WEBHOOK_PATH = "/webhook/telegram"
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Startup: verify DB, register the webhook, launch the auto-delete worker. Shutdown: tear down cleanly."""
+    await check_db_connection()
+
+    if settings.WEBHOOK_BASE_URL:
+        await bot.set_webhook(
+            url=f"{settings.WEBHOOK_BASE_URL}{WEBHOOK_PATH}",
+            secret_token=settings.WEBHOOK_SECRET,
+            drop_pending_updates=True,
+        )
+
+    auto_delete_task = asyncio.create_task(run_auto_delete_worker(bot))
+
+    yield
+
+    auto_delete_task.cancel()
+    if settings.WEBHOOK_BASE_URL:
+        await bot.delete_webhook()
+    await bot.session.close()
+    await tmdb_service.close()
+    await ai_service.close()
+
+
+app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["https://web.telegram.org"] if settings.is_production else ["*"],
+    allow_credentials=False,
+    allow_methods=["GET", "POST"],
+    allow_headers=["*"],
+)
+
+app.include_router(auth_api.router, prefix="/api/auth", tags=["auth"])
+app.include_router(movies_api.router, prefix="/api/movies", tags=["movies"])
+app.include_router(admin_api.router, prefix="/api/admin", tags=["admin"])
+
+# The Mini App is a separately-built static bundle (webapp/, `npm run build` ->
+# webapp/dist). Mounting it here means one Render service serves both the API
+# and the frontend — no second service/host to manage. Guarded by exists() so
+# local API-only development doesn't require the frontend to be built first.
+WEBAPP_DIST_DIR = Path(__file__).resolve().parent.parent / "webapp" / "dist"
+if WEBAPP_DIST_DIR.exists():
+    app.mount("/miniapp", StaticFiles(directory=str(WEBAPP_DIST_DIR), html=True), name="miniapp")
+
+
+@app.get("/health")
+async def health_check() -> dict[str, str]:
+    """Render's health check target."""
+    await check_db_connection()
+    return {"status": "ok"}
+
+
+@app.post(WEBHOOK_PATH)
+async def telegram_webhook(request: Request) -> Response:
+    """Receives Telegram updates and hands them to the Aiogram dispatcher."""
+    if settings.WEBHOOK_SECRET:
+        token_header = request.headers.get("X-Telegram-Bot-Api-Secret-Token")
+        if token_header != settings.WEBHOOK_SECRET:
+            return Response(status_code=401)
+
+    update_data = await request.json()
+    update = Update.model_validate(update_data)
+    await dispatcher.feed_update(bot=bot, update=update)
+    return Response(status_code=200)
