@@ -6,6 +6,7 @@
  * same Tailwind strings across eight panels. Everything here uses the
  * project's colour tokens only — no raw hex.
  */
+import { ChevronDown } from "lucide-react";
 import type { ReactNode } from "react";
 import type { AudioLanguage, ContentType, VideoQuality } from "../types/admin";
 
@@ -105,17 +106,32 @@ export function Select<T extends string>({
   options: { value: T; label: string }[];
 }) {
   return (
-    <select
-      value={value}
-      onChange={(event) => onChange(event.target.value as T)}
-      className={FIELD_CLASS}
-    >
-      {options.map((option) => (
-        <option key={option.value} value={option.value}>
-          {option.label}
-        </option>
-      ))}
-    </select>
+    <div className="relative">
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value as T)}
+        // appearance-none is the actual fix: bg-surface was already on this
+        // element, but a native select paints the UA widget over it, and that
+        // widget is white regardless of the classes around it. pr-9 leaves
+        // room for the chevron we now have to draw ourselves.
+        className={`${FIELD_CLASS} appearance-none pr-9`}
+      >
+        {options.map((option) => (
+          // The popup list is rendered by the OS, not inside the page, so it
+          // inherits nothing from the control. These classes cover the
+          // browsers that do consult them; index.css sets color-scheme for
+          // the ones that only follow that.
+          <option key={option.value} value={option.value} className="bg-surface text-ink">
+            {option.label}
+          </option>
+        ))}
+      </select>
+      <ChevronDown
+        size={15}
+        aria-hidden
+        className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-ink-dim"
+      />
+    </div>
   );
 }
 
