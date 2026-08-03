@@ -37,6 +37,28 @@ async def increment_and_check(telegram_id: int, daily_limit: int) -> tuple[int, 
     return count, count <= daily_limit
 
 
+async def refund(telegram_id: int) -> None:
+    """
+    Gives back one request after a call that never produced an answer.
+
+    The middleware has to increment *before* the handler runs, otherwise
+    the cap isn't a gate at all — a user could fire several requests at
+    once and every one of them would check against the same stale count.
+    So the counter is optimistic, and the handler reverses it on a known
+    failure rather than the middleware guessing at the outcome.
+
+    Dropping the key once it reaches zero is both the floor (it can never
+    go negative) and the cleanup: DECR resurrects an already-expired key
+    at -1 with no TTL, and a zero-valued key is indistinguishable from a
+    missing one to every reader here. A SET would have reset the TTL and
+    handed the user a fresh day.
+    """
+    redis = get_redis()
+    key = _today_key(telegram_id)
+    if await redis.decr(key) <= 0:
+        await redis.delete(key)
+
+
 async def get_usage_count(telegram_id: int) -> int:
     redis = get_redis()
     value = await redis.get(_today_key(telegram_id))

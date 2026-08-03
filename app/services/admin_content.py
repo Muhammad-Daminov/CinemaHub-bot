@@ -13,23 +13,27 @@ MissingGreenlet. Deletes use Core `delete()` in child-first order
 rather than relying on ORM cascade, which would need the relationship
 loaded to work.
 """
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
 from fastapi import HTTPException
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, literal, or_, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.content import (
     AudioLanguage,
+    Collection,
     ContentType,
     Episode,
     MediaFile,
     PendingUpload,
     Title,
     VideoQuality,
+    title_collections,
 )
 from app.db.models.payment import PaymentReceipt, PaymentStatus
 from app.db.models.promo import PromoCode
@@ -347,6 +351,60 @@ class AdminContentService:
         await session.flush()
         return title
 
+    async def search_tmdb(self, query: str, limit: int = 10) -> list[dict]:
+        """
+        Raw TMDB search, flattened for the admin picker. Read-only — nothing
+        is written until the admin picks a specific result.
+        """
+        results = await tmdb_service.search_movie(query.strip())
+        flattened = []
+        for item in results[:limit]:
+            release_date = item.get("release_date") or ""
+            flattened.append(
+                {
+                    "id": item["id"],
+                    "title": item.get("title") or item.get("original_title") or "",
+                    "original_title": item.get("original_title"),
+                    "year": int(release_date[:4]) if release_date[:4].isdigit() else None,
+                    "poster_url": tmdb_service.build_poster_url(item.get("poster_path")),
+                    "overview": item.get("overview") or None,
+                }
+            )
+        return flattened
+
+    async def apply_tmdb_match(
+        self, session: AsyncSession, title_id: int, tmdb_id: int
+    ) -> Title | None:
+        """
+        Apply one hand-picked TMDB entry to a title.
+
+        Title.name is deliberately NOT touched: this catalog is indexed in
+        Uzbek ("Qum sayyorasi") and that is what users search for, while the
+        TMDB record is English ("Dune"). Overwriting the name would make the
+        title unfindable for the people it exists for.
+
+        Sets is_manual_override so a later auto-enrich — which searches by
+        the Uzbek name and would find nothing or the wrong film — cannot
+        undo the admin's choice.
+        """
+        title = await session.get(Title, title_id)
+        if title is None:
+            return None
+
+        details = await tmdb_service.get_movie_details(tmdb_id)
+
+        title.tmdb_id = details.get("id", tmdb_id)
+        title.poster_url = tmdb_service.build_poster_url(details.get("poster_path"))
+        title.description = details.get("overview")
+        title.rating = details.get("vote_average")
+        genres = [g["name"] for g in details.get("genres", [])]
+        if genres:
+            title.genres = genres
+        title.is_manual_override = True
+
+        await session.flush()
+        return title
+
     # ---------- dashboard ----------
 
     async def dashboard_stats(self, session: AsyncSession) -> DashboardStats:
@@ -447,6 +505,206 @@ class AdminContentService:
             {"telegram_id": row[0], "username": row[1], "balance": float(row[2])}
             for row in result.all()
         ]
+
+    # ---------- collections ----------
+
+    @staticmethod
+    def slugify(name: str) -> str:
+        """ASCII-ish slug; falls back to a name hash if nothing survives."""
+        slug = re.sub(r"[^a-z0-9]+", "-", name.strip().lower()).strip("-")
+        return slug or f"collection-{abs(hash(name)) % 10**6}"
+
+    async def create_collection(
+        self,
+        session: AsyncSession,
+        name: str,
+        description: str | None = None,
+        poster_url: str | None = None,
+        sort_order: int = 0,
+        slug: str | None = None,
+    ) -> Collection:
+        collection = Collection(
+            name=name.strip(),
+            slug=(slug or self.slugify(name)),
+            description=description,
+            poster_url=poster_url,
+            sort_order=sort_order,
+        )
+        session.add(collection)
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=409, detail=f"A collection named '{name.strip()}' already exists."
+            ) from exc
+        return collection
+
+    async def update_collection(
+        self, session: AsyncSession, collection_id: int, **fields
+    ) -> Collection | None:
+        collection = await session.get(Collection, collection_id)
+        if collection is None:
+            return None
+        for key, value in fields.items():
+            if not hasattr(collection, key):
+                raise ValueError(f"Collection has no field '{key}'")
+            setattr(collection, key, value)
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            raise HTTPException(
+                status_code=409, detail="Another collection already uses that name or slug."
+            ) from exc
+        return collection
+
+    async def set_collection_active(
+        self, session: AsyncSession, collection_id: int, is_active: bool
+    ) -> Collection | None:
+        collection = await session.get(Collection, collection_id)
+        if collection is None:
+            return None
+        collection.is_active = is_active
+        await session.flush()
+        return collection
+
+    async def delete_collection(self, session: AsyncSession, collection_id: int) -> bool:
+        """Drops the collection and its links. Titles themselves are untouched."""
+        exists = (
+            await session.execute(select(Collection.id).where(Collection.id == collection_id))
+        ).scalar_one_or_none()
+        if exists is None:
+            return False
+        await session.execute(
+            delete(title_collections).where(title_collections.c.collection_id == collection_id)
+        )
+        await session.execute(delete(Collection).where(Collection.id == collection_id))
+        await session.flush()
+        return True
+
+    async def list_collections_admin(
+        self, session: AsyncSession
+    ) -> list[tuple[Collection, int]]:
+        """All collections (active or not) with their raw title counts."""
+        title_count = (
+            select(func.count(title_collections.c.title_id))
+            .where(title_collections.c.collection_id == Collection.id)
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            select(Collection, title_count).order_by(Collection.sort_order, Collection.name)
+        )
+        return [(row[0], row[1]) for row in result.all()]
+
+    async def add_title_to_collection(
+        self, session: AsyncSession, collection_id: int, title_id: int
+    ) -> None:
+        """Idempotent — re-adding an already-linked title is a no-op, not a 409."""
+        statement = (
+            pg_insert(title_collections)
+            .values(title_id=title_id, collection_id=collection_id)
+            .on_conflict_do_nothing()
+        )
+        await session.execute(statement)
+        await session.flush()
+
+    async def remove_title_from_collection(
+        self, session: AsyncSession, collection_id: int, title_id: int
+    ) -> None:
+        await session.execute(
+            delete(title_collections).where(
+                title_collections.c.collection_id == collection_id,
+                title_collections.c.title_id == title_id,
+            )
+        )
+        await session.flush()
+
+    async def collection_titles(
+        self, session: AsyncSession, collection_id: int
+    ) -> list[Title]:
+        result = await session.execute(
+            select(Title)
+            .join(title_collections, title_collections.c.title_id == Title.id)
+            .where(title_collections.c.collection_id == collection_id)
+            .order_by(Title.name)
+        )
+        return list(result.scalars())
+
+    async def title_collection_ids(self, session: AsyncSession, title_id: int) -> list[int]:
+        result = await session.execute(
+            select(title_collections.c.collection_id).where(
+                title_collections.c.title_id == title_id
+            )
+        )
+        return [row[0] for row in result.all()]
+
+    async def set_title_collections(
+        self, session: AsyncSession, title_id: int, collection_ids: list[int]
+    ) -> list[int]:
+        """Replaces a title's collection membership wholesale."""
+        await session.execute(
+            delete(title_collections).where(title_collections.c.title_id == title_id)
+        )
+        if collection_ids:
+            await session.execute(
+                pg_insert(title_collections)
+                .values([{"title_id": title_id, "collection_id": cid} for cid in set(collection_ids)])
+                .on_conflict_do_nothing()
+            )
+        await session.flush()
+        return await self.title_collection_ids(session, title_id)
+
+    # ---------- duplicate detection ----------
+
+    async def similar_titles(
+        self, session: AsyncSession, name: str, limit: int = 5
+    ) -> list[tuple[Title, int, list[str]]]:
+        """
+        Fuzzy name matches, with episode count and the audio languages
+        already attached.
+
+        The language list is the whole point: before adding "O'rgimchak
+        odam" for the third time, the admin needs to see that the row
+        already exists AND whether the Russian dub is already on it.
+
+        Matches both directions — the stored name containing the typed
+        text, or the typed text containing the stored name — so "Venom"
+        finds "Venom 3" and "Venom 3 (2021)" finds "Venom 3".
+        """
+        needle = name.strip()
+        if len(needle) < 2:
+            return []
+
+        episode_count = (
+            select(func.count(Episode.id)).where(Episode.title_id == Title.id).scalar_subquery()
+        )
+        result = await session.execute(
+            select(Title, episode_count)
+            .where(
+                or_(
+                    Title.name.ilike(f"%{needle}%"),
+                    literal(needle).ilike(func.concat("%", Title.name, "%")),
+                )
+            )
+            .order_by(Title.name)
+            .limit(limit)
+        )
+        rows = [(row[0], row[1]) for row in result.all()]
+        if not rows:
+            return []
+
+        # One grouped query for every match's languages, not one per row.
+        title_ids = [title.id for title, _ in rows]
+        language_result = await session.execute(
+            select(Episode.title_id, MediaFile.language)
+            .join(MediaFile, MediaFile.episode_id == Episode.id)
+            .where(Episode.title_id.in_(title_ids))
+            .group_by(Episode.title_id, MediaFile.language)
+        )
+        by_title: dict[int, list[str]] = {}
+        for title_id, language in language_result.all():
+            by_title.setdefault(title_id, []).append(language.value)
+
+        return [(title, count, sorted(by_title.get(title.id, []))) for title, count in rows]
 
     # ---------- pending uploads ----------
 

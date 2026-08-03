@@ -10,6 +10,7 @@ app.services.admin_content for the same reason.
 from dataclasses import asdict
 from datetime import date, datetime, timedelta, timezone
 
+import aiohttp
 from aiogram.exceptions import TelegramAPIError
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
@@ -22,6 +23,7 @@ from app.bot.instance import bot
 from app.core.codegen import generate_code
 from app.db.models.content import (
     AudioLanguage,
+    Collection,
     ContentType,
     Episode,
     PendingUpload,
@@ -428,6 +430,220 @@ async def enrich_title_route(title_id: int, session: AsyncSession = Depends(get_
     if title is None:
         raise HTTPException(status_code=404, detail="Title not found")
     return title
+
+
+# ---------- Collections ----------
+
+class CollectionOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    name: str
+    slug: str
+    description: str | None
+    poster_url: str | None
+    sort_order: int
+    is_active: bool
+    created_at: datetime
+
+
+class CollectionListItemOut(CollectionOut):
+    title_count: int
+
+
+class CollectionIn(BaseModel):
+    name: str
+    description: str | None = None
+    poster_url: str | None = None
+    sort_order: int = 0
+    slug: str | None = None
+
+
+class CollectionUpdateIn(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    poster_url: str | None = None
+    sort_order: int | None = None
+    slug: str | None = None
+    is_active: bool | None = None
+
+
+class CollectionTitleIn(BaseModel):
+    title_id: int
+
+
+class TitleCollectionsIn(BaseModel):
+    collection_ids: list[int]
+
+
+@router.get("/collections", response_model=list[CollectionListItemOut])
+async def list_collections_route(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[CollectionListItemOut]:
+    rows = await admin_content_service.list_collections_admin(session)
+    return [
+        CollectionListItemOut(
+            **CollectionOut.model_validate(collection).model_dump(), title_count=count
+        )
+        for collection, count in rows
+    ]
+
+
+@router.post("/collections", response_model=CollectionOut)
+async def create_collection_route(
+    body: CollectionIn, session: AsyncSession = Depends(get_db_session)
+) -> Collection:
+    return await admin_content_service.create_collection(session, **body.model_dump())
+
+
+@router.patch("/collections/{collection_id}", response_model=CollectionOut)
+async def update_collection_route(
+    collection_id: int, body: CollectionUpdateIn, session: AsyncSession = Depends(get_db_session)
+) -> Collection:
+    collection = await admin_content_service.update_collection(
+        session, collection_id, **body.model_dump(exclude_unset=True)
+    )
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return collection
+
+
+@router.patch("/collections/{collection_id}/toggle", response_model=CollectionOut)
+async def toggle_collection_route(
+    collection_id: int, session: AsyncSession = Depends(get_db_session)
+) -> Collection:
+    collection = await session.get(Collection, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return await admin_content_service.set_collection_active(
+        session, collection_id, not collection.is_active
+    )
+
+
+@router.delete("/collections/{collection_id}")
+async def delete_collection_route(
+    collection_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    if not await admin_content_service.delete_collection(session, collection_id):
+        raise HTTPException(status_code=404, detail="Collection not found")
+    return {"status": "deleted"}
+
+
+@router.get("/collections/{collection_id}/titles", response_model=list[TitleOut])
+async def collection_titles_route(
+    collection_id: int, session: AsyncSession = Depends(get_db_session)
+) -> list[Title]:
+    return await admin_content_service.collection_titles(session, collection_id)
+
+
+@router.post("/collections/{collection_id}/titles")
+async def add_title_to_collection_route(
+    collection_id: int, body: CollectionTitleIn, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    if await session.get(Collection, collection_id) is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    if await session.get(Title, body.title_id) is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+    await admin_content_service.add_title_to_collection(session, collection_id, body.title_id)
+    return {"status": "added"}
+
+
+@router.delete("/collections/{collection_id}/titles/{title_id}")
+async def remove_title_from_collection_route(
+    collection_id: int, title_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    await admin_content_service.remove_title_from_collection(session, collection_id, title_id)
+    return {"status": "removed"}
+
+
+@router.get("/titles/{title_id}/collections", response_model=list[int])
+async def title_collections_route(
+    title_id: int, session: AsyncSession = Depends(get_db_session)
+) -> list[int]:
+    return await admin_content_service.title_collection_ids(session, title_id)
+
+
+@router.put("/titles/{title_id}/collections", response_model=list[int])
+async def set_title_collections_route(
+    title_id: int, body: TitleCollectionsIn, session: AsyncSession = Depends(get_db_session)
+) -> list[int]:
+    if await session.get(Title, title_id) is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+    return await admin_content_service.set_title_collections(session, title_id, body.collection_ids)
+
+
+# ---------- TMDB manual search ----------
+
+class TMDBSearchResultOut(BaseModel):
+    id: int
+    title: str
+    original_title: str | None
+    year: int | None
+    poster_url: str | None
+    overview: str | None
+
+
+@router.get("/tmdb/search", response_model=list[TMDBSearchResultOut])
+async def tmdb_search_route(
+    q: str = Query(min_length=1),
+    limit: int = Query(default=10, ge=1, le=20),
+) -> list[dict]:
+    """
+    Search TMDB by hand. Auto-enrich matches on the stored Uzbek name and
+    misses most of this catalog, so the admin searches the English title
+    here and picks the right record themselves. Writes nothing.
+    """
+    try:
+        return await admin_content_service.search_tmdb(q, limit=limit)
+    except aiohttp.ClientError as exc:
+        raise HTTPException(status_code=502, detail=f"TMDB request failed: {exc}") from exc
+
+
+@router.post("/titles/{title_id}/tmdb/{tmdb_id}", response_model=TitleOut)
+async def apply_tmdb_match_route(
+    title_id: int, tmdb_id: int, session: AsyncSession = Depends(get_db_session)
+) -> Title:
+    """Applies a chosen TMDB record. Title.name is never overwritten."""
+    try:
+        title = await admin_content_service.apply_tmdb_match(session, title_id, tmdb_id)
+    except aiohttp.ClientError as exc:
+        raise HTTPException(status_code=502, detail=f"TMDB request failed: {exc}") from exc
+    if title is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+    return title
+
+
+# ---------- Duplicate detection ----------
+
+class SimilarTitleOut(BaseModel):
+    id: int
+    name: str
+    content_type: ContentType
+    year: int | None
+    poster_url: str | None
+    episode_count: int
+    languages: list[AudioLanguage]
+
+
+@router.get("/titles/similar", response_model=list[SimilarTitleOut])
+async def similar_titles_route(
+    name: str = Query(min_length=1),
+    limit: int = Query(default=5, ge=1, le=20),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[SimilarTitleOut]:
+    """Existing titles matching `name` — shown while an admin types a new one."""
+    rows = await admin_content_service.similar_titles(session, name, limit=limit)
+    return [
+        SimilarTitleOut(
+            id=title.id,
+            name=title.name,
+            content_type=title.content_type,
+            year=title.year,
+            poster_url=title.poster_url,
+            episode_count=episode_count,
+            languages=languages,
+        )
+        for title, episode_count, languages in rows
+    ]
 
 
 # ---------- Episodes ----------

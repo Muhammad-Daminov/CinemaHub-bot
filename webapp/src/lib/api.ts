@@ -4,6 +4,8 @@ import type {
   ActivityPoint,
   AdminCard,
   AdminCardInput,
+  AdminCollection,
+  AdminCollectionListItem,
   AdminEpisode,
   AdminMediaFile,
   AdminPromoCode,
@@ -16,7 +18,11 @@ import type {
   PendingAttachInput,
   PendingUpload,
   PromoCodeInput,
+  CollectionInput,
+  CollectionUpdateInput,
+  SimilarTitle,
   StatusResponse,
+  TMDBSearchResult,
   TitleInput,
   TitleListParams,
   TitlePage,
@@ -110,6 +116,35 @@ export const adminApi = {
   attachPendingUpload: (id: number, body: PendingAttachInput) =>
     send<AdminMediaFile>(`/admin/pending-uploads/${id}/attach`, "POST", body),
   deletePendingUpload: (id: number) => send<StatusResponse>(`/admin/pending-uploads/${id}`, "DELETE"),
+
+  // ---------- collections ----------
+  listCollections: () => request<AdminCollectionListItem[]>("/admin/collections"),
+  createCollection: (body: CollectionInput) =>
+    send<AdminCollection>("/admin/collections", "POST", body),
+  updateCollection: (id: number, body: CollectionUpdateInput) =>
+    send<AdminCollection>(`/admin/collections/${id}`, "PATCH", body),
+  toggleCollection: (id: number) =>
+    send<AdminCollection>(`/admin/collections/${id}/toggle`, "PATCH"),
+  deleteCollection: (id: number) =>
+    send<StatusResponse>(`/admin/collections/${id}`, "DELETE"),
+  collectionTitles: (id: number) => request<AdminTitle[]>(`/admin/collections/${id}/titles`),
+  addTitleToCollection: (id: number, titleId: number) =>
+    send<StatusResponse>(`/admin/collections/${id}/titles`, "POST", { title_id: titleId }),
+  removeTitleFromCollection: (id: number, titleId: number) =>
+    send<StatusResponse>(`/admin/collections/${id}/titles/${titleId}`, "DELETE"),
+  titleCollections: (titleId: number) => request<number[]>(`/admin/titles/${titleId}/collections`),
+  setTitleCollections: (titleId: number, collectionIds: number[]) =>
+    send<number[]>(`/admin/titles/${titleId}/collections`, "PUT", { collection_ids: collectionIds }),
+
+  // ---------- TMDB manual search ----------
+  searchTmdb: (q: string) =>
+    request<TMDBSearchResult[]>(`/admin/tmdb/search?q=${encodeURIComponent(q)}`),
+  applyTmdbMatch: (titleId: number, tmdbId: number) =>
+    send<AdminTitle>(`/admin/titles/${titleId}/tmdb/${tmdbId}`, "POST"),
+
+  // ---------- duplicate detection ----------
+  similarTitles: (name: string) =>
+    request<SimilarTitle[]>(`/admin/titles/similar?name=${encodeURIComponent(name)}`),
 
   // ---------- users ----------
   listUsers: (params: UserListParams = {}) => request<UserPage>(`/admin/users${toQuery(params)}`),

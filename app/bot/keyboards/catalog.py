@@ -16,6 +16,7 @@ always directly playable:
   ttl:12        -> open title 12 (delivers if it's a film, else browses)
   ssn:12:3      -> title 12, season 3 episode list
   eps:12:3:2    -> title 12, season 3, episode page 2
+  fav:12        -> toggle title 12 in the viewer's favourites
   watch:<ep_id> -> play THIS episode now (see keyboards/movie.py)
 """
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
@@ -29,6 +30,8 @@ BROWSE_SEARCH = "cat_menu:search"
 BROWSE_GENRES = "cat_menu:genres"
 BROWSE_POPULAR = "cat_menu:popular"
 BROWSE_CONTINUE = "cat_menu:continue"
+BROWSE_COLLECTIONS = "cat_menu:collections"
+BROWSE_FAVORITES = "cat_menu:favorites"
 BROWSE_MENU_BACK = "cat_menu:back"
 
 PAGE_PREFIX = "cat:"
@@ -36,10 +39,13 @@ MODE_POPULAR = "pop"
 MODE_GENRE = "gen"
 MODE_SEARCH = "src"
 MODE_TYPE = "typ"
+MODE_COLLECTION = "col"
+MODE_FAVORITES = "fav"
 
 TITLE_PREFIX = "ttl:"
 SEASON_PREFIX = "ssn:"
 EPISODE_PAGE_PREFIX = "eps:"
+FAVORITE_PREFIX = "fav:"
 
 NOOP = "cat:noop"
 
@@ -97,6 +103,16 @@ def get_browse_menu_keyboard(lang: UILanguage) -> InlineKeyboardMarkup:
                 )
             ],
             [InlineKeyboardButton(text=t("catalog.btn_continue", lang), callback_data=BROWSE_CONTINUE)],
+            [
+                InlineKeyboardButton(
+                    text=t("catalog.btn_favorites", lang), callback_data=BROWSE_FAVORITES
+                )
+            ],
+            [
+                InlineKeyboardButton(
+                    text=t("catalog.btn_collections", lang), callback_data=BROWSE_COLLECTIONS
+                )
+            ],
             *type_rows,
         ]
     )
@@ -112,18 +128,27 @@ def get_genres_keyboard(genres: list[str], lang: UILanguage) -> InlineKeyboardMa
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_title_card_keyboard(title_id: int, lang: UILanguage) -> InlineKeyboardMarkup:
+def get_title_card_keyboard(
+    title_id: int, lang: UILanguage, is_favorite: bool = False
+) -> InlineKeyboardMarkup:
     """
-    One button per title card. It opens the title rather than playing it —
-    only the handler knows whether this is a one-shot film or a serial that
-    needs a season/episode choice first.
+    Watch + favourite toggle for one title card. Watch opens the title
+    rather than playing it — only the handler knows whether this is a
+    one-shot film or a serial that needs a season/episode choice first.
+
+    The heart's label carries the current state, so tapping it only needs
+    to swap this markup rather than re-send the card.
     """
+    heart_key = "catalog.btn_fav_remove" if is_favorite else "catalog.btn_fav_add"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
                 InlineKeyboardButton(
                     text=t("catalog.btn_watch", lang), callback_data=f"{TITLE_PREFIX}{title_id}"
-                )
+                ),
+                InlineKeyboardButton(
+                    text=t(heart_key, lang), callback_data=f"{FAVORITE_PREFIX}{title_id}"
+                ),
             ]
         ]
     )
@@ -189,6 +214,25 @@ def get_episodes_keyboard(
             ]
         )
     rows.append([InlineKeyboardButton(text=t("catalog.btn_menu", lang), callback_data=BROWSE_MENU_BACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def get_collections_keyboard(summaries, lang: UILanguage) -> InlineKeyboardMarkup:
+    """
+    One button per collection. Paging into a collection reuses the standard
+    `cat:<mode>:<arg>:<page>` format with mode "col" and the collection id as
+    the arg — no parallel callback scheme to maintain.
+    """
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=f"{item.collection.name} ({item.title_count})",
+                callback_data=build_page_callback(MODE_COLLECTION, str(item.collection.id), 0),
+            )
+        ]
+        for item in summaries
+    ]
+    rows.append([InlineKeyboardButton(text=t("catalog.btn_back", lang), callback_data=BROWSE_MENU_BACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

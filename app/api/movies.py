@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_user
 from app.bot.instance import bot
-from app.db.models.content import Episode, MediaFile, Title
+from app.db.models.content import Collection, Episode, MediaFile, Title, title_collections
 from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.content import content_service
@@ -40,6 +40,15 @@ class MovieOut(BaseModel):
 class WatchResponse(BaseModel):
     status: str
     message: str
+
+
+class CollectionOut(BaseModel):
+    id: int
+    name: str
+    slug: str
+    description: str | None
+    poster_url: str | None
+    title_count: int
 
 
 def _to_movie_out(title: Title) -> MovieOut:
@@ -70,17 +79,43 @@ def _playable_titles() -> Select:
     return select(Title).where(Title.is_active.is_(True), has_file)
 
 
+@router.get("/collections", response_model=list[CollectionOut])
+async def list_collections(
+    session: AsyncSession = Depends(get_db_session),
+    _user: User = Depends(get_current_user),
+) -> list[CollectionOut]:
+    """Active collections only — the admin panel is where inactive ones live."""
+    summaries = await content_service.list_collections(session)
+    return [
+        CollectionOut(
+            id=item.collection.id,
+            name=item.collection.name,
+            slug=item.collection.slug,
+            description=item.collection.description,
+            poster_url=item.collection.poster_url,
+            title_count=item.title_count,
+        )
+        for item in summaries
+    ]
+
+
 @router.get("", response_model=list[MovieOut])
 async def list_movies(
     skip: int = Query(default=0, ge=0),
     limit: int = Query(default=20, ge=1, le=100),
     genre: str | None = None,
+    collection_id: int | None = None,
     session: AsyncSession = Depends(get_db_session),
     _user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
     stmt = _playable_titles().order_by(Title.created_at.desc())
     if genre:
         stmt = stmt.where(Title.genres.any(genre))
+    if collection_id is not None:
+        # Explicit join, never a lazy Title.collections walk.
+        stmt = stmt.join(
+            title_collections, title_collections.c.title_id == Title.id
+        ).where(title_collections.c.collection_id == collection_id)
     result = await session.execute(stmt.offset(skip).limit(limit))
     return [_to_movie_out(title) for title in result.scalars()]
 

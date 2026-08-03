@@ -18,17 +18,21 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.streaming import deliver_and_warn
 from app.bot.keyboards.catalog import (
+    BROWSE_COLLECTIONS,
     BROWSE_CONTINUE,
+    BROWSE_FAVORITES,
     BROWSE_GENRES,
     BROWSE_MENU_BACK,
     BROWSE_SEARCH,
     EPISODE_PAGE_PREFIX,
     EPISODES_PAGE_SIZE,
+    FAVORITE_PREFIX,
+    MODE_COLLECTION,
+    MODE_FAVORITES,
     MODE_GENRE,
     MODE_SEARCH,
     MODE_TYPE,
@@ -37,6 +41,7 @@ from app.bot.keyboards.catalog import (
     SEASON_PREFIX,
     TITLE_PREFIX,
     get_browse_menu_keyboard,
+    get_collections_keyboard,
     get_continue_watching_keyboard,
     get_episodes_keyboard,
     get_genres_keyboard,
@@ -49,9 +54,10 @@ from app.bot.keyboards.catalog import (
 )
 from app.bot.keyboards.main_menu import MENU_MOVIES, menu_texts
 from app.db.models.content import ContentType, Title
-from app.db.models.user import UILanguage, User
+from app.db.models.user import UILanguage
 from app.services.achievements import continue_watching
 from app.services.content import TitlePage, content_service
+from app.services.users import get_user_id
 
 router = Router(name="catalog")
 
@@ -77,15 +83,30 @@ def _format_card(title: Title, _) -> str:
 
 
 async def _send_page(
-    message: Message, page: TitlePage, mode: str, arg: str, empty_text: str, lang: UILanguage, _
+    message: Message,
+    session: AsyncSession,
+    user_id: int | None,
+    page: TitlePage,
+    mode: str,
+    arg: str,
+    empty_text: str,
+    lang: UILanguage,
+    _,
 ) -> None:
     if not page.titles:
         await message.answer(empty_text, reply_markup=get_browse_menu_keyboard(lang))
         return
 
+    # One query for the whole page rather than a lookup per card.
+    saved: set[int] = (
+        await content_service.favorite_title_ids(session, user_id, [item.id for item in page.titles])
+        if user_id
+        else set()
+    )
+
     for title in page.titles:
         caption = _format_card(title, _)
-        keyboard = get_title_card_keyboard(title.id, lang)
+        keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
         if title.poster_url:
             await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)
         else:
@@ -97,13 +118,21 @@ async def _send_page(
     )
 
 
-async def _load_page(session: AsyncSession, mode: str, arg: str, page_num: int) -> TitlePage:
+async def _load_page(
+    session: AsyncSession, mode: str, arg: str, page_num: int, user_id: int | None
+) -> TitlePage:
     if mode == MODE_SEARCH:
         return await content_service.browse(session, page=page_num, query=arg)
     if mode == MODE_GENRE:
         return await content_service.browse(session, page=page_num, genre=arg)
     if mode == MODE_TYPE:
         return await content_service.browse(session, page=page_num, content_type=ContentType(arg))
+    if mode == MODE_COLLECTION:
+        return await content_service.browse(session, page=page_num, collection_id=int(arg))
+    if mode == MODE_FAVORITES:
+        if user_id is None:
+            return TitlePage(titles=[], page=page_num, has_more=False)
+        return await content_service.list_favorites(session, user_id, page=page_num)
     return await content_service.browse(session, page=page_num)
 
 
@@ -168,7 +197,15 @@ async def handle_search_query(
     await state.clear()
     page = await content_service.browse(session, page=0, query=query)
     await _send_page(
-        message, page, MODE_SEARCH, query, _("catalog.not_found", query=query), lang, _
+        message,
+        session,
+        await get_user_id(session, message.from_user.id),
+        page,
+        MODE_SEARCH,
+        query,
+        _("catalog.not_found", query=query),
+        lang,
+        _,
     )
 
 
@@ -182,13 +219,25 @@ async def handle_genres(callback: CallbackQuery, session: AsyncSession, lang: UI
     await callback.answer()
 
 
+@router.callback_query(F.data == BROWSE_COLLECTIONS)
+async def handle_collections(
+    callback: CallbackQuery, session: AsyncSession, lang: UILanguage, _
+) -> None:
+    summaries = [s for s in await content_service.list_collections(session) if s.title_count > 0]
+    if not summaries:
+        await callback.answer(_("catalog.no_collections"), show_alert=True)
+        return
+    await callback.message.answer(
+        _("catalog.choose_collection"), reply_markup=get_collections_keyboard(summaries, lang)
+    )
+    await callback.answer()
+
+
 @router.callback_query(F.data == BROWSE_CONTINUE)
 async def handle_continue_watching(
     callback: CallbackQuery, session: AsyncSession, lang: UILanguage, _
 ) -> None:
-    user_id = (
-        await session.execute(select(User.id).where(User.telegram_id == callback.from_user.id))
-    ).scalar_one_or_none()
+    user_id = await get_user_id(session, callback.from_user.id)
 
     items = await continue_watching(session, user_id) if user_id else []
     if not items:
@@ -202,6 +251,57 @@ async def handle_continue_watching(
     await callback.answer()
 
 
+@router.callback_query(F.data == BROWSE_FAVORITES)
+async def handle_favorites(
+    callback: CallbackQuery, session: AsyncSession, lang: UILanguage, _
+) -> None:
+    user_id = await get_user_id(session, callback.from_user.id)
+    page = await _load_page(session, MODE_FAVORITES, "", 0, user_id)
+    if not page.titles:
+        await callback.answer(_("catalog.favorites_empty"), show_alert=True)
+        return
+
+    await callback.message.answer(_("catalog.favorites_header"))
+    await _send_page(
+        callback.message,
+        session,
+        user_id,
+        page,
+        MODE_FAVORITES,
+        "",
+        _("catalog.favorites_empty"),
+        lang,
+        _,
+    )
+    await callback.answer()
+
+
+@router.callback_query(F.data.startswith(FAVORITE_PREFIX))
+async def handle_favorite_toggle(
+    callback: CallbackQuery, session: AsyncSession, lang: UILanguage, _
+) -> None:
+    """
+    Flips the heart on the card that was tapped and swaps that one button
+    in place — re-sending the card would push the whole page up the chat.
+    """
+    title_id = int(callback.data.removeprefix(FAVORITE_PREFIX))
+    user_id = await get_user_id(session, callback.from_user.id)
+    if user_id is None:
+        await callback.answer(_("common.need_start"), show_alert=True)
+        return
+
+    saved = await content_service.toggle_favorite(session, user_id, title_id)
+
+    try:
+        await callback.message.edit_reply_markup(
+            reply_markup=get_title_card_keyboard(title_id, lang, is_favorite=saved)
+        )
+    except Exception:  # noqa: BLE001 — card may be too old to edit; the toast still confirms it
+        pass
+
+    await callback.answer(_("catalog.favorite_added" if saved else "catalog.favorite_removed"))
+
+
 @router.callback_query(F.data == NOOP)
 async def handle_noop(callback: CallbackQuery) -> None:
     await callback.answer()
@@ -210,7 +310,8 @@ async def handle_noop(callback: CallbackQuery) -> None:
 @router.callback_query(F.data.startswith(PAGE_PREFIX))
 async def handle_page(callback: CallbackQuery, session: AsyncSession, lang: UILanguage, _) -> None:
     mode, arg, page_num = parse_page_callback(callback.data)
-    page = await _load_page(session, mode, arg, page_num)
+    user_id = await get_user_id(session, callback.from_user.id)
+    page = await _load_page(session, mode, arg, page_num, user_id)
 
     # Remove the pagination message the user just tapped, so successive
     # pages don't stack up as dead controls in the chat.
@@ -220,7 +321,7 @@ async def handle_page(callback: CallbackQuery, session: AsyncSession, lang: UILa
         pass
 
     empty = _("catalog.empty_page")
-    await _send_page(callback.message, page, mode, arg, empty, lang, _)
+    await _send_page(callback.message, session, user_id, page, mode, arg, empty, lang, _)
     await callback.answer()
 
 

@@ -8,6 +8,7 @@
  */
 import { useState } from "react";
 import { CardsPanel } from "./CardsPanel";
+import { CollectionsPanel } from "./CollectionsPanel";
 import { ContentPanel } from "./ContentPanel";
 import { PromoPanel } from "./PromoPanel";
 import { ReceiptsPanel } from "./ReceiptsPanel";
@@ -15,11 +16,20 @@ import { StatsPanel } from "./StatsPanel";
 import { UploadsPanel } from "./UploadsPanel";
 import { UsersPanel } from "./UsersPanel";
 
-type TabId = "stats" | "content" | "uploads" | "receipts" | "cards" | "promo" | "users";
+type TabId =
+  | "stats"
+  | "content"
+  | "collections"
+  | "uploads"
+  | "receipts"
+  | "cards"
+  | "promo"
+  | "users";
 
 const TABS: { id: TabId; label: string }[] = [
   { id: "stats", label: "📊 Statistika" },
   { id: "content", label: "🎬 Kontent" },
+  { id: "collections", label: "🏷️ To'plamlar" },
   { id: "uploads", label: "📥 Yuklanganlar" },
   { id: "receipts", label: "💳 To'lovlar" },
   { id: "cards", label: "🎴 Kartalar" },
@@ -53,6 +63,7 @@ export function AdminDashboard() {
       <div className="p-4">
         {tab === "stats" && <StatsPanel />}
         {tab === "content" && <ContentPanel />}
+        {tab === "collections" && <CollectionsPanel />}
         {tab === "uploads" && <UploadsPanel />}
         {tab === "receipts" && <ReceiptsPanel />}
         {tab === "cards" && <CardsPanel />}

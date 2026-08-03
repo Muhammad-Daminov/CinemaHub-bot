@@ -216,3 +216,49 @@ export interface UserListParams {
   page?: number;
   page_size?: number;
 }
+
+export interface AdminCollection {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  poster_url: string | null;
+  sort_order: number;
+  is_active: boolean;
+  created_at: string;
+}
+
+export interface AdminCollectionListItem extends AdminCollection {
+  title_count: number;
+}
+
+export interface CollectionInput {
+  name: string;
+  description?: string | null;
+  poster_url?: string | null;
+  sort_order?: number;
+  slug?: string | null;
+}
+
+export type CollectionUpdateInput = Partial<CollectionInput> & { is_active?: boolean };
+
+/** A possible duplicate surfaced while an admin types a new title name. */
+export interface SimilarTitle {
+  id: number;
+  name: string;
+  content_type: ContentType;
+  year: number | null;
+  poster_url: string | null;
+  episode_count: number;
+  languages: AudioLanguage[];
+}
+
+/** One TMDB search hit shown in the manual picker. Nothing is stored until tapped. */
+export interface TMDBSearchResult {
+  id: number;
+  title: string;
+  original_title: string | null;
+  year: number | null;
+  poster_url: string | null;
+  overview: string | null;
+}

@@ -77,6 +77,11 @@ export function ContentPanel() {
           setEditingId(null);
           load();
         }}
+        onOpenTitle={(id) => {
+          // Tapped a duplicate match — edit that one instead of creating another.
+          setCreating(false);
+          setEditingId(id);
+        }}
       />
     );
   }

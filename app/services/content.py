@@ -8,11 +8,21 @@ is missing would hide content the user can still watch.
 """
 from dataclasses import dataclass
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.db.models.content import AudioLanguage, ContentType, Episode, MediaFile, Title
+from app.db.models.content import (
+    AudioLanguage,
+    Collection,
+    ContentType,
+    Episode,
+    Favorite,
+    MediaFile,
+    Title,
+    title_collections,
+)
 from app.db.models.user import UILanguage
 
 PAGE_SIZE = 5
@@ -23,6 +33,12 @@ LANGUAGE_PREFERENCE: dict[UILanguage, list[AudioLanguage]] = {
     UILanguage.RU: [AudioLanguage.RU, AudioLanguage.UZ_DUB, AudioLanguage.ORIGINAL, AudioLanguage.EN, AudioLanguage.UZ_SUB],
     UILanguage.EN: [AudioLanguage.EN, AudioLanguage.ORIGINAL, AudioLanguage.RU, AudioLanguage.UZ_DUB, AudioLanguage.UZ_SUB],
 }
+
+
+@dataclass
+class CollectionSummary:
+    collection: Collection
+    title_count: int
 
 
 @dataclass
@@ -66,10 +82,17 @@ class ContentService:
         content_type: ContentType | None = None,
         genre: str | None = None,
         query: str | None = None,
+        collection_id: int | None = None,
         order_by_popularity: bool = True,
     ) -> TitlePage:
         stmt = select(Title).where(Title.is_active.is_(True), _has_playable_file())
 
+        if collection_id is not None:
+            # Explicit join through the association table — never a lazy
+            # `title.collections` walk, which raises under async.
+            stmt = stmt.join(
+                title_collections, title_collections.c.title_id == Title.id
+            ).where(title_collections.c.collection_id == collection_id)
         if content_type:
             stmt = stmt.where(Title.content_type == content_type)
         if genre:
@@ -83,6 +106,29 @@ class ContentService:
         result = await session.execute(stmt.offset(page * PAGE_SIZE).limit(PAGE_SIZE + 1))
         rows = list(result.scalars())
         return TitlePage(titles=rows[:PAGE_SIZE], page=page, has_more=len(rows) > PAGE_SIZE)
+
+    async def list_collections(self, session: AsyncSession) -> list[CollectionSummary]:
+        """
+        Active collections with how many playable titles each holds, in one
+        query. The count uses the same playable-file gate as browse(), so a
+        collection never advertises titles the catalog would then hide.
+        """
+        title_count = (
+            select(func.count(title_collections.c.title_id))
+            .where(
+                title_collections.c.collection_id == Collection.id,
+                title_collections.c.title_id.in_(
+                    select(Title.id).where(Title.is_active.is_(True), _has_playable_file())
+                ),
+            )
+            .scalar_subquery()
+        )
+        result = await session.execute(
+            select(Collection, title_count)
+            .where(Collection.is_active.is_(True))
+            .order_by(Collection.sort_order, Collection.name)
+        )
+        return [CollectionSummary(collection=row[0], title_count=row[1]) for row in result.all()]
 
     async def get_title(self, session: AsyncSession, title_id: int) -> Title | None:
         result = await session.execute(
@@ -114,6 +160,76 @@ class ContentService:
             select(Episode.season).where(Episode.title_id == title_id).group_by(Episode.season).order_by(Episode.season)
         )
         return [row.season for row in result.all()]
+
+    # ---------- favourites ----------
+
+    async def toggle_favorite(self, session: AsyncSession, user_id: int, title_id: int) -> bool:
+        """
+        Adds or removes the favourite, returning the resulting state
+        (True = saved, False = removed).
+
+        The insert is ON CONFLICT DO NOTHING rather than select-then-insert:
+        a double-tap on a slow connection sends two toggles that interleave,
+        and the naive version raises on the unique constraint instead of just
+        settling on one state. rowcount then tells us which way it went — 1
+        means we inserted, 0 means the row already existed and this tap is
+        the un-favourite.
+        """
+        result = await session.execute(
+            pg_insert(Favorite)
+            .values(user_id=user_id, title_id=title_id)
+            .on_conflict_do_nothing(constraint="uq_favorite_per_user")
+        )
+        if result.rowcount:
+            await session.flush()
+            return True
+
+        await session.execute(
+            delete(Favorite).where(Favorite.user_id == user_id, Favorite.title_id == title_id)
+        )
+        await session.flush()
+        return False
+
+    async def list_favorites(self, session: AsyncSession, user_id: int, page: int = 0) -> TitlePage:
+        """
+        Saved titles, most recently saved first — same page shape and
+        playable-file gate as browse(), so the pagination keyboard and the
+        card renderer work unchanged.
+        """
+        stmt = (
+            select(Title)
+            .join(Favorite, Favorite.title_id == Title.id)
+            .where(Favorite.user_id == user_id, Title.is_active.is_(True), _has_playable_file())
+            .order_by(Favorite.created_at.desc(), Title.name)
+        )
+        result = await session.execute(stmt.offset(page * PAGE_SIZE).limit(PAGE_SIZE + 1))
+        rows = list(result.scalars())
+        return TitlePage(titles=rows[:PAGE_SIZE], page=page, has_more=len(rows) > PAGE_SIZE)
+
+    async def is_favorite(self, session: AsyncSession, user_id: int, title_id: int) -> bool:
+        result = await session.execute(
+            select(Favorite.id).where(Favorite.user_id == user_id, Favorite.title_id == title_id)
+        )
+        return result.scalar_one_or_none() is not None
+
+    async def favorite_title_ids(
+        self, session: AsyncSession, user_id: int, title_ids: list[int]
+    ) -> set[int]:
+        """
+        Which of these titles the user has saved, in one query.
+
+        A page renders five cards and each needs its heart in the right
+        state; asking is_favorite() per card would be five round trips for
+        information one IN-clause already has.
+        """
+        if not title_ids:
+            return set()
+        result = await session.execute(
+            select(Favorite.title_id).where(
+                Favorite.user_id == user_id, Favorite.title_id.in_(title_ids)
+            )
+        )
+        return set(result.scalars())
 
     # ---------- delivery ----------
 

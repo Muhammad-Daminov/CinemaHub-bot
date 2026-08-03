@@ -27,11 +27,14 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
+    Column,
     DateTime,
     ForeignKey,
     Integer,
     Numeric,
     String,
+    Table,
     UniqueConstraint,
     func,
 )
@@ -98,6 +101,13 @@ class Title(Base):
 
     episodes: Mapped[list["Episode"]] = relationship(
         back_populates="title", cascade="all, delete-orphan", order_by="Episode.season, Episode.number"
+    )
+
+    # lazy="raise": collections must be reached through an explicit join or
+    # selectinload. A bare `title.collections` under async SQLAlchemy would
+    # otherwise blow up with MissingGreenlet deep inside a request.
+    collections: Mapped[list["Collection"]] = relationship(
+        secondary="chp_title_collections", back_populates="titles", lazy="raise"
     )
 
     @property
@@ -198,3 +208,52 @@ class WatchHistory(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Favorite(Base):
+    """A title a user saved for later. One row per user per title."""
+
+    __tablename__ = "chp_favorites"
+    __table_args__ = (UniqueConstraint("user_id", "title_id", name="uq_favorite_per_user"),)
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("chp_users.id"), nullable=False, index=True)
+    title_id: Mapped[int] = mapped_column(ForeignKey("chp_titles.id"), nullable=False, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Collection(Base):
+    """
+    A curated grouping of titles — "Marvel", "Yangi yil kinolari".
+
+    Many-to-many: a title is usually in several at once (Marvel *and*
+    Action), so this cannot live as a column on Title.
+    """
+
+    __tablename__ = "chp_collections"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    name: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    slug: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
+    description: Mapped[str | None] = mapped_column(String(500))
+    poster_url: Mapped[str | None] = mapped_column(String(512))
+
+    # Hand-ordered rail position; ties fall back to name.
+    sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False, index=True)
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    titles: Mapped[list["Title"]] = relationship(
+        secondary="chp_title_collections", back_populates="collections", lazy="raise"
+    )
+
+
+# Plain Table, not a mapped class: the link carries no data of its own, so a
+# model would only add a surrogate id and an ORM cascade to reason about.
+title_collections = Table(
+    "chp_title_collections",
+    Base.metadata,
+    Column("title_id", ForeignKey("chp_titles.id"), primary_key=True, index=True),
+    Column("collection_id", ForeignKey("chp_collections.id"), primary_key=True, index=True),
+)

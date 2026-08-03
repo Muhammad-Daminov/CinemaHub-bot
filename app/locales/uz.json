@@ -111,5 +111,15 @@
   "catalog.continue_header": "▶️ Davom ettirish:",
   "catalog.continue_empty": "Hali ko'rilgan kontent yo'q.",
   "catalog.continue_item_film": "{name}",
-  "catalog.continue_item_serial": "{name} · {season}×{number}"
+  "catalog.continue_item_serial": "{name} · {season}×{number}",
+  "catalog.btn_collections": "🏷️ To'plamlar",
+  "catalog.choose_collection": "🏷️ To'plamni tanlang:",
+  "catalog.no_collections": "To'plamlar hali mavjud emas.",
+  "catalog.btn_favorites": "❤️ Sevimlilar",
+  "catalog.favorites_header": "❤️ Sevimli kontentingiz:",
+  "catalog.favorites_empty": "Hali sevimli kontent qo'shmagansiz. Karta ostidagi ❤️ tugmasini bosing.",
+  "catalog.btn_fav_add": "❤️",
+  "catalog.btn_fav_remove": "💔",
+  "catalog.favorite_added": "❤️ Sevimlilarga qo'shildi",
+  "catalog.favorite_removed": "💔 Sevimlilardan olib tashlandi"
 }

@@ -20,6 +20,9 @@ from app.bot.keyboards.main_menu import MENU_AI, menu_texts
 from app.bot.middlewares.ai_quota import AIQuotaMiddleware
 from app.db.models.user import UILanguage
 from app.services.ai import AIServiceError, ai_service
+from app.services.ai_quota import refund as refund_ai_quota
+from app.services.content import content_service
+from app.services.users import get_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -56,6 +59,12 @@ async def handle_ai_prompt(
         logger.error(
             "AI recommendation failed for telegram_id=%s", message.from_user.id, exc_info=True
         )
+        # The middleware already charged this request. Gemini never answered,
+        # so charging a free user one of three daily slots for nothing is not
+        # something they'd accept. Premium users were never counted
+        # (ai_quota_remaining is None), so there is nothing to give back.
+        if ai_quota_remaining is not None:
+            await refund_ai_quota(message.from_user.id)
         if exc.status_code == 429:
             await message.answer(_("ai.overloaded"))
         else:
@@ -66,10 +75,17 @@ async def handle_ai_prompt(
         await message.answer(_("ai.no_match"))
         return
 
+    user_id = await get_user_id(session, message.from_user.id)
+    saved = (
+        await content_service.favorite_title_ids(session, user_id, [item.id for item in result.titles])
+        if user_id
+        else set()
+    )
+
     await message.answer(_("ai.reason", reason=result.reason))
     for title in result.titles:
         caption = _("ai.card", name=title.name, year=title.year or "?")
-        keyboard = get_title_card_keyboard(title.id, lang)
+        keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
         if title.poster_url:
             await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)
         else:

@@ -111,5 +111,15 @@
   "catalog.continue_header": "▶️ Continue watching:",
   "catalog.continue_empty": "Nothing watched yet.",
   "catalog.continue_item_film": "{name}",
-  "catalog.continue_item_serial": "{name} · {season}×{number}"
+  "catalog.continue_item_serial": "{name} · {season}×{number}",
+  "catalog.btn_collections": "🏷️ Collections",
+  "catalog.choose_collection": "🏷️ Choose a collection:",
+  "catalog.no_collections": "No collections available yet.",
+  "catalog.btn_favorites": "❤️ Favourites",
+  "catalog.favorites_header": "❤️ Your favourites:",
+  "catalog.favorites_empty": "You haven't saved anything yet. Tap ❤️ under a card.",
+  "catalog.btn_fav_add": "❤️",
+  "catalog.btn_fav_remove": "💔",
+  "catalog.favorite_added": "❤️ Added to favourites",
+  "catalog.favorite_removed": "💔 Removed from favourites"
 }

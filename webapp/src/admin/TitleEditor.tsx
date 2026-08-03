@@ -9,15 +9,18 @@
  * but no GET, so on failure we fall back to the episode's file_count and
  * show what was attached in this session.
  */
-import { ArrowLeft, ChevronDown, ChevronRight, Plus, Sparkles, Trash2 } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, Plus, Search, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { adminApi, ApiError } from "../lib/api";
 import type {
+  AdminCollectionListItem,
   AdminEpisode,
   AdminMediaFile,
   AdminTitle,
   AudioLanguage,
   ContentType,
+  SimilarTitle,
+  TMDBSearchResult,
   VideoQuality,
 } from "../types/admin";
 import {
@@ -35,12 +38,15 @@ import {
   TextArea,
   TextInput,
   VIDEO_QUALITIES,
+  contentTypeLabel,
   languageLabel,
 } from "./ui";
 
 interface Props {
   titleId: number | null;
   onClose: () => void;
+  /** Jump to an existing title — used when a duplicate match is tapped. */
+  onOpenTitle: (id: number) => void;
 }
 
 interface FormState {
@@ -90,6 +96,244 @@ const parseGenres = (value: string): string[] | null => {
     .filter(Boolean);
   return list.length > 0 ? list : null;
 };
+
+/**
+ * Possible duplicates for the name being typed.
+ *
+ * The language badges are the real payload: the admin needs to see not
+ * just "this exists" but "the Russian dub is already on it", which is
+ * the thing they were about to add it for.
+ */
+function DuplicateWarning({
+  matches,
+  onOpen,
+}: {
+  matches: SimilarTitle[];
+  onOpen: (id: number) => void;
+}) {
+  if (matches.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border border-premiere bg-surface p-3">
+      <p className="mb-2 font-body text-xs font-medium text-premiere">
+        ⚠️ Shunga o'xshash kontent allaqachon bor — yangisini yaratmang:
+      </p>
+      <ul className="space-y-1.5">
+        {matches.map((match) => (
+          <li key={match.id}>
+            <button
+              onClick={() => onOpen(match.id)}
+              className="flex w-full items-center gap-2 rounded-lg bg-surface-hi p-2 text-left"
+            >
+              <div className="h-12 w-8 shrink-0 overflow-hidden rounded bg-surface">
+                {match.poster_url && (
+                  <img
+                    src={match.poster_url}
+                    alt=""
+                    className="h-full w-full object-cover"
+                    loading="lazy"
+                  />
+                )}
+              </div>
+              <div className="min-w-0 flex-1">
+                <p className="truncate font-body text-sm text-ink">{match.name}</p>
+                <p className="font-mono text-[10px] text-ink-dim">
+                  {contentTypeLabel(match.content_type)}
+                  {match.year != null ? ` · ${match.year}` : ""} · {match.episode_count} qism
+                </p>
+                <div className="mt-1 flex flex-wrap gap-1">
+                  {match.languages.length === 0 ? (
+                    <span className="font-mono text-[10px] text-ink-dim">fayl yo'q</span>
+                  ) : (
+                    match.languages.map((language) => (
+                      <Badge key={language}>{languageLabel(language)}</Badge>
+                    ))
+                  )}
+                </div>
+              </div>
+            </button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
+/**
+ * Manual TMDB picker.
+ *
+ * Auto-enrich searches on the stored name, which is Uzbek ("Qum
+ * sayyorasi") while TMDB indexes English ("Dune") — so it misses most of
+ * this catalog. Here the admin types the English name and picks the right
+ * record. Applying it never touches the Uzbek name.
+ */
+function TMDBSearchBox({
+  titleId,
+  onApplied,
+}: {
+  titleId: number;
+  onApplied: (title: AdminTitle) => void;
+}) {
+  const [open, setOpen] = useState(false);
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<TMDBSearchResult[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const search = async () => {
+    if (query.trim().length < 2) return;
+    setBusy(true);
+    try {
+      setResults(await adminApi.searchTmdb(query.trim()));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "TMDB qidiruvida xatolik.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const apply = async (tmdbId: number) => {
+    try {
+      const updated = await adminApi.applyTmdbMatch(titleId, tmdbId);
+      setResults([]);
+      setQuery("");
+      setOpen(false);
+      setError(null);
+      onApplied(updated);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "Qo'llashda xatolik.");
+    }
+  };
+
+  if (!open) {
+    return (
+      <Button tone="ghost" onClick={() => setOpen(true)}>
+        <span className="inline-flex items-center gap-1.5">
+          <Search size={15} /> TMDB'da qidirish
+        </span>
+      </Button>
+    );
+  }
+
+  return (
+    <CardShell>
+      <Field label="TMDB'da inglizcha nomi bilan qidiring">
+        <TextInput
+          value={query}
+          onChange={setQuery}
+          placeholder="Masalan: Dune"
+        />
+      </Field>
+      <div className="mt-2 grid grid-cols-2 gap-2">
+        <Button onClick={search} disabled={busy || query.trim().length < 2}>
+          {busy ? "Qidirilmoqda…" : "Qidirish"}
+        </Button>
+        <Button
+          tone="ghost"
+          onClick={() => {
+            setOpen(false);
+            setResults([]);
+            setError(null);
+          }}
+        >
+          Yopish
+        </Button>
+      </div>
+
+      {results.length > 0 && (
+        <ul className="mt-2 space-y-1.5">
+          {results.map((result) => (
+            <li key={result.id}>
+              <button
+                onClick={() => apply(result.id)}
+                className="flex w-full items-center gap-2 rounded-lg bg-surface-hi p-2 text-left"
+              >
+                <div className="h-14 w-10 shrink-0 overflow-hidden rounded bg-surface">
+                  {result.poster_url && (
+                    <img
+                      src={result.poster_url}
+                      alt=""
+                      loading="lazy"
+                      className="h-full w-full object-cover"
+                    />
+                  )}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="truncate font-body text-sm text-ink">{result.title}</p>
+                  {result.original_title && result.original_title !== result.title && (
+                    <p className="truncate font-body text-[11px] text-ink-dim">
+                      {result.original_title}
+                    </p>
+                  )}
+                  <p className="font-mono text-[10px] text-ink-dim">
+                    {result.year ?? "—"} · TMDB #{result.id}
+                  </p>
+                </div>
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+
+      {error && <div className="mt-2"><Notice message={error} tone="error" /></div>}
+    </CardShell>
+  );
+}
+
+
+/** Multi-select over collections; membership is saved immediately on toggle. */
+function CollectionPicker({ titleId }: { titleId: number }) {
+  const [collections, setCollections] = useState<AdminCollectionListItem[]>([]);
+  const [selected, setSelected] = useState<number[]>([]);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    adminApi.listCollections().then(setCollections).catch(() => setCollections([]));
+    adminApi.titleCollections(titleId).then(setSelected).catch(() => setSelected([]));
+  }, [titleId]);
+
+  const toggle = async (collectionId: number) => {
+    const next = selected.includes(collectionId)
+      ? selected.filter((id) => id !== collectionId)
+      : [...selected, collectionId];
+    setSelected(next);
+    try {
+      setSelected(await adminApi.setTitleCollections(titleId, next));
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "To'plamni saqlashda xatolik.");
+    }
+  };
+
+  if (collections.length === 0) return null;
+
+  return (
+    <section>
+      <SectionTitle>To'plamlar</SectionTitle>
+      <div className="flex flex-wrap gap-1.5">
+        {collections.map((collection) => {
+          const active = selected.includes(collection.id);
+          return (
+            <button
+              key={collection.id}
+              onClick={() => toggle(collection.id)}
+              className={`rounded-full px-3 py-1.5 font-body text-xs transition-colors ${
+                active
+                  ? "bg-marquee text-on-marquee"
+                  : "border border-surface-hi bg-surface text-ink-dim"
+              }`}
+            >
+              {collection.name}
+            </button>
+          );
+        })}
+      </div>
+      {error && <div className="mt-2"><Notice message={error} tone="error" /></div>}
+    </section>
+  );
+}
+
 
 function EpisodeFiles({ episode }: { episode: AdminEpisode }) {
   const [files, setFiles] = useState<AdminMediaFile[]>([]);
@@ -323,11 +567,28 @@ function EpisodeManager({
   );
 }
 
-export function TitleEditor({ titleId, onClose }: Props) {
+export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
   const [savedId, setSavedId] = useState<number | null>(titleId);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [duplicates, setDuplicates] = useState<SimilarTitle[]>([]);
+
+  // Only while creating: when editing, the title's own row would match
+  // itself and every result would be noise.
+  useEffect(() => {
+    if (savedId !== null || form.name.trim().length < 2) {
+      setDuplicates([]);
+      return;
+    }
+    const timer = setTimeout(() => {
+      adminApi
+        .similarTitles(form.name.trim())
+        .then(setDuplicates)
+        .catch(() => setDuplicates([]));
+    }, 400);
+    return () => clearTimeout(timer);
+  }, [form.name, savedId]);
 
   useEffect(() => {
     if (titleId == null) return;
@@ -400,6 +661,14 @@ export function TitleEditor({ titleId, onClose }: Props) {
         <Field label="Nomi">
           <TextInput value={form.name} onChange={(value) => update("name", value)} />
         </Field>
+
+        <DuplicateWarning
+          matches={duplicates}
+          onOpen={(id) => {
+            setDuplicates([]);
+            onOpenTitle(id);
+          }}
+        />
         <div className="grid grid-cols-2 gap-2">
           <Field label="Turi">
             <Select<ContentType>
@@ -447,7 +716,7 @@ export function TitleEditor({ titleId, onClose }: Props) {
         </Field>
       </div>
 
-      <div className="flex gap-2">
+      <div className="flex flex-wrap gap-2">
         <Button full onClick={handleSave}>
           Saqlash
         </Button>
@@ -460,13 +729,28 @@ export function TitleEditor({ titleId, onClose }: Props) {
         )}
       </div>
 
+      {savedId != null && (
+        <TMDBSearchBox
+          titleId={savedId}
+          onApplied={(updated) => {
+            // Name is intentionally absent from the applied fields — keep
+            // whatever the admin typed, in Uzbek.
+            setForm(toForm(updated));
+            setMessage("TMDB ma'lumotlari qo'llandi.");
+          }}
+        />
+      )}
+
       {message && <Notice message={message} />}
       {error && <Notice message={error} tone="error" />}
 
       {savedId == null ? (
         <Notice message="Qism qo'shish uchun avval saqlang." />
       ) : (
-        <EpisodeManager titleId={savedId} contentType={form.content_type} />
+        <>
+          <CollectionPicker titleId={savedId} />
+          <EpisodeManager titleId={savedId} contentType={form.content_type} />
+        </>
       )}
     </div>
   );

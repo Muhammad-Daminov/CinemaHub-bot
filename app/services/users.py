@@ -6,6 +6,19 @@ from app.core.codegen import generate_code
 from app.db.models.user import User
 
 
+async def get_user_id(session: AsyncSession, telegram_id: int) -> int | None:
+    """
+    Internal chp_users.id for a Telegram id, or None if they never /start-ed.
+
+    Selects the id column only — callers want it as a foreign key for
+    favourites or watch history, not the whole row, and loading the ORM
+    object just to read `.id` is the shape that keeps reintroducing lazy
+    attribute access under async.
+    """
+    result = await session.execute(select(User.id).where(User.telegram_id == telegram_id))
+    return result.scalar_one_or_none()
+
+
 async def get_or_create_user(
     session: AsyncSession,
     telegram_id: int,
