@@ -72,7 +72,10 @@ async def lifespan(app: FastAPI):
         await bot.set_webhook(
             url=f"{settings.WEBHOOK_BASE_URL}{WEBHOOK_PATH}",
             secret_token=settings.WEBHOOK_SECRET,
-            drop_pending_updates=True,
+            # Keep whatever Telegram queued while we were down. A redeploy
+            # takes long enough that dropping the queue silently discards
+            # every button a user pressed during it.
+            drop_pending_updates=False,
         )
 
     auto_delete_task = asyncio.create_task(run_auto_delete_worker(bot))
@@ -80,8 +83,11 @@ async def lifespan(app: FastAPI):
     yield
 
     auto_delete_task.cancel()
-    if settings.WEBHOOK_BASE_URL:
-        await bot.delete_webhook()
+    # Deliberately NOT deleting the webhook here. It is global bot state, not
+    # this process's to release: a redeploy would leave the bot unreachable
+    # until the new instance boots, and a second environment shutting down
+    # last would wipe production's registration entirely. The webhook is only
+    # ever set — on startup, by whichever instance owns WEBHOOK_BASE_URL.
     await bot.session.close()
     await tmdb_service.close()
     await ai_service.close()
