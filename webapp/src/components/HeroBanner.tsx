@@ -1,5 +1,6 @@
 import { Info, Play } from "lucide-react";
 import { useEffect, useState } from "react";
+import { genreLabels } from "../lib/genres";
 import type { Movie } from "../types/movie";
 
 interface Props {
@@ -79,7 +80,7 @@ export function HeroBanner({ movies, onWatch, onDetails }: Props) {
       <div className="absolute inset-x-0 bottom-0 p-4 pb-6">
         {active.genres && active.genres.length > 0 && (
           <p className="mb-1 font-mono text-xs uppercase tracking-wider text-marquee">
-            {active.genres.slice(0, 3).join(" · ")}
+            {genreLabels(active.genres).slice(0, 3).join(" · ")}
           </p>
         )}
         <h1 className="mb-3 font-display text-3xl font-semibold leading-tight text-ink drop-shadow-lg sm:text-4xl">

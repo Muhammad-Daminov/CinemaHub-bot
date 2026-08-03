@@ -119,8 +119,16 @@ def get_browse_menu_keyboard(lang: UILanguage) -> InlineKeyboardMarkup:
 
 
 def get_genres_keyboard(genres: list[str], lang: UILanguage) -> InlineKeyboardMarkup:
+    """
+    `genres` are canonical keys. The label is translated but the callback
+    keeps the key — the filter matches stored values, so a translated
+    callback would find nothing.
+    """
     buttons = [
-        InlineKeyboardButton(text=genre, callback_data=build_page_callback(MODE_GENRE, genre, 0))
+        InlineKeyboardButton(
+            text=t(f"genre.{genre}", lang),
+            callback_data=build_page_callback(MODE_GENRE, genre, 0),
+        )
         for genre in genres
     ]
     rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]

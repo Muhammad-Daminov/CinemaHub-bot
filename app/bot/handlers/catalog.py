@@ -78,7 +78,9 @@ def _format_card(title: Title, _) -> str:
     if meta:
         lines.append(" · ".join(meta))
     if title.genres:
-        lines.append(" ".join(f"#{g}" for g in title.genres))
+        # Stored value is a canonical key ("science_fiction"); the hashtag
+        # shows the viewer's own label for it.
+        lines.append(" ".join(f"#{_(f'genre.{g}')}" for g in title.genres))
     return "\n".join(lines)
 
 

@@ -1,6 +1,7 @@
 import { Play, Star, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
+import { genreLabels } from "../lib/genres";
 import type { Movie } from "../types/movie";
 import { MovieCard } from "./MovieCard";
 
@@ -59,7 +60,7 @@ export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: P
               {movie.rating.toFixed(1)}
             </span>
           )}
-          {movie.genres && <span>{movie.genres.join(", ")}</span>}
+          {movie.genres && <span>{genreLabels(movie.genres).join(", ")}</span>}
         </div>
 
         {movie.description && (

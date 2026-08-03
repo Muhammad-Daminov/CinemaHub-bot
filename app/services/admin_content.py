@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.genres import normalise_genres
 from app.db.models.content import (
     AudioLanguage,
     Collection,
@@ -83,7 +84,9 @@ class AdminContentService:
             name=name.strip(),
             content_type=content_type,
             year=year,
-            genres=genres,
+            # `or None` keeps an absent genre list as SQL NULL rather than
+            # introducing a second empty-ish value alongside the existing NULLs.
+            genres=normalise_genres(genres) or None,
             country=country,
             description=description,
             poster_url=poster_url,
@@ -108,7 +111,9 @@ class AdminContentService:
         for key, value in fields.items():
             if not hasattr(title, key):
                 raise ValueError(f"Title has no field '{key}'")
-            setattr(title, key, value)
+            # Hand-typed genres go through the same funnel as TMDB's, so an
+            # admin typing "Jangari" cannot reopen the split either.
+            setattr(title, key, (normalise_genres(value) or None) if key == "genres" else value)
 
         if "is_manual_override" not in fields and TMDB_MANAGED_FIELDS & fields.keys():
             title.is_manual_override = True
@@ -342,7 +347,9 @@ class AdminContentService:
         title.poster_url = tmdb_service.build_poster_url(details.get("poster_path"))
         title.description = details.get("overview")
         title.rating = details.get("vote_average")
-        genres = [g["name"] for g in details.get("genres", [])]
+        # Canonical keys on write. Storing TMDB's English labels raw is what
+        # created the two-vocabulary split in the first place.
+        genres = normalise_genres([g["name"] for g in details.get("genres", [])])
         if genres:
             title.genres = genres
         if title.year is None and release_date[:4].isdigit():
@@ -397,7 +404,9 @@ class AdminContentService:
         title.poster_url = tmdb_service.build_poster_url(details.get("poster_path"))
         title.description = details.get("overview")
         title.rating = details.get("vote_average")
-        genres = [g["name"] for g in details.get("genres", [])]
+        # Canonical keys on write. Storing TMDB's English labels raw is what
+        # created the two-vocabulary split in the first place.
+        genres = normalise_genres([g["name"] for g in details.get("genres", [])])
         if genres:
             title.genres = genres
         title.is_manual_override = True
