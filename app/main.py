@@ -110,9 +110,9 @@ if WEBAPP_DIST_DIR.exists():
     app.mount("/miniapp", StaticFiles(directory=str(WEBAPP_DIST_DIR), html=True), name="miniapp")
 
 
-@app.get("/health")
+@app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check() -> dict[str, str]:
-    """Render's health check target."""
+    """Render's health check target. HEAD too — UptimeRobot probes with it."""
     await check_db_connection()
     return {"status": "ok"}
 

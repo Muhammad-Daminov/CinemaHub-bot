@@ -17,7 +17,9 @@ from collections.abc import Sequence
 from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta, timezone
 
+from fastapi import HTTPException
 from sqlalchemy import delete, func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.content import (
@@ -199,7 +201,15 @@ class AdminContentService:
             duration_minutes=duration_minutes,
         )
         session.add(episode)
-        await session.flush()
+        try:
+            await session.flush()
+        except IntegrityError as exc:
+            # uq_episode_per_title fired. Without this the admin gets a bare
+            # 500 for what is really "you already added that one".
+            raise HTTPException(
+                status_code=409,
+                detail=f"Season {season}, episode {number} already exists for this title.",
+            ) from exc
         return episode
 
     async def get_or_create_episode(

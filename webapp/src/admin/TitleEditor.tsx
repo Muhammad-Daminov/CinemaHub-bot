@@ -183,13 +183,25 @@ function EpisodeFiles({ episode }: { episode: AdminEpisode }) {
   );
 }
 
-function EpisodeManager({ titleId }: { titleId: number }) {
+function EpisodeManager({
+  titleId,
+  contentType,
+}: {
+  titleId: number;
+  contentType: ContentType;
+}) {
   const [episodes, setEpisodes] = useState<AdminEpisode[]>([]);
   const [expanded, setExpanded] = useState<number | null>(null);
   const [season, setSeason] = useState("1");
   const [number, setNumber] = useState("1");
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
+
+  // Films and cartoons hide the episode layer in the viewer UI, so exactly
+  // one episode (S1E1) is meaningful. It is NOT auto-created on save, so the
+  // first one still has to be added — only further ones are pointless.
+  const isSingleEpisode = contentType === "film" || contentType === "multfilm";
+  const addBlocked = isSingleEpisode && episodes.length > 0;
 
   const load = useCallback(async () => {
     try {
@@ -206,8 +218,10 @@ function EpisodeManager({ titleId }: { titleId: number }) {
   const handleAdd = async () => {
     try {
       await adminApi.createEpisode(titleId, {
-        season: Number(season) || 1,
-        number: Number(number) || 1,
+        // A single-episode title only ever has S1E1 — don't let a typo in the
+        // form create an unreachable "episode 5" of a film.
+        season: isSingleEpisode ? 1 : Number(season) || 1,
+        number: isSingleEpisode ? 1 : Number(number) || 1,
         name: name.trim() || null,
       });
       setName("");
@@ -275,29 +289,36 @@ function EpisodeManager({ titleId }: { titleId: number }) {
         </div>
       )}
 
-      <CardShell>
-        <div className="grid grid-cols-2 gap-2">
-          <Field label="Fasl">
-            <TextInput value={season} onChange={setSeason} type="number" />
-          </Field>
-          <Field label="Qism raqami">
-            <TextInput value={number} onChange={setNumber} type="number" />
-          </Field>
-        </div>
-        <div className="mt-2">
-          <Field label="Qism nomi (ixtiyoriy)">
-            <TextInput value={name} onChange={setName} placeholder="Masalan: Boshlanish" />
-          </Field>
-        </div>
-        <div className="mt-2">
-          <Button full tone="ghost" onClick={handleAdd}>
-            <span className="inline-flex items-center justify-center gap-1.5">
-              <Plus size={15} /> Qism qo'shish
-            </span>
-          </Button>
-        </div>
-        {error && <div className="mt-2">{<Notice message={error} tone="error" />}</div>}
-      </CardShell>
+      {addBlocked ? (
+        <Notice message="Kino va multfilmda faqat bitta qism bo'ladi — u allaqachon qo'shilgan. Fayl biriktirish uchun qismni oching." />
+      ) : (
+        <CardShell>
+          {!isSingleEpisode && (
+            <div className="grid grid-cols-2 gap-2">
+              <Field label="Fasl">
+                <TextInput value={season} onChange={setSeason} type="number" />
+              </Field>
+              <Field label="Qism raqami">
+                <TextInput value={number} onChange={setNumber} type="number" />
+              </Field>
+            </div>
+          )}
+          <div className={isSingleEpisode ? "" : "mt-2"}>
+            <Field label="Qism nomi (ixtiyoriy)">
+              <TextInput value={name} onChange={setName} placeholder="Masalan: Boshlanish" />
+            </Field>
+          </div>
+          <div className="mt-2">
+            <Button full tone="ghost" onClick={handleAdd}>
+              <span className="inline-flex items-center justify-center gap-1.5">
+                <Plus size={15} />
+                {isSingleEpisode ? "Qism yaratish (fayl uchun)" : "Qism qo'shish"}
+              </span>
+            </Button>
+          </div>
+          {error && <div className="mt-2">{<Notice message={error} tone="error" />}</div>}
+        </CardShell>
+      )}
     </section>
   );
 }
@@ -445,7 +466,7 @@ export function TitleEditor({ titleId, onClose }: Props) {
       {savedId == null ? (
         <Notice message="Qism qo'shish uchun avval saqlang." />
       ) : (
-        <EpisodeManager titleId={savedId} />
+        <EpisodeManager titleId={savedId} contentType={form.content_type} />
       )}
     </div>
   );
