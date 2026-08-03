@@ -8,7 +8,7 @@ is missing would hide content the user can still watch.
 """
 from dataclasses import dataclass
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import Integer, case, delete, func, or_, select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
@@ -21,11 +21,22 @@ from app.db.models.content import (
     Favorite,
     MediaFile,
     Title,
+    WatchHistory,
     title_collections,
 )
 from app.db.models.user import UILanguage
 
 PAGE_SIZE = 5
+
+# Similarity weights, strongest first. A shared collection is worth more than
+# every other signal combined on purpose: "Marvel" is an editorial statement
+# that two titles belong together, while a shared genre like Jangari is true
+# of a quarter of the catalog and says almost nothing.
+COLLECTION_WEIGHT = 10
+GENRE_WEIGHT = 3
+TYPE_WEIGHT = 2
+YEAR_WEIGHT = 1
+YEAR_WINDOW = 3
 
 # Ordered fallback chain per UI language — first available wins.
 LANGUAGE_PREFERENCE: dict[UILanguage, list[AudioLanguage]] = {
@@ -70,6 +81,60 @@ def _has_playable_file():
         .where(Episode.title_id == Title.id)
         .exists()
     )
+
+
+def similarity_score(title_id: int):
+    """
+    Weighted "how like title_id is this row" expression, evaluated by
+    Postgres against the candidate Title in the enclosing query.
+
+    Every term is a correlated scalar subquery over the *source* title id
+    rather than values fetched in Python first, so scoring and ranking
+    happen in one round trip and no candidate ever crosses the wire just
+    to be discarded.
+
+    Exposed (not underscore-private) so a caller can select it alongside
+    the rows to see why something ranked where it did.
+    """
+    source_links = title_collections.alias("source_links")
+
+    shared_collections = (
+        select(func.count())
+        .select_from(title_collections)
+        .where(
+            title_collections.c.title_id == Title.id,
+            title_collections.c.collection_id.in_(
+                select(source_links.c.collection_id).where(source_links.c.title_id == title_id)
+            ),
+        )
+        .correlate(Title)
+        .scalar_subquery()
+    )
+
+    # count(*) of this row's genres that also appear on the source row.
+    # unnest in the FROM clause is implicitly LATERAL, so it sees Title.
+    # Both sides are unnested to a set of scalars: comparing a token
+    # against the raw genres column would be varchar = varchar[].
+    source_genres = select(func.unnest(Title.genres)).where(Title.id == title_id)
+    genre_token = func.unnest(Title.genres).column_valued("genre_token")
+    genre_overlap = (
+        select(func.count())
+        .where(genre_token.in_(source_genres))
+        .correlate(Title)
+        .scalar_subquery()
+    )
+
+    source_type = select(Title.content_type).where(Title.id == title_id).scalar_subquery()
+    source_year = select(Title.year).where(Title.id == title_id).scalar_subquery()
+
+    return (
+        shared_collections * COLLECTION_WEIGHT
+        + genre_overlap * GENRE_WEIGHT
+        + case((Title.content_type == source_type, TYPE_WEIGHT), else_=0)
+        # abs() over a NULL year yields NULL, which is not true, so a title
+        # with no year simply scores 0 here instead of erroring.
+        + case((func.abs(Title.year - source_year) <= YEAR_WINDOW, YEAR_WEIGHT), else_=0)
+    ).cast(Integer)
 
 
 class ContentService:
@@ -160,6 +225,81 @@ class ContentService:
             select(Episode.season).where(Episode.title_id == title_id).group_by(Episode.season).order_by(Episode.season)
         )
         return [row.season for row in result.all()]
+
+    # ---------- discovery ----------
+
+    async def similar_titles(
+        self, session: AsyncSession, title_id: int, limit: int = 10
+    ) -> list[Title]:
+        """
+        Titles most like this one, best first.
+
+        Ranked by shared collections, then genre overlap, then content
+        type, then release proximity — see similarity_score(). Ties break
+        on popularity so the better-known of two equally-similar titles
+        leads.
+
+        Rows scoring 0 are dropped rather than padded out with filler: an
+        empty "O'xshash" row is honest, a row of unrelated titles is not.
+        """
+        score = similarity_score(title_id)
+        result = await session.execute(
+            select(Title)
+            .where(
+                Title.id != title_id,
+                Title.is_active.is_(True),
+                _has_playable_file(),
+                score > 0,
+            )
+            .order_by(score.desc(), Title.view_count.desc(), Title.name)
+            .limit(limit)
+        )
+        return list(result.scalars())
+
+    async def recommended_for_user(
+        self, session: AsyncSession, user_id: int, limit: int = 10
+    ) -> list[Title]:
+        """
+        Unwatched titles matching what this user actually watches.
+
+        Preferences come from their own history rather than a stored
+        profile, so they stay current for free. The first query returns
+        one small row per watched title (a heavy user has hundreds, not
+        millions) and the vocabulary is folded up here; the candidate set
+        itself is never pulled into Python.
+
+        No history -> popularity. A brand-new user seeing an empty
+        "Siz uchun" row would be worse than seeing the obvious picks.
+        """
+        history = await session.execute(
+            select(Title.content_type, Title.genres)
+            .join(WatchHistory, WatchHistory.title_id == Title.id)
+            .where(WatchHistory.user_id == user_id)
+        )
+        rows = history.all()
+
+        preferred_types = {row[0] for row in rows}
+        preferred_genres = {genre for row in rows if row[1] for genre in row[1]}
+
+        stmt = select(Title).where(Title.is_active.is_(True), _has_playable_file())
+
+        if preferred_types or preferred_genres:
+            signals = []
+            if preferred_types:
+                signals.append(Title.content_type.in_(preferred_types))
+            if preferred_genres:
+                signals.append(Title.genres.overlap(list(preferred_genres)))
+            stmt = stmt.where(
+                or_(*signals),
+                Title.id.not_in(
+                    select(WatchHistory.title_id).where(WatchHistory.user_id == user_id)
+                ),
+            )
+
+        result = await session.execute(
+            stmt.order_by(Title.view_count.desc(), Title.name).limit(limit)
+        )
+        return list(result.scalars())
 
     # ---------- favourites ----------
 

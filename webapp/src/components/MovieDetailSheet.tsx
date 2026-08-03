@@ -1,13 +1,33 @@
 import { Play, Star, X } from "lucide-react";
+import { useEffect, useState } from "react";
+import { api } from "../lib/api";
 import type { Movie } from "../types/movie";
+import { MovieCard } from "./MovieCard";
 
 interface Props {
   movie: Movie;
   onClose: () => void;
   onWatch: (movie: Movie) => void;
+  onSelectSimilar: (movie: Movie) => void;
 }
 
-export function MovieDetailSheet({ movie, onClose, onWatch }: Props) {
+export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: Props) {
+  const [similar, setSimilar] = useState<Movie[]>([]);
+
+  useEffect(() => {
+    // Clear first: tapping through a chain of similar titles would
+    // otherwise show the previous title's row until the new one lands.
+    setSimilar([]);
+    let current = true;
+    api
+      .similar(movie.id)
+      .then((results) => current && setSimilar(results))
+      .catch(() => current && setSimilar([]));
+    return () => {
+      current = false;
+    };
+  }, [movie.id]);
+
   return (
     <div className="fixed inset-0 z-30 flex items-end bg-black/60" onClick={onClose}>
       {/*
@@ -16,10 +36,13 @@ export function MovieDetailSheet({ movie, onClose, onWatch }: Props) {
         the watch button. Clear it with the same 5rem allowance App.tsx uses
         for the nav (`pb-20`), plus the home-indicator inset — index.html sets
         viewport-fit=cover, so env() actually resolves here instead of to 0.
+
+        max-h + scroll because the similar row makes this tall enough to
+        exceed a phone screen on a title with a long description.
       */}
       <div
         onClick={(event) => event.stopPropagation()}
-        className="w-full rounded-t-2xl bg-surface p-4 pb-[calc(5rem_+_env(safe-area-inset-bottom))] shadow-2xl"
+        className="max-h-[85vh] w-full overflow-y-auto rounded-t-2xl bg-surface p-4 pb-[calc(5rem_+_env(safe-area-inset-bottom))] shadow-2xl"
       >
         <div className="mb-3 flex items-start justify-between gap-3">
           <h2 className="font-display text-xl font-semibold text-ink">{movie.title}</h2>
@@ -41,6 +64,17 @@ export function MovieDetailSheet({ movie, onClose, onWatch }: Props) {
 
         {movie.description && (
           <p className="mb-4 text-sm leading-relaxed text-ink-dim">{movie.description}</p>
+        )}
+
+        {similar.length > 0 && (
+          <section className="mb-4">
+            <h3 className="mb-2 font-display text-sm font-medium tracking-wide text-ink">O'xshash</h3>
+            <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1">
+              {similar.map((item) => (
+                <MovieCard key={item.id} movie={item} onSelect={onSelectSimilar} />
+              ))}
+            </div>
+          </section>
         )}
 
         <button

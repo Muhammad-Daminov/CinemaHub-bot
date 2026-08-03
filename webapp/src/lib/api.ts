@@ -1,5 +1,11 @@
 import { getInitData } from "./telegram";
-import type { Movie, UserProfile, WatchResponse } from "../types/movie";
+import type {
+  Movie,
+  MovieCollection,
+  MovieContentType,
+  UserProfile,
+  WatchResponse,
+} from "../types/movie";
 import type {
   ActivityPoint,
   AdminCard,
@@ -59,12 +65,22 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   me: () => request<UserProfile>("/auth/me"),
-  listMovies: (params: { skip?: number; limit?: number; genre?: string } = {}) => {
-    const query = new URLSearchParams(params as Record<string, string>).toString();
-    return request<Movie[]>(`/movies${query ? `?${query}` : ""}`);
-  },
+  listMovies: (
+    params: {
+      skip?: number;
+      limit?: number;
+      genre?: string;
+      collection_id?: number;
+      content_type?: MovieContentType;
+    } = {},
+  ) => request<Movie[]>(`/movies${toQuery(params)}`),
   topMovies: (limit = 10) => request<Movie[]>(`/movies/top?limit=${limit}`),
   searchMovies: (q: string) => request<Movie[]>(`/movies/search?q=${encodeURIComponent(q)}`),
+  recommended: (limit = 10) => request<Movie[]>(`/movies/recommended?limit=${limit}`),
+  continueWatching: (limit = 10) => request<Movie[]>(`/movies/continue?limit=${limit}`),
+  similar: (movieId: number, limit = 10) =>
+    request<Movie[]>(`/movies/${movieId}/similar?limit=${limit}`),
+  collections: () => request<MovieCollection[]>("/movies/collections"),
   watchMovie: (movieId: number) =>
     request<WatchResponse>(`/movies/${movieId}/watch`, { method: "POST" }),
 };

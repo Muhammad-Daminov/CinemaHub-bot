@@ -9,14 +9,56 @@ import { Navbar } from "./components/Navbar";
 import { Toast } from "./components/Toast";
 import { adminApi, api, ApiError } from "./lib/api";
 import { getColorScheme, initTelegramApp, onThemeChange } from "./lib/telegram";
-import type { Movie } from "./types/movie";
+import type { Movie, MovieContentType } from "./types/movie";
+
+/** A home row: a heading plus the request that fills it. */
+interface RowSpec {
+  key: string;
+  title: string;
+  load: () => Promise<Movie[]>;
+}
+
+const ROW_LIMIT = 20;
+
+/**
+ * Fixed rows, in display order. Collection rows are appended after
+ * /movies/collections resolves, so they can't be listed here.
+ *
+ * Each row owns its own request. Nothing waits on anything else — a slow
+ * "Siz uchun" must not hold back "Top hafta", which is the whole reason
+ * the page isn't loaded as one blocking Promise.all.
+ */
+const TYPE_ROWS: { type: MovieContentType; title: string }[] = [
+  { type: "serial", title: "Seriallar" },
+  { type: "anime", title: "Animelar" },
+  { type: "multfilm", title: "Multfilmlar" },
+  { type: "drama", title: "Dramalar" },
+];
+
+const BASE_ROWS: RowSpec[] = [
+  { key: "recommended", title: "Siz uchun", load: () => api.recommended(ROW_LIMIT) },
+  { key: "continue", title: "Davom ettirish", load: () => api.continueWatching(ROW_LIMIT) },
+  { key: "newest", title: "Yangi qo'shilgan", load: () => api.listMovies({ limit: ROW_LIMIT }) },
+  { key: "top", title: "Top hafta", load: () => api.topMovies(ROW_LIMIT) },
+  ...TYPE_ROWS.map(({ type, title }) => ({
+    key: `type:${type}`,
+    title,
+    load: () => api.listMovies({ content_type: type, limit: ROW_LIMIT }),
+  })),
+];
+
+const ALL_ROW: RowSpec = {
+  key: "all",
+  title: "Barcha filmlar",
+  load: () => api.listMovies({ limit: 30 }),
+};
 
 export default function App() {
   const [isDark, setIsDark] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
   const [view, setView] = useState<"home" | "admin">("home");
-  const [topMovies, setTopMovies] = useState<Movie[]>([]);
-  const [catalogMovies, setCatalogMovies] = useState<Movie[]>([]);
+  const [rowMovies, setRowMovies] = useState<Record<string, Movie[]>>({});
+  const [collectionRows, setCollectionRows] = useState<RowSpec[]>([]);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
@@ -33,9 +75,36 @@ export default function App() {
     document.documentElement.classList.toggle("dark", isDark);
   }, [isDark]);
 
+  // Fire every row independently and paint each as it lands. A row that
+  // fails just stays empty, and MovieRow hides itself — one broken
+  // endpoint costs its own row, not the page.
   useEffect(() => {
-    api.topMovies(10).then(setTopMovies).catch(() => setTopMovies([]));
-    api.listMovies({ limit: 30 }).then(setCatalogMovies).catch(() => setCatalogMovies([]));
+    for (const row of [...BASE_ROWS, ALL_ROW]) {
+      row
+        .load()
+        .then((movies) => setRowMovies((current) => ({ ...current, [row.key]: movies })))
+        .catch(() => undefined);
+    }
+
+    api
+      .collections()
+      .then((collections) => {
+        const rows = collections
+          .filter((collection) => collection.title_count > 0)
+          .map<RowSpec>((collection) => ({
+            key: `collection:${collection.id}`,
+            title: collection.name,
+            load: () => api.listMovies({ collection_id: collection.id, limit: ROW_LIMIT }),
+          }));
+        setCollectionRows(rows);
+        for (const row of rows) {
+          row
+            .load()
+            .then((movies) => setRowMovies((current) => ({ ...current, [row.key]: movies })))
+            .catch(() => undefined);
+        }
+      })
+      .catch(() => setCollectionRows([]));
   }, []);
 
   // /api/auth/me carries no admin flag, so we probe an admin-only route
@@ -73,7 +142,20 @@ export default function App() {
     }
   };
 
-  const heroMovie = topMovies[0];
+  // Banner pool: newest first, then the most-watched, deduped. Both rows
+  // are already being fetched for the page, so this costs no extra request.
+  const bannerMovies = (() => {
+    const pool: Movie[] = [];
+    const seen = new Set<number>();
+    for (const movie of [...(rowMovies.newest ?? []), ...(rowMovies.top ?? [])]) {
+      if (seen.has(movie.id)) continue;
+      seen.add(movie.id);
+      pool.push(movie);
+    }
+    return pool.slice(0, 5);
+  })();
+
+  const homeRows = [...BASE_ROWS, ...collectionRows, ALL_ROW];
   const isSearching = searchQuery.length > 0;
 
   // Admins get a bottom nav to reach the panel; for everyone else the app
@@ -102,16 +184,29 @@ export default function App() {
         </div>
       ) : (
         <>
-          {heroMovie && (
-            <HeroBanner movie={heroMovie} onWatch={handleWatch} onDetails={setSelectedMovie} />
-          )}
-          <MovieRow title="Top hafta" movies={topMovies} onSelect={setSelectedMovie} />
-          <MovieRow title="Barcha filmlar" movies={catalogMovies} onSelect={setSelectedMovie} />
+          <HeroBanner
+            movies={bannerMovies}
+            onWatch={handleWatch}
+            onDetails={setSelectedMovie}
+          />
+          {homeRows.map((row) => (
+            <MovieRow
+              key={row.key}
+              title={row.title}
+              movies={rowMovies[row.key] ?? []}
+              onSelect={setSelectedMovie}
+            />
+          ))}
         </>
       )}
 
       {selectedMovie && (
-        <MovieDetailSheet movie={selectedMovie} onClose={() => setSelectedMovie(null)} onWatch={handleWatch} />
+        <MovieDetailSheet
+          movie={selectedMovie}
+          onClose={() => setSelectedMovie(null)}
+          onWatch={handleWatch}
+          onSelectSimilar={setSelectedMovie}
+        />
       )}
       {toast && <Toast message={toast.message} tone={toast.tone} />}
       {isAdmin && <BottomNav view={view} onChange={setView} />}

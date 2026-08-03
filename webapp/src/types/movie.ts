@@ -9,6 +9,18 @@ export interface Movie {
   view_count: number;
 }
 
+/** Mirrors CollectionOut in app/api/movies.py. */
+export interface MovieCollection {
+  id: number;
+  name: string;
+  slug: string;
+  description: string | null;
+  poster_url: string | null;
+  title_count: number;
+}
+
+export type MovieContentType = "film" | "serial" | "multfilm" | "anime" | "drama";
+
 export interface WatchResponse {
   status: string;
   message: string;

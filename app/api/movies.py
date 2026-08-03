@@ -17,9 +17,17 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_user
 from app.bot.instance import bot
-from app.db.models.content import Collection, Episode, MediaFile, Title, title_collections
+from app.db.models.content import (
+    Collection,
+    ContentType,
+    Episode,
+    MediaFile,
+    Title,
+    title_collections,
+)
 from app.db.models.user import User
 from app.db.session import get_db_session
+from app.services.achievements import continue_watching
 from app.services.content import content_service
 from app.services.streaming import streaming_service
 
@@ -105,12 +113,16 @@ async def list_movies(
     limit: int = Query(default=20, ge=1, le=100),
     genre: str | None = None,
     collection_id: int | None = None,
+    content_type: ContentType | None = None,
     session: AsyncSession = Depends(get_db_session),
     _user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
+    """Newest first. Every home row that is just a filtered slice comes through here."""
     stmt = _playable_titles().order_by(Title.created_at.desc())
     if genre:
         stmt = stmt.where(Title.genres.any(genre))
+    if content_type is not None:
+        stmt = stmt.where(Title.content_type == content_type)
     if collection_id is not None:
         # Explicit join, never a lazy Title.collections walk.
         stmt = stmt.join(
@@ -146,6 +158,53 @@ async def search_movies(
         .limit(limit)
     )
     return [_to_movie_out(title) for title in result.scalars()]
+
+
+# Declared before /{movie_id}: FastAPI matches in definition order, so a
+# route added after it would be swallowed as a movie_id and 422.
+@router.get("/recommended", response_model=list[MovieOut])
+async def recommended_movies(
+    limit: int = Query(default=10, ge=1, le=50),
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+) -> list[MovieOut]:
+    """Personalised row. Falls back to popularity for a user with no history."""
+    titles = await content_service.recommended_for_user(session, user.id, limit=limit)
+    return [_to_movie_out(title) for title in titles]
+
+
+@router.get("/continue", response_model=list[MovieOut])
+async def continue_watching_movies(
+    limit: int = Query(default=10, ge=1, le=50),
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+) -> list[MovieOut]:
+    """
+    Most recently watched, newest first.
+
+    continue_watching() is per *episode*, so a serial appears once per
+    episode watched; the home row wants one card per title.
+    """
+    items = await continue_watching(session, user.id, limit=limit)
+    seen: set[int] = set()
+    movies: list[MovieOut] = []
+    for item in items:
+        if item.title.id in seen:
+            continue
+        seen.add(item.title.id)
+        movies.append(_to_movie_out(item.title))
+    return movies
+
+
+@router.get("/{movie_id}/similar", response_model=list[MovieOut])
+async def similar_movies(
+    movie_id: int,
+    limit: int = Query(default=10, ge=1, le=50),
+    session: AsyncSession = Depends(get_db_session),
+    _user: User = Depends(get_current_user),
+) -> list[MovieOut]:
+    titles = await content_service.similar_titles(session, movie_id, limit=limit)
+    return [_to_movie_out(title) for title in titles]
 
 
 @router.get("/{movie_id}", response_model=MovieOut)
