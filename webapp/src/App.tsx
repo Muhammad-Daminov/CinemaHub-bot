@@ -1,17 +1,27 @@
-import { Home, Settings } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Home, Settings, Shield } from "lucide-react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminDashboard } from "./admin/AdminDashboard";
+import { AudioFilter } from "./components/AudioFilter";
 import { HeroBanner } from "./components/HeroBanner";
+import { I18nProvider } from "./components/I18nProvider";
+import { LanguagePicker } from "./components/LanguagePicker";
 import { MovieCard } from "./components/MovieCard";
 import { MovieDetailSheet } from "./components/MovieDetailSheet";
 import { MovieRow } from "./components/MovieRow";
 import { Navbar } from "./components/Navbar";
+import { SettingsPage } from "./components/SettingsPage";
 import { Toast } from "./components/Toast";
 import { adminApi, api, ApiError } from "./lib/api";
+import { useT, type Language, type Translator } from "./lib/i18n";
 import { getColorScheme, initTelegramApp, onThemeChange } from "./lib/telegram";
-import type { Movie, MovieContentType } from "./types/movie";
+import type {
+  AudioLanguageFilter,
+  Movie,
+  MovieContentType,
+  UserProfile,
+} from "./types/movie";
 
-/** A home row: a heading plus the request that fills it. */
+/** A home row: a translated heading plus the request that fills it. */
 interface RowSpec {
   key: string;
   title: string;
@@ -20,52 +30,94 @@ interface RowSpec {
 
 const ROW_LIMIT = 20;
 
+const TYPE_ROWS: { type: MovieContentType; labelKey: string }[] = [
+  { type: "serial", labelKey: "app.row_serial" },
+  { type: "anime", labelKey: "app.row_anime" },
+  { type: "multfilm", labelKey: "app.row_multfilm" },
+  { type: "drama", labelKey: "app.row_drama" },
+];
+
 /**
- * Fixed rows, in display order. Collection rows are appended after
- * /movies/collections resolves, so they can't be listed here.
- *
- * Each row owns its own request. Nothing waits on anything else — a slow
- * "Siz uchun" must not hold back "Top hafta", which is the whole reason
- * the page isn't loaded as one blocking Promise.all.
+ * Row definitions depend on both the translator and the active audio
+ * filter, so they're built per render rather than being module-level
+ * constants. Each row still owns its own request — nothing waits on
+ * anything else, which is why the page paints progressively.
  */
-const TYPE_ROWS: { type: MovieContentType; title: string }[] = [
-  { type: "serial", title: "Seriallar" },
-  { type: "anime", title: "Animelar" },
-  { type: "multfilm", title: "Multfilmlar" },
-  { type: "drama", title: "Dramalar" },
-];
-
-const BASE_ROWS: RowSpec[] = [
-  { key: "recommended", title: "Siz uchun", load: () => api.recommended(ROW_LIMIT) },
-  { key: "continue", title: "Davom ettirish", load: () => api.continueWatching(ROW_LIMIT) },
-  { key: "newest", title: "Yangi qo'shilgan", load: () => api.listMovies({ limit: ROW_LIMIT }) },
-  { key: "top", title: "Top hafta", load: () => api.topMovies(ROW_LIMIT) },
-  ...TYPE_ROWS.map(({ type, title }) => ({
-    key: `type:${type}`,
-    title,
-    load: () => api.listMovies({ content_type: type, limit: ROW_LIMIT }),
-  })),
-];
-
-const ALL_ROW: RowSpec = {
-  key: "all",
-  title: "Barcha filmlar",
-  load: () => api.listMovies({ limit: 30 }),
-};
+function buildRows(t: Translator, audio: AudioLanguageFilter | null): RowSpec[] {
+  const audioParam = audio ?? undefined;
+  return [
+    {
+      key: "recommended",
+      title: t("app.row_recommended"),
+      load: () => api.recommended(ROW_LIMIT, audioParam),
+    },
+    {
+      key: "continue",
+      title: t("app.row_continue"),
+      load: () => api.continueWatching(ROW_LIMIT, audioParam),
+    },
+    {
+      key: "newest",
+      title: t("app.row_newest"),
+      load: () => api.listMovies({ limit: ROW_LIMIT, audio_language: audioParam }),
+    },
+    { key: "top", title: t("app.row_top"), load: () => api.topMovies(ROW_LIMIT, audioParam) },
+    ...TYPE_ROWS.map(({ type, labelKey }) => ({
+      key: `type:${type}`,
+      title: t(labelKey),
+      load: () =>
+        api.listMovies({ content_type: type, limit: ROW_LIMIT, audio_language: audioParam }),
+    })),
+  ];
+}
 
 export default function App() {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
+  const [profileLoaded, setProfileLoaded] = useState(false);
+
+  useEffect(() => {
+    initTelegramApp();
+  }, []);
+
+  useEffect(() => {
+    api
+      .me()
+      .then(setProfile)
+      .catch(() => setProfile(null))
+      .finally(() => setProfileLoaded(true));
+  }, []);
+
+  // Everything below the provider can call t(); the provider itself needs
+  // to know which catalog to fetch, which is why the profile loads first.
+  if (!profileLoaded) return <div className="min-h-full bg-bg" />;
+
+  return (
+    <I18nProvider lang={profile?.language ?? "uz"}>
+      <Shell profile={profile} setProfile={setProfile} />
+    </I18nProvider>
+  );
+}
+
+function Shell({
+  profile,
+  setProfile,
+}: {
+  profile: UserProfile | null;
+  setProfile: (profile: UserProfile) => void;
+}) {
+  const t = useT();
   const [isDark, setIsDark] = useState(true);
   const [isAdmin, setIsAdmin] = useState(false);
-  const [view, setView] = useState<"home" | "admin">("home");
+  const [view, setView] = useState<"home" | "settings" | "admin">("home");
   const [rowMovies, setRowMovies] = useState<Record<string, Movie[]>>({});
   const [collectionRows, setCollectionRows] = useState<RowSpec[]>([]);
+  const [audioLanguage, setAudioLanguage] = useState<AudioLanguageFilter | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
 
   useEffect(() => {
-    initTelegramApp();
     const syncTheme = () => setIsDark(getColorScheme() === "dark");
     syncTheme();
     onThemeChange(syncTheme);
@@ -75,11 +127,20 @@ export default function App() {
     document.documentElement.classList.toggle("dark", isDark);
   }, [isDark]);
 
-  // Fire every row independently and paint each as it lands. A row that
-  // fails just stays empty, and MovieRow hides itself — one broken
-  // endpoint costs its own row, not the page.
+  const baseRows = useMemo(() => buildRows(t, audioLanguage), [t, audioLanguage]);
+
+  // Refetches when the audio filter changes; each row paints as it lands.
+  // A row that fails stays empty and MovieRow hides itself, so one broken
+  // endpoint costs its own row rather than the page.
   useEffect(() => {
-    for (const row of [...BASE_ROWS, ALL_ROW]) {
+    const audioParam = audioLanguage ?? undefined;
+    const allRow: RowSpec = {
+      key: "all",
+      title: t("app.row_all"),
+      load: () => api.listMovies({ limit: 30, audio_language: audioParam }),
+    };
+
+    for (const row of [...baseRows, allRow]) {
       row
         .load()
         .then((movies) => setRowMovies((current) => ({ ...current, [row.key]: movies })))
@@ -94,7 +155,12 @@ export default function App() {
           .map<RowSpec>((collection) => ({
             key: `collection:${collection.id}`,
             title: collection.name,
-            load: () => api.listMovies({ collection_id: collection.id, limit: ROW_LIMIT }),
+            load: () =>
+              api.listMovies({
+                collection_id: collection.id,
+                limit: ROW_LIMIT,
+                audio_language: audioParam,
+              }),
           }));
         setCollectionRows(rows);
         for (const row of rows) {
@@ -105,7 +171,7 @@ export default function App() {
         }
       })
       .catch(() => setCollectionRows([]));
-  }, []);
+  }, [baseRows, audioLanguage, t]);
 
   // /api/auth/me carries no admin flag, so we probe an admin-only route
   // instead: 200 means admin, 403 means an ordinary user.
@@ -122,14 +188,20 @@ export default function App() {
     return () => clearTimeout(timeout);
   }, [toast]);
 
-  const handleSearch = useCallback((query: string) => {
-    setSearchQuery(query);
-    if (!query) {
-      setSearchResults([]);
-      return;
-    }
-    api.searchMovies(query).then(setSearchResults).catch(() => setSearchResults([]));
-  }, []);
+  const handleSearch = useCallback(
+    (query: string) => {
+      setSearchQuery(query);
+      if (!query) {
+        setSearchResults([]);
+        return;
+      }
+      api
+        .searchMovies(query, audioLanguage ?? undefined)
+        .then(setSearchResults)
+        .catch(() => setSearchResults([]));
+    },
+    [audioLanguage],
+  );
 
   const handleWatch = async (movie: Movie) => {
     setSelectedMovie(null);
@@ -137,13 +209,22 @@ export default function App() {
       const response = await api.watchMovie(movie.id);
       setToast({ message: response.message, tone: "success" });
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : "Xatolik yuz berdi.";
+      const message = error instanceof ApiError ? error.message : t("app.generic_error");
       setToast({ message, tone: "error" });
     }
   };
 
-  // Banner pool: newest first, then the most-watched, deduped. Both rows
-  // are already being fetched for the page, so this costs no extra request.
+  const handleChangeLanguage = async (language: Language) => {
+    const updated = await api.setLanguage(language);
+    setProfile(updated);
+    setToast({ message: t("app.settings_language_saved"), tone: "success" });
+  };
+
+  // Never asked, in the bot or here — pick a language before anything else.
+  if (profile && !profile.language_selected) {
+    return <LanguagePicker onPick={handleChangeLanguage} />;
+  }
+
   const bannerMovies = (() => {
     const pool: Movie[] = [];
     const seen = new Set<number>();
@@ -155,48 +236,62 @@ export default function App() {
     return pool.slice(0, 5);
   })();
 
-  const homeRows = [...BASE_ROWS, ...collectionRows, ALL_ROW];
+  const homeRows = [
+    ...baseRows,
+    ...collectionRows,
+    {
+      key: "all",
+      title: t("app.row_all"),
+      load: () => api.listMovies({ limit: 30 }),
+    },
+  ];
   const isSearching = searchQuery.length > 0;
 
-  // Admins get a bottom nav to reach the panel; for everyone else the app
-  // renders exactly as before, with no extra chrome.
-  if (isAdmin && view === "admin") {
+  if (view === "admin" && isAdmin) {
     return (
       <div className="min-h-full bg-bg text-ink">
         <AdminDashboard />
-        <BottomNav view={view} onChange={setView} />
+        <BottomNav view={view} onChange={setView} isAdmin={isAdmin} />
       </div>
     );
   }
 
   return (
-    <div className={`min-h-full bg-bg text-ink ${isAdmin ? "pb-20" : ""}`}>
-      <Navbar onSearch={handleSearch} isDark={isDark} onToggleTheme={() => setIsDark((d) => !d)} />
-
-      {isSearching ? (
-        <div className="grid grid-cols-3 gap-3 p-4 sm:grid-cols-4">
-          {searchResults.map((movie) => (
-            <MovieCard key={movie.id} movie={movie} onSelect={setSelectedMovie} />
-          ))}
-          {searchResults.length === 0 && (
-            <p className="col-span-full py-10 text-center text-sm text-ink-dim">Hech narsa topilmadi.</p>
-          )}
-        </div>
+    <div className="min-h-full bg-bg pb-20 text-ink">
+      {view === "settings" ? (
+        <SettingsPage profile={profile} onChangeLanguage={handleChangeLanguage} />
       ) : (
         <>
-          <HeroBanner
-            movies={bannerMovies}
-            onWatch={handleWatch}
-            onDetails={setSelectedMovie}
-          />
-          {homeRows.map((row) => (
-            <MovieRow
-              key={row.key}
-              title={row.title}
-              movies={rowMovies[row.key] ?? []}
-              onSelect={setSelectedMovie}
-            />
-          ))}
+          <Navbar onSearch={handleSearch} isDark={isDark} onToggleTheme={() => setIsDark((d) => !d)} />
+
+          {isSearching ? (
+            <>
+              <AudioFilter value={audioLanguage} onChange={setAudioLanguage} />
+              <div className="grid grid-cols-3 gap-3 p-4 sm:grid-cols-4">
+                {searchResults.map((movie) => (
+                  <MovieCard key={movie.id} movie={movie} onSelect={setSelectedMovie} />
+                ))}
+                {searchResults.length === 0 && (
+                  <p className="col-span-full py-10 text-center text-sm text-ink-dim">
+                    {t("app.nothing_found")}
+                  </p>
+                )}
+              </div>
+            </>
+          ) : (
+            <>
+              <HeroBanner movies={bannerMovies} onWatch={handleWatch} onDetails={setSelectedMovie} />
+              <AudioFilter value={audioLanguage} onChange={setAudioLanguage} />
+              {homeRows.map((row) => (
+                <MovieRow
+                  key={row.key}
+                  title={row.title}
+                  movies={rowMovies[row.key] ?? []}
+                  onSelect={setSelectedMovie}
+                />
+              ))}
+            </>
+          )}
         </>
       )}
 
@@ -206,10 +301,11 @@ export default function App() {
           onClose={() => setSelectedMovie(null)}
           onWatch={handleWatch}
           onSelectSimilar={setSelectedMovie}
+          audioLanguage={audioLanguage}
         />
       )}
       {toast && <Toast message={toast.message} tone={toast.tone} />}
-      {isAdmin && <BottomNav view={view} onChange={setView} />}
+      <BottomNav view={view} onChange={setView} isAdmin={isAdmin} />
     </div>
   );
 }
@@ -217,17 +313,21 @@ export default function App() {
 function BottomNav({
   view,
   onChange,
+  isAdmin,
 }: {
-  view: "home" | "admin";
-  onChange: (view: "home" | "admin") => void;
+  view: "home" | "settings" | "admin";
+  onChange: (view: "home" | "settings" | "admin") => void;
+  isAdmin: boolean;
 }) {
+  const t = useT();
   const items = [
-    { id: "home" as const, label: "Asosiy", icon: Home },
-    { id: "admin" as const, label: "Admin", icon: Settings },
+    { id: "home" as const, labelKey: "app.nav_home", icon: Home },
+    { id: "settings" as const, labelKey: "app.nav_settings", icon: Settings },
+    ...(isAdmin ? [{ id: "admin" as const, labelKey: "app.nav_admin", icon: Shield }] : []),
   ];
 
   return (
-    <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-surface-hi bg-bg/95 backdrop-blur">
+    <nav className="fixed inset-x-0 bottom-0 z-30 flex border-t border-surface-hi bg-bg/95 pb-[env(safe-area-inset-bottom)] backdrop-blur">
       {items.map((item) => {
         const Icon = item.icon;
         const active = view === item.id;
@@ -240,7 +340,7 @@ function BottomNav({
             }`}
           >
             <Icon size={19} strokeWidth={active ? 2.4 : 2} />
-            {item.label}
+            {t(item.labelKey)}
           </button>
         );
       })}

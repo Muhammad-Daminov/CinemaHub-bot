@@ -25,7 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.admin import is_admin
 from app.core.config import settings
-from app.db.models.user import User
+from app.db.models.user import UILanguage, User
 from app.db.session import get_db_session
 from app.services.subscriptions import is_user_premium
 from app.services.users import get_or_create_user
@@ -85,13 +85,17 @@ class UserProfileOut(BaseModel):
     balance: float
     referral_code: str
     is_premium: bool
+    language: UILanguage
+    # False means the user has never picked one and is still on the UZ
+    # default — the Mini App shows its first-open picker on that.
+    language_selected: bool
 
 
-@router.get("/me", response_model=UserProfileOut)
-async def get_my_profile(
-    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db_session)
-) -> UserProfileOut:
-    premium = await is_user_premium(session, user.id)
+class LanguageIn(BaseModel):
+    language: UILanguage
+
+
+def _profile(user: User, premium: bool) -> UserProfileOut:
     return UserProfileOut(
         telegram_id=user.telegram_id,
         username=user.username,
@@ -99,4 +103,32 @@ async def get_my_profile(
         balance=float(user.balance),
         referral_code=user.referral_code,
         is_premium=premium,
+        language=user.language,
+        language_selected=user.language_selected,
     )
+
+
+@router.get("/me", response_model=UserProfileOut)
+async def get_my_profile(
+    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db_session)
+) -> UserProfileOut:
+    premium = await is_user_premium(session, user.id)
+    return _profile(user, premium)
+
+
+@router.patch("/me", response_model=UserProfileOut)
+async def update_my_profile(
+    payload: LanguageIn,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> UserProfileOut:
+    """
+    Sets the UI language. This is the same column the bot reads, so a
+    change here also changes the bot's replies — which is the point.
+    """
+    user.language = payload.language
+    user.language_selected = True
+    await session.flush()
+
+    premium = await is_user_premium(session, user.id)
+    return _profile(user, premium)

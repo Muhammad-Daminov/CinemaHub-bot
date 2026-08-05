@@ -1,18 +1,29 @@
 import { Play, Star, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
-import { genreLabels } from "../lib/genres";
-import type { Movie } from "../types/movie";
+import { useT } from "../lib/i18n";
+import type { AudioLanguageFilter, Movie } from "../types/movie";
 import { MovieCard } from "./MovieCard";
+
+const SIMILAR_LIMIT = 10;
 
 interface Props {
   movie: Movie;
   onClose: () => void;
   onWatch: (movie: Movie) => void;
   onSelectSimilar: (movie: Movie) => void;
+  /** The catalog's active audio filter, so this row obeys it like every other. */
+  audioLanguage: AudioLanguageFilter | null;
 }
 
-export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: Props) {
+export function MovieDetailSheet({
+  movie,
+  onClose,
+  onWatch,
+  onSelectSimilar,
+  audioLanguage,
+}: Props) {
+  const t = useT();
   const [similar, setSimilar] = useState<Movie[]>([]);
 
   useEffect(() => {
@@ -21,13 +32,13 @@ export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: P
     setSimilar([]);
     let current = true;
     api
-      .similar(movie.id)
+      .similar(movie.id, SIMILAR_LIMIT, audioLanguage ?? undefined)
       .then((results) => current && setSimilar(results))
       .catch(() => current && setSimilar([]));
     return () => {
       current = false;
     };
-  }, [movie.id]);
+  }, [movie.id, audioLanguage]);
 
   return (
     <div className="fixed inset-0 z-30 flex items-end bg-black/60" onClick={onClose}>
@@ -47,7 +58,7 @@ export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: P
       >
         <div className="mb-3 flex items-start justify-between gap-3">
           <h2 className="font-display text-xl font-semibold text-ink">{movie.title}</h2>
-          <button onClick={onClose} aria-label="Close" className="shrink-0 text-ink-dim hover:text-ink">
+          <button onClick={onClose} aria-label={t("app.close")} className="shrink-0 text-ink-dim hover:text-ink">
             <X size={20} />
           </button>
         </div>
@@ -60,7 +71,7 @@ export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: P
               {movie.rating.toFixed(1)}
             </span>
           )}
-          {movie.genres && <span>{genreLabels(movie.genres).join(", ")}</span>}
+          {movie.genres && <span>{movie.genres.map((g) => t(`genre.${g}`)).join(", ")}</span>}
         </div>
 
         {movie.description && (
@@ -69,7 +80,7 @@ export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: P
 
         {similar.length > 0 && (
           <section className="mb-4">
-            <h3 className="mb-2 font-display text-sm font-medium tracking-wide text-ink">O'xshash</h3>
+            <h3 className="mb-2 font-display text-sm font-medium tracking-wide text-ink">{t("app.similar")}</h3>
             <div className="no-scrollbar -mx-4 flex gap-3 overflow-x-auto px-4 pb-1">
               {similar.map((item) => (
                 <MovieCard key={item.id} movie={item} onSelect={onSelectSimilar} />
@@ -83,7 +94,7 @@ export function MovieDetailSheet({ movie, onClose, onWatch, onSelectSimilar }: P
           className="flex w-full items-center justify-center gap-1.5 rounded-full bg-marquee py-3 font-semibold text-on-marquee shadow-marquee transition-transform active:scale-95"
         >
           <Play size={16} fill="currentColor" />
-          Tomosha qilish
+          {t("app.watch")}
         </button>
       </div>
     </div>

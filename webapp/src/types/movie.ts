@@ -21,6 +21,9 @@ export interface MovieCollection {
 
 export type MovieContentType = "film" | "serial" | "multfilm" | "anime" | "drama";
 
+/** Audio track languages a title can be restricted to. Mirrors AudioLanguage. */
+export type AudioLanguageFilter = "uz_dub" | "uz_sub" | "ru" | "en" | "original";
+
 export interface WatchResponse {
   status: string;
   message: string;
@@ -33,4 +36,6 @@ export interface UserProfile {
   balance: number;
   referral_code: string;
   is_premium: boolean;
+  language: "uz" | "ru" | "en";
+  language_selected: boolean;
 }

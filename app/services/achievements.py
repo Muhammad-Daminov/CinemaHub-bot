@@ -20,7 +20,8 @@ from dataclasses import dataclass, field
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models.content import ContentType, Episode, Title, WatchHistory
+from app.db.models.content import AudioLanguage, ContentType, Episode, Title, WatchHistory
+from app.services.content import _has_playable_file
 
 OVERALL = "overall"
 
@@ -151,15 +152,31 @@ class ContinueWatchingItem:
 
 
 async def continue_watching(
-    session: AsyncSession, user_id: int, limit: int = 10
+    session: AsyncSession,
+    user_id: int,
+    limit: int = 10,
+    audio_language: AudioLanguage | None = None,
 ) -> list[ContinueWatchingItem]:
-    """Most recently watched episodes, newest first, with their titles eagerly joined."""
-    result = await session.execute(
+    """
+    Most recently watched episodes, newest first, with their titles eagerly joined.
+
+    `audio_language` reuses content._has_playable_file so this row answers
+    the same "available in this language" question as every other row —
+    a title-level test, deliberately not a per-episode one. Filtering the
+    joined episode instead would drop a half-watched serial from the row
+    whenever the specific episode someone stopped on lacks that track,
+    even though the title is perfectly watchable in it.
+    """
+    stmt = (
         select(Title, Episode)
         .join(WatchHistory, WatchHistory.title_id == Title.id)
         .join(Episode, Episode.id == WatchHistory.episode_id)
         .where(WatchHistory.user_id == user_id)
-        .order_by(WatchHistory.last_watched_at.desc())
-        .limit(limit)
+    )
+    if audio_language is not None:
+        stmt = stmt.where(_has_playable_file(audio_language))
+
+    result = await session.execute(
+        stmt.order_by(WatchHistory.last_watched_at.desc()).limit(limit)
     )
     return [ContinueWatchingItem(title=row[0], episode=row[1]) for row in result.all()]

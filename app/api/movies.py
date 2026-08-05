@@ -18,17 +18,16 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.auth import get_current_user
 from app.bot.instance import bot
 from app.db.models.content import (
+    AudioLanguage,
     Collection,
     ContentType,
-    Episode,
-    MediaFile,
     Title,
     title_collections,
 )
 from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.achievements import continue_watching
-from app.services.content import content_service
+from app.services.content import _has_playable_file, content_service
 from app.services.streaming import streaming_service
 
 router = APIRouter()
@@ -72,19 +71,16 @@ def _to_movie_out(title: Title) -> MovieOut:
     )
 
 
-def _playable_titles() -> Select:
+def _playable_titles(audio_language: AudioLanguage | None = None) -> Select:
     """
-    Active titles that have at least one deliverable file. EXISTS rather
-    than a relationship walk — this runs under async SQLAlchemy, where a
-    lazy load raises MissingGreenlet.
+    Active titles that have at least one deliverable file, optionally
+    narrowed to a specific audio language.
+
+    Uses content._has_playable_file so the API and the bot ask the exact
+    same question — this file used to carry its own copy of that EXISTS,
+    which is how two catalog gates drift apart.
     """
-    has_file = (
-        select(MediaFile.id)
-        .join(Episode, Episode.id == MediaFile.episode_id)
-        .where(Episode.title_id == Title.id)
-        .exists()
-    )
-    return select(Title).where(Title.is_active.is_(True), has_file)
+    return select(Title).where(Title.is_active.is_(True), _has_playable_file(audio_language))
 
 
 @router.get("/collections", response_model=list[CollectionOut])
@@ -114,11 +110,12 @@ async def list_movies(
     genre: str | None = None,
     collection_id: int | None = None,
     content_type: ContentType | None = None,
+    audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
     _user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
     """Newest first. Every home row that is just a filtered slice comes through here."""
-    stmt = _playable_titles().order_by(Title.created_at.desc())
+    stmt = _playable_titles(audio_language).order_by(Title.created_at.desc())
     if genre:
         stmt = stmt.where(Title.genres.any(genre))
     if content_type is not None:
@@ -135,11 +132,12 @@ async def list_movies(
 @router.get("/top", response_model=list[MovieOut])
 async def top_movies(
     limit: int = Query(default=10, ge=1, le=50),
+    audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
     _user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
     result = await session.execute(
-        _playable_titles().order_by(Title.view_count.desc()).limit(limit)
+        _playable_titles(audio_language).order_by(Title.view_count.desc()).limit(limit)
     )
     return [_to_movie_out(title) for title in result.scalars()]
 
@@ -148,11 +146,12 @@ async def top_movies(
 async def search_movies(
     q: str = Query(min_length=1),
     limit: int = Query(default=20, ge=1, le=100),
+    audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
     _user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
     result = await session.execute(
-        _playable_titles()
+        _playable_titles(audio_language)
         .where(Title.name.ilike(f"%{q}%"))
         .order_by(Title.view_count.desc())
         .limit(limit)
@@ -165,17 +164,21 @@ async def search_movies(
 @router.get("/recommended", response_model=list[MovieOut])
 async def recommended_movies(
     limit: int = Query(default=10, ge=1, le=50),
+    audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
     """Personalised row. Falls back to popularity for a user with no history."""
-    titles = await content_service.recommended_for_user(session, user.id, limit=limit)
+    titles = await content_service.recommended_for_user(
+        session, user.id, limit=limit, audio_language=audio_language
+    )
     return [_to_movie_out(title) for title in titles]
 
 
 @router.get("/continue", response_model=list[MovieOut])
 async def continue_watching_movies(
     limit: int = Query(default=10, ge=1, le=50),
+    audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
@@ -185,7 +188,9 @@ async def continue_watching_movies(
     continue_watching() is per *episode*, so a serial appears once per
     episode watched; the home row wants one card per title.
     """
-    items = await continue_watching(session, user.id, limit=limit)
+    items = await continue_watching(
+        session, user.id, limit=limit, audio_language=audio_language
+    )
     seen: set[int] = set()
     movies: list[MovieOut] = []
     for item in items:
@@ -200,10 +205,13 @@ async def continue_watching_movies(
 async def similar_movies(
     movie_id: int,
     limit: int = Query(default=10, ge=1, le=50),
+    audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
     _user: User = Depends(get_current_user),
 ) -> list[MovieOut]:
-    titles = await content_service.similar_titles(session, movie_id, limit=limit)
+    titles = await content_service.similar_titles(
+        session, movie_id, limit=limit, audio_language=audio_language
+    )
     return [_to_movie_out(title) for title in titles]
 
 

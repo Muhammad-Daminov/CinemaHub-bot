@@ -17,6 +17,7 @@ from sqlalchemy import (
     Numeric,
     String,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -74,6 +75,14 @@ class User(Base):
 
     # UI language for bot/Mini App labels.
     language: Mapped[UILanguage] = mapped_column(default=UILanguage.UZ, nullable=False)
+    # Whether `language` reflects a real choice or is still just the UZ
+    # default. The column above cannot answer that on its own — it is
+    # NOT NULL with a default, so a user who has never been asked looks
+    # identical to one who deliberately picked Uzbek. The Mini App needs
+    # the difference to know whether to show its first-open picker.
+    language_selected: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(

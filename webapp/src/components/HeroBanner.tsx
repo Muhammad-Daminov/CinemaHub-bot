@@ -1,6 +1,6 @@
 import { Info, Play } from "lucide-react";
 import { useEffect, useState } from "react";
-import { genreLabels } from "../lib/genres";
+import { useT } from "../lib/i18n";
 import type { Movie } from "../types/movie";
 
 interface Props {
@@ -33,6 +33,7 @@ function usePrefersReducedMotion(): boolean {
 }
 
 export function HeroBanner({ movies, onWatch, onDetails }: Props) {
+  const t = useT();
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
   const reducedMotion = usePrefersReducedMotion();
@@ -80,7 +81,7 @@ export function HeroBanner({ movies, onWatch, onDetails }: Props) {
       <div className="absolute inset-x-0 bottom-0 p-4 pb-6">
         {active.genres && active.genres.length > 0 && (
           <p className="mb-1 font-mono text-xs uppercase tracking-wider text-marquee">
-            {genreLabels(active.genres).slice(0, 3).join(" · ")}
+            {active.genres.slice(0, 3).map((g) => t(`genre.${g}`)).join(" · ")}
           </p>
         )}
         <h1 className="mb-3 font-display text-3xl font-semibold leading-tight text-ink drop-shadow-lg sm:text-4xl">
@@ -92,14 +93,14 @@ export function HeroBanner({ movies, onWatch, onDetails }: Props) {
             className="flex items-center gap-1.5 rounded-full bg-marquee px-5 py-2 font-body text-sm font-semibold text-on-marquee shadow-marquee transition-transform active:scale-95"
           >
             <Play size={16} fill="currentColor" />
-            Tomosha qilish
+            {t("app.watch")}
           </button>
           <button
             onClick={() => onDetails(active)}
             className="flex items-center gap-1.5 rounded-full bg-surface-hi/80 px-5 py-2 text-sm font-medium text-ink backdrop-blur transition-transform active:scale-95"
           >
             <Info size={16} />
-            Batafsil
+            {t("app.details")}
           </button>
         </div>
 

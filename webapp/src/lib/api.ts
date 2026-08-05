@@ -1,5 +1,6 @@
 import { getInitData } from "./telegram";
 import type {
+  AudioLanguageFilter,
   Movie,
   MovieCollection,
   MovieContentType,
@@ -65,6 +66,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   me: () => request<UserProfile>("/auth/me"),
+  setLanguage: (language: string) =>
+    request<UserProfile>("/auth/me", { method: "PATCH", body: JSON.stringify({ language }) }),
   listMovies: (
     params: {
       skip?: number;
@@ -72,14 +75,19 @@ export const api = {
       genre?: string;
       collection_id?: number;
       content_type?: MovieContentType;
+      audio_language?: AudioLanguageFilter;
     } = {},
   ) => request<Movie[]>(`/movies${toQuery(params)}`),
-  topMovies: (limit = 10) => request<Movie[]>(`/movies/top?limit=${limit}`),
-  searchMovies: (q: string) => request<Movie[]>(`/movies/search?q=${encodeURIComponent(q)}`),
-  recommended: (limit = 10) => request<Movie[]>(`/movies/recommended?limit=${limit}`),
-  continueWatching: (limit = 10) => request<Movie[]>(`/movies/continue?limit=${limit}`),
-  similar: (movieId: number, limit = 10) =>
-    request<Movie[]>(`/movies/${movieId}/similar?limit=${limit}`),
+  topMovies: (limit = 10, audio_language?: AudioLanguageFilter) =>
+    request<Movie[]>(`/movies/top${toQuery({ limit, audio_language })}`),
+  searchMovies: (q: string, audio_language?: AudioLanguageFilter) =>
+    request<Movie[]>(`/movies/search${toQuery({ q, audio_language })}`),
+  recommended: (limit = 10, audio_language?: AudioLanguageFilter) =>
+    request<Movie[]>(`/movies/recommended${toQuery({ limit, audio_language })}`),
+  continueWatching: (limit = 10, audio_language?: AudioLanguageFilter) =>
+    request<Movie[]>(`/movies/continue${toQuery({ limit, audio_language })}`),
+  similar: (movieId: number, limit = 10, audio_language?: AudioLanguageFilter) =>
+    request<Movie[]>(`/movies/${movieId}/similar${toQuery({ limit, audio_language })}`),
   collections: () => request<MovieCollection[]>("/movies/collections"),
   watchMovie: (movieId: number) =>
     request<WatchResponse>(`/movies/${movieId}/watch`, { method: "POST" }),

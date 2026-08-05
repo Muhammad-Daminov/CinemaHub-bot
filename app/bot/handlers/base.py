@@ -74,6 +74,8 @@ async def handle_language_selected(callback: CallbackQuery, session: AsyncSessio
         return
 
     user.language = chosen
+    # Records that this is a real choice, so the Mini App doesn't ask again.
+    user.language_selected = True
     await session.flush()
 
     await callback.message.answer(t("common.language_saved", chosen))

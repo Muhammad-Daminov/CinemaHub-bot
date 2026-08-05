@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api import admin as admin_api
+from app.api import i18n as i18n_api
 from app.api import auth as auth_api
 from app.api import movies as movies_api
 from app.bot.handlers import base as base_handlers
@@ -99,11 +100,14 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["https://web.telegram.org"] if settings.is_production else ["*"],
     allow_credentials=False,
-    allow_methods=["GET", "POST"],
+    # PATCH is needed for /api/auth/me (language switch); without it the
+    # browser preflight fails in production and the setting silently won't save.
+    allow_methods=["GET", "POST", "PATCH"],
     allow_headers=["*"],
 )
 
 app.include_router(auth_api.router, prefix="/api/auth", tags=["auth"])
+app.include_router(i18n_api.router, prefix="/api/i18n", tags=["i18n"])
 app.include_router(movies_api.router, prefix="/api/movies", tags=["movies"])
 app.include_router(admin_api.router, prefix="/api/admin", tags=["admin"])
 

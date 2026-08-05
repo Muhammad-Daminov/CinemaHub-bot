@@ -63,7 +63,7 @@ class TitlePage:
         return self.page > 0
 
 
-def _has_playable_file():
+def _has_playable_file(audio_language: AudioLanguage | None = None):
     """
     EXISTS chp_episodes -> chp_media_files for the current Title row.
 
@@ -72,15 +72,23 @@ def _has_playable_file():
     the moment someone taps it. Correlated EXISTS keeps this to the one
     query browse() already runs — no per-row lookup.
 
+    `audio_language` narrows the same subquery rather than adding a
+    second join: "has a file" and "has a file in Russian" are one
+    question, and answering them separately would both duplicate the
+    join and let a title through that has *some* file plus a Russian
+    file on a different episode.
+
     Deliberately NOT applied to admin listings: surfacing incomplete
     titles is exactly what that screen is for.
     """
-    return (
+    stmt = (
         select(MediaFile.id)
         .join(Episode, Episode.id == MediaFile.episode_id)
         .where(Episode.title_id == Title.id)
-        .exists()
     )
+    if audio_language is not None:
+        stmt = stmt.where(MediaFile.language == audio_language)
+    return stmt.exists()
 
 
 def similarity_score(title_id: int):
@@ -148,9 +156,12 @@ class ContentService:
         genre: str | None = None,
         query: str | None = None,
         collection_id: int | None = None,
+        audio_language: AudioLanguage | None = None,
         order_by_popularity: bool = True,
     ) -> TitlePage:
-        stmt = select(Title).where(Title.is_active.is_(True), _has_playable_file())
+        stmt = select(Title).where(
+            Title.is_active.is_(True), _has_playable_file(audio_language)
+        )
 
         if collection_id is not None:
             # Explicit join through the association table — never a lazy
@@ -229,7 +240,11 @@ class ContentService:
     # ---------- discovery ----------
 
     async def similar_titles(
-        self, session: AsyncSession, title_id: int, limit: int = 10
+        self,
+        session: AsyncSession,
+        title_id: int,
+        limit: int = 10,
+        audio_language: AudioLanguage | None = None,
     ) -> list[Title]:
         """
         Titles most like this one, best first.
@@ -248,7 +263,7 @@ class ContentService:
             .where(
                 Title.id != title_id,
                 Title.is_active.is_(True),
-                _has_playable_file(),
+                _has_playable_file(audio_language),
                 score > 0,
             )
             .order_by(score.desc(), Title.view_count.desc(), Title.name)
@@ -257,7 +272,11 @@ class ContentService:
         return list(result.scalars())
 
     async def recommended_for_user(
-        self, session: AsyncSession, user_id: int, limit: int = 10
+        self,
+        session: AsyncSession,
+        user_id: int,
+        limit: int = 10,
+        audio_language: AudioLanguage | None = None,
     ) -> list[Title]:
         """
         Unwatched titles matching what this user actually watches.
@@ -281,7 +300,9 @@ class ContentService:
         preferred_types = {row[0] for row in rows}
         preferred_genres = {genre for row in rows if row[1] for genre in row[1]}
 
-        stmt = select(Title).where(Title.is_active.is_(True), _has_playable_file())
+        stmt = select(Title).where(
+            Title.is_active.is_(True), _has_playable_file(audio_language)
+        )
 
         if preferred_types or preferred_genres:
             signals = []
