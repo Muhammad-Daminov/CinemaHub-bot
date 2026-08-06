@@ -11,7 +11,7 @@ Usage: /createpromo <type> <value> [max_uses] [valid_days] [code]
 Example: /createpromo balance 20000 100 30
   -> 100 uses, 30-day validity, 20000 credited on redemption.
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from aiogram import Router
 from aiogram.filters import Command, CommandObject
@@ -63,7 +63,7 @@ async def handle_create_promo(message: Message, command: CommandObject, session:
         return
 
     code = args[4].upper() if len(args) > 4 else generate_code(10)
-    valid_until = datetime.utcnow() + timedelta(days=valid_days) if valid_days else None
+    valid_until = datetime.now(timezone.utc) + timedelta(days=valid_days) if valid_days else None
 
     creator_result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
     creator = creator_result.scalar_one_or_none()

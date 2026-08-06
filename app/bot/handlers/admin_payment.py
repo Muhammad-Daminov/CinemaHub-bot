@@ -22,7 +22,12 @@ from app.core.admin import is_admin
 from app.core.config import settings
 from app.db.models.payment import PaymentReceipt
 from app.db.models.user import User
-from app.services.payment_review import ReceiptReviewError, approve_receipt, reject_receipt
+from app.services.payment_review import (
+    ReceiptNotFoundError,
+    ReceiptReviewError,
+    approve_receipt,
+    reject_receipt,
+)
 
 router = Router(name="admin_payment")
 logger = logging.getLogger(__name__)
@@ -66,14 +71,12 @@ async def handle_approve(callback: CallbackQuery, session: AsyncSession) -> None
         return
 
     receipt_id = int(callback.data.removeprefix(PAY_APPROVE_PREFIX))
-    receipt = await session.get(PaymentReceipt, receipt_id)
-    if receipt is None:
-        await callback.answer("Chek topilmadi.", show_alert=True)
-        return
-
     reviewer_id = await _get_reviewer_id(session, callback.from_user.id)
     try:
-        await approve_receipt(session, receipt, reviewer_id)
+        await approve_receipt(session, receipt_id, reviewer_id)
+    except ReceiptNotFoundError:
+        await callback.answer("Chek topilmadi.", show_alert=True)
+        return
     except ReceiptReviewError:
         await callback.answer("Bu chek allaqachon ko'rib chiqilgan.", show_alert=True)
         return
@@ -98,16 +101,15 @@ async def handle_reject_start(callback: CallbackQuery, state: FSMContext) -> Non
 @router.message(AdminPaymentStates.awaiting_rejection_reason)
 async def handle_reject_reason(message: Message, state: FSMContext, session: AsyncSession) -> None:
     data = await state.get_data()
-    receipt = await session.get(PaymentReceipt, data["reject_receipt_id"])
+    receipt_id = data["reject_receipt_id"]
     await state.clear()
-
-    if receipt is None:
-        await message.answer("Chek topilmadi.")
-        return
 
     reviewer_id = await _get_reviewer_id(session, message.from_user.id)
     try:
-        await reject_receipt(session, receipt, reviewer_id, message.text)
+        await reject_receipt(session, receipt_id, reviewer_id, message.text)
+    except ReceiptNotFoundError:
+        await message.answer("Chek topilmadi.")
+        return
     except ReceiptReviewError:
         await message.answer("Bu chek allaqachon ko'rib chiqilgan.")
         return

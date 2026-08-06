@@ -6,7 +6,7 @@ schema. Money is stored as Numeric (never float) to avoid rounding
 drift on balances.
 """
 import enum
-from datetime import datetime, date
+from datetime import datetime, date, timezone
 
 from sqlalchemy import (
     BigInteger,
@@ -116,7 +116,7 @@ class Subscription(Base):
 
     @property
     def is_active(self) -> bool:
-        return self.expires_at > datetime.utcnow()
+        return self.expires_at > datetime.now(timezone.utc)
 
 
 class BalanceHistory(Base):

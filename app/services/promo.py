@@ -10,9 +10,9 @@ INSERT succeeds and the other raises IntegrityError, which the caller
 must treat as "already used" (session middleware rolls back that
 update's transaction either way).
 """
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.promo import PromoCode, PromoDiscountType, PromoUsage
@@ -52,20 +52,53 @@ class PromoService:
         if usage_check.scalar_one_or_none() is not None:
             raise PromoError("promo.already_used")
 
+        # Claimed before the effect is applied: if the code turns out to be
+        # exhausted there is nothing to undo, and the balance/subscription
+        # work is never done only to be rolled back.
+        await self._claim_use(session, promo)
+
         effect_key, effect_params = await self._apply_effect(session, promo, user)
 
-        promo.current_uses += 1
         session.add(PromoUsage(promo_code_id=promo.id, user_id=user.id))
         await session.flush()
 
         return promo, effect_key, effect_params
+
+    async def _claim_use(self, session: AsyncSession, promo: PromoCode) -> None:
+        """
+        Atomically takes one of the code's remaining uses.
+
+        _validate already rejects an exhausted code, but it reads a value
+        another transaction may be about to change: two users redeeming
+        the last use at once both see current_uses < max_uses and both
+        proceed, so a code capped at 10 is redeemed 11 times. Folding the
+        check into the UPDATE's WHERE clause makes testing and taking the
+        slot one operation — exactly one writer matches a row.
+
+        `promo.current_uses` in memory is stale afterwards. The only
+        caller discards the returned promo, and re-reading it here would
+        cost a query to populate a field nobody consults.
+        """
+        result = await session.execute(
+            update(PromoCode)
+            .where(
+                PromoCode.id == promo.id,
+                or_(
+                    PromoCode.max_uses.is_(None),
+                    PromoCode.current_uses < PromoCode.max_uses,
+                ),
+            )
+            .values(current_uses=PromoCode.current_uses + 1)
+        )
+        if result.rowcount == 0:
+            raise PromoError("promo.limit_reached")
 
     def _validate(self, promo: PromoCode | None) -> None:
         if promo is None:
             raise PromoError("promo.not_found")
         if not promo.is_active:
             raise PromoError("promo.inactive")
-        if promo.valid_until and promo.valid_until < datetime.utcnow():
+        if promo.valid_until and promo.valid_until < datetime.now(timezone.utc):
             raise PromoError("promo.expired")
         if promo.max_uses is not None and promo.current_uses >= promo.max_uses:
             raise PromoError("promo.limit_reached")
@@ -74,7 +107,14 @@ class PromoService:
         self, session: AsyncSession, promo: PromoCode, user: User
     ) -> tuple[str, dict]:
         if promo.discount_type == PromoDiscountType.FIXED_AMOUNT_BALANCE:
-            user.balance = user.balance + promo.value
+            # Incremented in the database, not read-modify-written in
+            # Python: concurrent credits to the same user would otherwise
+            # all read the same starting balance and the last write would
+            # win, silently swallowing the others. Same failure that cost
+            # four of five payment credits in app/services/payment_review.py.
+            await session.execute(
+                update(User).where(User.id == user.id).values(balance=User.balance + promo.value)
+            )
             session.add(
                 BalanceHistory(
                     user_id=user.id,
@@ -87,7 +127,7 @@ class PromoService:
             return "promo.effect_balance", {"amount": f"{promo.value:,}"}
 
         if promo.discount_type == PromoDiscountType.PREMIUM_DAYS:
-            now = datetime.utcnow()
+            now = datetime.now(timezone.utc)
             active = await get_active_subscription(session, user.id)
             base_time = active.expires_at if active else now
             days = int(promo.value)

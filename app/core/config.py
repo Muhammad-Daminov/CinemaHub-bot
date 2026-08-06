@@ -43,9 +43,11 @@ class Settings(BaseSettings):
     # --- Third-party APIs ---
     TMDB_API_KEY: str = Field(...)
     GEMINI_API_KEY: str = Field(...)
-    GEMINI_MODEL: str = Field(default="gemini-2.0-flash")
-    AI_CATALOG_CONTEXT_LIMIT: int = Field(default=150)
+    # Declared once. There were previously two GEMINI_MODEL fields here and
+    # the later one silently won, so editing the first had no effect. This
+    # keeps the value that was actually in force.
     GEMINI_MODEL: str = Field(default="gemini-2.5-flash")
+    AI_CATALOG_CONTEXT_LIMIT: int = Field(default=150)
 
     # --- Business rules ---
     AI_DAILY_LIMIT_FREE: int = Field(default=3)

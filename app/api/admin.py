@@ -8,7 +8,7 @@ rules to the same action. Catalog writes go through
 app.services.admin_content for the same reason.
 """
 from dataclasses import asdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import datetime, timedelta, timezone
 
 import aiohttp
 from aiogram.exceptions import TelegramAPIError
@@ -32,10 +32,15 @@ from app.db.models.content import (
 )
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt, PaymentStatus
 from app.db.models.promo import PromoCode, PromoDiscountType
-from app.db.models.user import Subscription, SubscriptionPlan, User
+from app.db.models.user import SubscriptionPlan, User
 from app.db.session import get_db_session
 from app.services.admin_content import admin_content_service
-from app.services.payment_review import ReceiptReviewError, approve_receipt, reject_receipt
+from app.services.payment_review import (
+    ReceiptNotFoundError,
+    ReceiptReviewError,
+    approve_receipt,
+    reject_receipt,
+)
 from app.services.promo import promo_service
 
 router = APIRouter(dependencies=[Depends(get_current_admin)])
@@ -189,11 +194,10 @@ async def get_receipt_photo_route(
 async def approve_receipt_route(
     receipt_id: int, admin: User = Depends(get_current_admin), session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
-    receipt = await session.get(PaymentReceipt, receipt_id)
-    if receipt is None:
-        raise HTTPException(status_code=404, detail="Receipt not found")
     try:
-        await approve_receipt(session, receipt, admin.id)
+        await approve_receipt(session, receipt_id, admin.id)
+    except ReceiptNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Receipt not found") from exc
     except ReceiptReviewError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "approved"}
@@ -206,11 +210,10 @@ async def reject_receipt_route(
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, str]:
-    receipt = await session.get(PaymentReceipt, receipt_id)
-    if receipt is None:
-        raise HTTPException(status_code=404, detail="Receipt not found")
     try:
-        await reject_receipt(session, receipt, admin.id, body.notes)
+        await reject_receipt(session, receipt_id, admin.id, body.notes)
+    except ReceiptNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Receipt not found") from exc
     except ReceiptReviewError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "rejected"}

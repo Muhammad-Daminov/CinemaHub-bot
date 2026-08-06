@@ -11,3 +11,8 @@ venv/
 # Frontend build artefacts (also covered by webapp/.gitignore)
 webapp/node_modules/
 webapp/dist/
+# Incremental tsc state — rewritten on every build, pure diff noise
+webapp/tsconfig.tsbuildinfo
+
+# Test/tooling
+.pytest_cache/
