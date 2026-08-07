@@ -19,7 +19,8 @@ from aiogram.types import Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.admin import is_admin
+from app.bot.permissions import actor_with_permission
+from app.core.permissions import Permission
 from app.core.codegen import generate_code
 from app.db.models.promo import PromoDiscountType
 from app.db.models.user import User
@@ -41,7 +42,9 @@ USAGE_TEXT = (
 
 @router.message(Command("createpromo"))
 async def handle_create_promo(message: Message, command: CommandObject, session: AsyncSession) -> None:
-    if not is_admin(message.from_user.id):
+    if await actor_with_permission(
+        session, message.from_user.id, Permission.MANAGE_PROMO_CODES
+    ) is None:
         return  # silently ignore — don't reveal this command's existence to non-admins
 
     args = (command.args or "").split()

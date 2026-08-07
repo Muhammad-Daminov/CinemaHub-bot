@@ -9,7 +9,7 @@ App's API and receive Telegram updates.
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import asyncio
+import logging
 
 from aiogram import Dispatcher
 from aiogram.fsm.storage.redis import RedisStorage
@@ -36,9 +36,9 @@ from app.bot.middlewares.db import DbSessionMiddleware
 from app.bot.middlewares.i18n import I18nMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
 from app.core.config import settings
-from app.db.session import check_db_connection
+from app.db.session import check_db_connection, db_session_ctx
 from app.services.ai import ai_service
-from app.services.auto_delete import run_auto_delete_worker
+from app.services.permissions import ensure_super_admin
 from app.services.tmdb import tmdb_service
 
 dispatcher = Dispatcher(
@@ -61,13 +61,27 @@ dispatcher.include_router(admin_promo_handlers.router)
 dispatcher.include_router(admin_upload_handlers.router)
 dispatcher.include_router(ai_handlers.router)
 
+logger = logging.getLogger(__name__)
+
 WEBHOOK_PATH = "/webhook/telegram"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Startup: verify DB, register the webhook, launch the auto-delete worker. Shutdown: tear down cleanly."""
+    """Startup: verify DB, promote the configured Super Admin, register the webhook. Shutdown: tear down cleanly."""
     await check_db_connection()
+
+    # Reconciles the Super Admin against SUPER_ADMIN_TELEGRAM_ID on every
+    # boot, which is what makes the setting authoritative: changing it and
+    # redeploying transfers the role, demoting the previous holder. Failure
+    # is logged rather than fatal — a platform that will not start because
+    # one row could not be updated is worse than one running with the
+    # previous owner still in place.
+    try:
+        async with db_session_ctx() as session:
+            await ensure_super_admin(session)
+    except Exception:
+        logger.exception("Could not reconcile the super admin on startup")
 
     if settings.WEBHOOK_BASE_URL:
         await bot.set_webhook(
@@ -79,11 +93,8 @@ async def lifespan(app: FastAPI):
             drop_pending_updates=False,
         )
 
-    auto_delete_task = asyncio.create_task(run_auto_delete_worker(bot))
-
     yield
 
-    auto_delete_task.cancel()
     # Deliberately NOT deleting the webhook here. It is global bot state, not
     # this process's to release: a redeploy would leave the bot unreachable
     # until the new instance boots, and a second environment shutting down

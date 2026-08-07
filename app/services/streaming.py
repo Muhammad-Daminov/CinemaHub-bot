@@ -20,15 +20,13 @@ from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert as pg_insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.i18n import t
 from app.db.models.content import Episode, MediaFile, Title, WatchHistory
 from app.db.models.user import UILanguage
-from app.services import auto_delete
 
 
 class StreamingService:
-    """Delivers one MediaFile to a chat and queues it for auto-deletion."""
+    """Delivers one MediaFile to a chat. Delivered messages are never auto-removed."""
 
     async def deliver_episode(
         self,
@@ -40,7 +38,6 @@ class StreamingService:
         media_file: MediaFile,
         lang: UILanguage = UILanguage.UZ,
         user_id: int | None = None,
-        auto_delete_seconds: int = settings.AUTO_DELETE_SECONDS,
     ) -> Message:
         """
         Sends `media_file` to `chat_id`. Raises ValueError if there is no way
@@ -59,10 +56,6 @@ class StreamingService:
             await self._record_watch(session, user_id, title.id, episode.id)
 
         await session.flush()
-
-        await auto_delete.schedule_deletion(
-            chat_id=chat_id, message_id=sent_message.message_id, delay_seconds=auto_delete_seconds
-        )
         return sent_message
 
     @staticmethod

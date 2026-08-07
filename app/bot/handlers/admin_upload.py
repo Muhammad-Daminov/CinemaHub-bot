@@ -15,7 +15,8 @@ from aiogram.types import Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.admin import is_admin
+from app.bot.permissions import actor_with_permission
+from app.core.permissions import Permission
 from app.db.models.content import PendingUpload
 from app.db.models.user import User
 
@@ -23,8 +24,10 @@ router = Router(name="admin_upload")
 
 
 @router.message(F.video | F.document)
-async def handle_admin_upload(message: Message, session: AsyncSession) -> None:
-    if not is_admin(message.from_user.id):
+async def handle_admin_upload(message: Message, session: AsyncSession, _) -> None:
+    if await actor_with_permission(
+        session, message.from_user.id, Permission.MANAGE_MOVIES
+    ) is None:
         return  # silently ignore — don't reveal this flow to non-admins
 
     media = message.video or message.document
@@ -35,7 +38,7 @@ async def handle_admin_upload(message: Message, session: AsyncSession) -> None:
         select(PendingUpload.id).where(PendingUpload.file_id == media.file_id)
     )
     if existing.scalar_one_or_none() is not None:
-        await message.answer("ℹ️ Bu fayl allaqachon qabul qilingan — Mini App'dan davom eting.")
+        await message.answer(_("admin.upload_duplicate"))
         return
 
     uploader_result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
@@ -54,8 +57,4 @@ async def handle_admin_upload(message: Message, session: AsyncSession) -> None:
     )
     await session.flush()
 
-    await message.answer(
-        "✅ Video qabul qilindi.\n\n"
-        "Endi Mini App'dagi admin panelidan ushbu faylni kerakli kino yoki "
-        "serialga biriktiring — nomi, fasli va qismini o'sha yerda kiritasiz."
-    )
+    await message.answer(_("admin.upload_received"))

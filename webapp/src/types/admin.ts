@@ -262,3 +262,22 @@ export interface TMDBSearchResult {
   poster_url: string | null;
   overview: string | null;
 }
+
+/** Mirrors AdminOut in app/api/admin.py. */
+export interface AdminAccount {
+  id: number;
+  telegram_id: number;
+  username: string | null;
+  full_name: string | null;
+  role: string;
+  is_super_admin: boolean;
+  permissions: string[];
+}
+
+/**
+ * The permission vocabulary, grouped for display. Served by the backend
+ * so a capability added there shows up without a frontend release.
+ */
+export interface PermissionCatalog {
+  groups: Record<string, string[]>;
+}

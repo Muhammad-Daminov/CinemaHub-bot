@@ -18,7 +18,6 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.movie import WATCH_CALLBACK_PREFIX, get_resend_keyboard
-from app.core.config import settings
 from app.db.models.content import Episode, Title
 from app.db.models.user import UILanguage, User
 from app.services.content import content_service
@@ -53,7 +52,7 @@ async def deliver_and_warn(
 ) -> Message | None:
     """
     Resolves the best file for this viewer, delivers it and posts the
-    auto-delete warning. Returns None if nothing could be delivered.
+    send confirmation. Returns None if nothing could be delivered.
     Shared with handlers/catalog.py so both entry points behave identically.
     """
     title = await session.get(Title, episode.title_id)
@@ -81,9 +80,10 @@ async def deliver_and_warn(
         logger.warning("Delivery failed for episode_id=%s: no valid source", episode.id)
         return None
 
-    minutes = settings.AUTO_DELETE_SECONDS // 60
+    # The resend control stays: it is useful on its own, and is no longer
+    # attached to a deletion notice.
     await sent_message.answer(
-        _("streaming.auto_delete_warning", minutes=minutes),
+        _("streaming.sent"),
         reply_markup=get_resend_keyboard(episode.id, lang),
     )
     return sent_message

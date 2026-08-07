@@ -10,6 +10,8 @@ just tells the bot to deliver the episode into the user's own chat with
 CinemaHub Pro, matching Telegram's model where a WebApp can't stream
 media inline.
 """
+import logging
+
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Select, select
@@ -17,9 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_user
 from app.bot.instance import bot
+from app.core.i18n import t
 from app.db.models.content import (
     AudioLanguage,
-    Collection,
     ContentType,
     Title,
     title_collections,
@@ -29,6 +31,8 @@ from app.db.session import get_db_session
 from app.services.achievements import continue_watching
 from app.services.content import _has_playable_file, content_service
 from app.services.streaming import streaming_service
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -42,11 +46,35 @@ class MovieOut(BaseModel):
     description: str | None
     rating: float | None
     view_count: int
+    # How many episodes this title has. A film has 1. The Mini App uses it
+    # to decide whether a play control may start playback directly or must
+    # open the episode selector first — without it, any "Watch" button on a
+    # serial silently starts episode 1.
+    episode_count: int = 1
 
 
 class WatchResponse(BaseModel):
     status: str
     message: str
+
+
+class EpisodeOut(BaseModel):
+    id: int
+    season: int
+    number: int
+    name: str | None
+    duration_minutes: int | None
+    # Which audio tracks this specific episode has. Per-episode rather than
+    # per-title because a serial can be dubbed only partway through, and
+    # showing the title's full set would promise tracks that aren't there.
+    audio_languages: list[AudioLanguage]
+    watched: bool
+
+
+class EpisodePageOut(BaseModel):
+    episodes: list[EpisodeOut]
+    page: int
+    has_more: bool
 
 
 class CollectionOut(BaseModel):
@@ -58,7 +86,7 @@ class CollectionOut(BaseModel):
     title_count: int
 
 
-def _to_movie_out(title: Title) -> MovieOut:
+def _to_movie_out(title: Title, episode_count: int = 1) -> MovieOut:
     return MovieOut(
         id=title.id,
         title=title.name,
@@ -68,7 +96,14 @@ def _to_movie_out(title: Title) -> MovieOut:
         description=title.description,
         rating=float(title.rating) if title.rating is not None else None,
         view_count=title.view_count,
+        episode_count=episode_count,
     )
+
+
+async def _to_movie_outs(session: AsyncSession, titles: list[Title]) -> list[MovieOut]:
+    """Serializes a list of titles, resolving episode counts in one query."""
+    counts = await content_service.episode_counts(session, [t.id for t in titles])
+    return [_to_movie_out(title, counts.get(title.id, 1)) for title in titles]
 
 
 def _playable_titles(audio_language: AudioLanguage | None = None) -> Select:
@@ -126,7 +161,7 @@ async def list_movies(
             title_collections, title_collections.c.title_id == Title.id
         ).where(title_collections.c.collection_id == collection_id)
     result = await session.execute(stmt.offset(skip).limit(limit))
-    return [_to_movie_out(title) for title in result.scalars()]
+    return await _to_movie_outs(session, list(result.scalars()))
 
 
 @router.get("/top", response_model=list[MovieOut])
@@ -139,7 +174,7 @@ async def top_movies(
     result = await session.execute(
         _playable_titles(audio_language).order_by(Title.view_count.desc()).limit(limit)
     )
-    return [_to_movie_out(title) for title in result.scalars()]
+    return await _to_movie_outs(session, list(result.scalars()))
 
 
 @router.get("/search", response_model=list[MovieOut])
@@ -156,7 +191,7 @@ async def search_movies(
         .order_by(Title.view_count.desc())
         .limit(limit)
     )
-    return [_to_movie_out(title) for title in result.scalars()]
+    return await _to_movie_outs(session, list(result.scalars()))
 
 
 # Declared before /{movie_id}: FastAPI matches in definition order, so a
@@ -172,7 +207,7 @@ async def recommended_movies(
     titles = await content_service.recommended_for_user(
         session, user.id, limit=limit, audio_language=audio_language
     )
-    return [_to_movie_out(title) for title in titles]
+    return await _to_movie_outs(session, titles)
 
 
 @router.get("/continue", response_model=list[MovieOut])
@@ -192,13 +227,13 @@ async def continue_watching_movies(
         session, user.id, limit=limit, audio_language=audio_language
     )
     seen: set[int] = set()
-    movies: list[MovieOut] = []
+    titles: list[Title] = []
     for item in items:
         if item.title.id in seen:
             continue
         seen.add(item.title.id)
-        movies.append(_to_movie_out(item.title))
-    return movies
+        titles.append(item.title)
+    return await _to_movie_outs(session, titles)
 
 
 @router.get("/{movie_id}/similar", response_model=list[MovieOut])
@@ -212,39 +247,119 @@ async def similar_movies(
     titles = await content_service.similar_titles(
         session, movie_id, limit=limit, audio_language=audio_language
     )
-    return [_to_movie_out(title) for title in titles]
+    return await _to_movie_outs(session, titles)
 
 
 @router.get("/{movie_id}", response_model=MovieOut)
 async def get_movie(
     movie_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> MovieOut:
     title = await session.get(Title, movie_id)
     if title is None:
-        raise HTTPException(status_code=404, detail="Movie not found")
-    return _to_movie_out(title)
+        raise HTTPException(status_code=404, detail=t("catalog.title_not_found", user.language))
+    counts = await content_service.episode_counts(session, [title.id])
+    return _to_movie_out(title, counts.get(title.id, 1))
+
+
+@router.get("/{movie_id}/seasons", response_model=list[int])
+async def list_title_seasons(
+    movie_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    _user: User = Depends(get_current_user),
+) -> list[int]:
+    """
+    Season numbers for a title, ascending.
+
+    A film is a Title with a single Episode, so this returns `[1]` for one
+    — the client decides whether a season control is worth showing from
+    the length of this list, not from the content type.
+    """
+    return await content_service.list_seasons(session, movie_id)
+
+
+@router.get("/{movie_id}/episodes", response_model=EpisodePageOut)
+async def list_title_episodes(
+    movie_id: int,
+    season: int | None = None,
+    page: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_current_user),
+) -> EpisodePageOut:
+    """
+    One page of a title's episodes, each with its audio tracks and whether
+    the viewer has already watched it.
+
+    Audio languages and watched state are resolved in two batch queries
+    rather than per episode — the list is the one screen where an N+1
+    would be most visible.
+    """
+    episodes, has_more = await content_service.episode_page(
+        session, movie_id, season=season, page=page
+    )
+    episode_ids = [episode.id for episode in episodes]
+
+    languages = await content_service.languages_by_episode(session, episode_ids)
+    watched = await content_service.watched_episode_ids(session, user.id, episode_ids)
+
+    return EpisodePageOut(
+        episodes=[
+            EpisodeOut(
+                id=episode.id,
+                season=episode.season,
+                number=episode.number,
+                name=episode.name,
+                duration_minutes=episode.duration_minutes,
+                audio_languages=languages.get(episode.id, []),
+                watched=episode.id in watched,
+            )
+            for episode in episodes
+        ],
+        page=page,
+        has_more=has_more,
+    )
 
 
 @router.post("/{movie_id}/watch", response_model=WatchResponse)
 async def watch_movie(
     movie_id: int,
+    episode_id: int | None = None,
     session: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_current_user),
 ) -> WatchResponse:
+    # Every string returned from here is rendered straight into a toast by
+    # the Mini App (App.tsx reads `detail` and `message` verbatim), so it
+    # has to arrive already translated into the caller's language.
+    unavailable = t("streaming.not_available", user.language)
+
     title = await session.get(Title, movie_id)
     if title is None:
-        raise HTTPException(status_code=404, detail="Movie not available")
+        raise HTTPException(status_code=404, detail=unavailable)
 
-    # The Mini App lists titles, not episodes — deliver the first one.
-    episodes = await content_service.list_episodes(session, movie_id)
-    if not episodes:
-        raise HTTPException(status_code=404, detail="Movie not available")
+    if episode_id is None:
+        # A film has exactly one episode, so omitting the id is unambiguous
+        # and still works. A serial has many, and silently starting the
+        # first one is wrong however the request arrived — the caller might
+        # be resuming at episode 40. Refused here rather than only in the
+        # UI, so the guarantee does not depend on which client is calling.
+        counts = await content_service.episode_counts(session, [movie_id])
+        if counts.get(movie_id, 1) > 1:
+            raise HTTPException(
+                status_code=422, detail=t("app.episode_required", user.language)
+            )
+        episode = await content_service.first_episode(session, movie_id)
+    else:
+        # Resolved through the title, so an episode id belonging to some
+        # other title cannot be used to fetch content this call didn't ask for.
+        episode = await content_service.get_episode_of_title(session, movie_id, episode_id)
 
-    media_file = await content_service.pick_file(session, episodes[0].id, user.language)
+    if episode is None:
+        raise HTTPException(status_code=404, detail=unavailable)
+
+    media_file = await content_service.pick_file(session, episode.id, user.language)
     if media_file is None:
-        raise HTTPException(status_code=404, detail="Movie not available")
+        raise HTTPException(status_code=404, detail=unavailable)
 
     try:
         await streaming_service.deliver_episode(
@@ -252,12 +367,18 @@ async def watch_movie(
             session=session,
             chat_id=user.telegram_id,
             title=title,
-            episode=episodes[0],
+            episode=episode,
             media_file=media_file,
             lang=user.language,
             user_id=user.id,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+        # The raised text is an internal diagnostic naming the MediaFile row;
+        # it was previously passed straight through to the user's screen.
+        # Log it, show them something they can act on.
+        logger.warning("watch delivery failed for title %s: %s", movie_id, exc)
+        raise HTTPException(
+            status_code=409, detail=t("streaming.send_error", user.language)
+        ) from exc
 
-    return WatchResponse(status="sent", message="Check your chat with the bot — the video is on its way.")
+    return WatchResponse(status="sent", message=t("app.watch_sent", user.language))

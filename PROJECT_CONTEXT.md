@@ -2,7 +2,7 @@
 
 Architecture and feature inventory. **Status of record** — if this disagrees with the code, fix this file.
 
-_Last full audit: 2026-08-05 (commit `9bd6d48`)_
+_Last full audit: 2026-08-05 · updated through Phase 3 (2026-08-07)_
 
 ---
 
@@ -10,7 +10,7 @@ _Last full audit: 2026-08-05 (commit `9bd6d48`)_
 
 **CinemaHub Pro** — a Telegram-first streaming service for films, serials, anime, cartoons, and dramas, aimed at an Uzbek-speaking audience (with Russian and English support).
 
-Users browse and watch entirely inside Telegram. Delivered video is **auto-deleted after 15 minutes** (`AUTO_DELETE_SECONDS`) as a copyright-safety measure. Monetization is manual bank transfer: a user sends a payment screenshot, an admin approves it, and balance or a premium subscription is granted.
+Users browse and watch entirely inside Telegram. Delivered video **stays in the chat** until the user or an admin removes it — the former 15-minute auto-deletion was removed in Phase 3 at the owner's direction. Monetization is manual bank transfer: a user sends a payment screenshot, an admin approves it, and balance or a premium subscription is granted.
 
 **Two front ends, one backend, one database:**
 
@@ -26,12 +26,12 @@ Users browse and watch entirely inside Telegram. Delivered video is **auto-delet
 
 - **Backend:** Python 3.14, FastAPI, aiogram 3.15+, SQLAlchemy 2.0 (async), Alembic
 - **Database:** PostgreSQL on **Neon** (`neondb`, pooled endpoint, `us-east-1`)
-- **Cache/queue:** Redis — FSM storage, throttling, AI quota, auto-delete delay queue, TMDB response cache
+- **Cache/queue:** Redis — FSM storage, throttling, AI quota, TMDB response cache
 - **Frontend:** React 18, TypeScript, Vite 5, Tailwind, lucide-react
 - **External APIs:** TMDB (metadata enrichment), Google Gemini (`gemini-2.5-flash`, structured output)
 - **Hosting:** Render (single web service serves API + bot webhook + static Mini App)
 
-Roughly 6,600 lines of Python and 4,200 lines of TypeScript across 8 commits (2026-08-02 → 2026-08-05).
+Roughly 7,500 lines of Python and 4,700 lines of TypeScript, plus a 106-test suite added in Phases 0–3.
 
 ---
 
@@ -44,7 +44,7 @@ Mini App ──REST─────┘         │                 └─> Redis
                               └──> TMDB, Gemini
 ```
 
-**Single process.** `app/main.py` mounts the aiogram dispatcher on `POST /webhook/telegram`, the REST API under `/api/*`, and the built Mini App at `/miniapp`. The auto-delete worker runs as an asyncio task inside the app's lifespan; scheduled maintenance (`app/tasks/cron.py`) is a **separate** process meant to run as a Render Cron Job.
+**Single process.** `app/main.py` mounts the aiogram dispatcher on `POST /webhook/telegram`, the REST API under `/api/*`, and the built Mini App at `/miniapp`. Scheduled maintenance (`app/tasks/cron.py`) is a **separate** process meant to run as a Render Cron Job.
 
 ### Layers
 
@@ -62,12 +62,13 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 ---
 
-## 4. Data model — 15 tables
+## 4. Data model — 16 tables
 
 **Users & money**
-- `chp_users` — telegram_id, role, `referral_code`, `referred_by_id`, balance, AI counters, `is_banned`, `language`, `language_selected`
+- `chp_users` — telegram_id, `role` (user/moderator/admin/**super_admin**), `referral_code`, `referred_by_id`, balance, AI counters, `is_banned`, `language`, `language_selected`
 - `chp_subscriptions` — plan, `expires_at`, `auto_renew`
-- `chp_balance_history` — signed ledger; `tx_type` ∈ topup / deduction / refund / admin_adjustment / promo_credit
+- `chp_balance_history` — signed ledger; `tx_type` ∈ topup / deduction / refund / admin_adjustment / promo_credit. A partial unique index on (user_id, tx_type, reference_id) blocks duplicate credits.
+- `chp_admin_permissions` — one row per capability granted to an administrator; the Super Admin holds all of them implicitly and has no rows
 
 **Content**
 - `chp_titles` — content_type, name, year, `genres` (Postgres array), country, tmdb_id, poster, rating, view_count, `is_active`, `is_manual_override`
@@ -82,7 +83,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 **Hierarchy:** `Title → Episode → MediaFile`. A film is a Title with one Episode. A title is only "watchable" if it has at least one MediaFile — enforced everywhere by the single `_has_playable_file()` correlated EXISTS.
 
-**Migrations:** 7 revisions, head `6b7ec8ebd218`, applied to production 2026-08-05.
+**Migrations:** 10 revisions, head `d72e4f1c8b35`, applied to production 2026-08-07.
 
 ---
 
@@ -94,7 +95,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 - Onboarding with language selection; deep-link referral capture (`REF_<code>`)
 - Catalog browse: genres, collections, search, pagination, seasons/episodes
 - Favorites (toggle + list), continue-watching
-- Streaming delivery with language fallback (uz_dub → uz_sub → any) and 15-min auto-delete
+- Streaming delivery with language fallback (uz_dub → uz_sub → any)
 - Payments: top-up and subscription via receipt photo + admin card; admin approve/reject inline
 - Promo codes: admin creation (`/createpromo`), user redemption
 - Admin upload capture — forwarded video becomes a `PendingUpload`
@@ -104,16 +105,17 @@ Mini App ──REST─────┘         │                 └─> Redis
 **Mini App**
 - Home rows: recommended, continue, newest, top, by type, collections
 - Rotating hero banner, search, movie detail sheet with similar titles
+- Season/episode selector with paged infinite scroll, per-episode audio badges and watched markers. No play control can start an episode the viewer did not choose, and `POST /watch` refuses an ambiguous request (422) rather than defaulting to episode 1 — enforced server-side, not just in the UI
 - Audio-language filter applied across **every** catalog row
 - First-open language picker; settings page (name, Telegram ID, balance, premium, referral code with copy, language switcher)
 - Light/dark theme
 
-**Admin panel** — 41 REST endpoints; dashboard, stats, content + title editor, TMDB search/enrich, collections, promos, receipts (with photo proxy), pending uploads, users, cards
+**Admin panel** — 46 REST endpoints, each gated on a named permission; dashboard, stats, content + title editor, TMDB search/enrich, collections, promos, receipts (with photo proxy), pending uploads, users, cards, and administrator management (Super Admin only)
 
 **Platform**
-- i18n: 3 languages, 186 keys, one catalog shared by bot and Mini App
-- Telegram `initData` HMAC auth; admin gate via `ADMIN_IDS`
-- Redis-backed throttling, AI quota (self-expiring daily keys), auto-delete queue (survives redeploys), TMDB cache
+- i18n: 3 languages, 202 keys, one catalog shared by bot and Mini App
+- Telegram `initData` HMAC auth; authorization by role + 19 granular permissions, enforced through one function shared by the API and the bot (`services/permissions.has_permission`)
+- Redis-backed throttling, AI quota (self-expiring daily keys), TMDB cache
 
 ### ⚠️ Partial
 
@@ -123,18 +125,17 @@ Mini App ──REST─────┘         │                 └─> Redis
 | **Referral** | Code generated, deep-link capture writes `referred_by_id` | **No reward is ever granted** to either party. The Mini App invites users to share a code that pays nothing. |
 | **Balance** | Credited by receipt approval and promo | **Never spent.** `DEDUCTION`/`REFUND` tx types are unused; there is no purchase flow. Money flows in and stops. |
 | **Percentage-discount promo** | Stored, redeemable, usage recorded | No checkout to apply it to — explicitly deferred in `services/promo.py`. |
-| **Ban** | `is_banned` column, shown in admin users list | **Not enforced anywhere**, and no endpoint sets it. |
+| **Ban** | `is_banned` column, shown in admin users list | **Not enforced anywhere**, and no endpoint sets it. Unchanged by Phase 3, which governs *administrators*, not user bans. |
 | **Scheduled maintenance** | `app/tasks/cron.py` correct and idempotent | Never invoked by the app; Render Cron Job config is not in this repo. Unverified whether it runs at all. |
 | **Mini App parity** | Browse, search, settings | No favorites, no AI, no premium purchase, no watch stats/ranks — all bot-only. |
 | **Order history** | — | Stub message: "coming in a later phase". |
 
 ### ❌ Missing
 
-- **Automated tests — zero.** No pytest, no vitest, no fixtures. Every change is verified by import check and build only.
-- **CI/CD** — no `.github/`, no pipeline.
+- **Frontend tests** — the 106-test suite is backend-only; no vitest or component tests.
+- **`render.yaml`** — infrastructure is still configured in the Render dashboard only.
 - **README / onboarding docs** — a new contributor has no entry point.
-- **Deployment config in VCS** — no `render.yaml`, `Dockerfile`, or `Procfile`; infrastructure is configured in the Render dashboard only.
-- **Staging/local database** — one production Neon DB serves everything.
+- **Staging database** — `scripts/test_db.sh` gives a throwaway local cluster for tests, but migrations are still rehearsed there rather than against production-shaped data.
 - **Error monitoring** — no Sentry or equivalent; failures surface only in Render logs.
 - **REST API rate limiting** — throttling middleware covers the bot only; `/api/*` is unprotected.
 - **`auto_renew`** — column exists, zero references outside the model.
@@ -144,8 +145,8 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 ## 6. Environment
 
-Required: `DATABASE_URL`, `REDIS_URL`, `BOT_TOKEN`, `TMDB_API_KEY`, `GEMINI_API_KEY`, `ADMIN_IDS`
-Optional: `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET`, `ENVIRONMENT`, `PORT`, `AI_DAILY_LIMIT_FREE` (3), `AUTO_DELETE_SECONDS` (900), `PREMIUM_PRICE` (50000), `PREMIUM_SUBSCRIPTION_DAYS` (30), `TOPUP_PRESET_AMOUNTS`
+Required: `DATABASE_URL`, `REDIS_URL`, `BOT_TOKEN`, `TMDB_API_KEY`, `GEMINI_API_KEY`
+Optional: `ADMIN_IDS` (legacy seed only — authority now lives in the database), `WEBHOOK_BASE_URL`, `WEBHOOK_SECRET`, `ENVIRONMENT`, `PORT`, `AI_DAILY_LIMIT_FREE` (3), `SUPER_ADMIN_TELEGRAM_ID`, `PREMIUM_PRICE` (50000), `PREMIUM_SUBSCRIPTION_DAYS` (30), `TOPUP_PRESET_AMOUNTS`
 
 ⚠️ `DATABASE_URL` is production. See `CLAUDE.md` §3.
 

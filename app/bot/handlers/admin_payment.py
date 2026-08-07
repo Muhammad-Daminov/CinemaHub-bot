@@ -18,8 +18,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.payment import PAY_APPROVE_PREFIX, PAY_REJECT_PREFIX, get_admin_review_keyboard
-from app.core.admin import is_admin
-from app.core.config import settings
+from app.bot.permissions import actor_with_permission, admins_with_permission
+from app.core.permissions import Permission
 from app.db.models.payment import PaymentReceipt
 from app.db.models.user import User
 from app.services.payment_review import (
@@ -37,8 +37,18 @@ class AdminPaymentStates(StatesGroup):
     awaiting_rejection_reason = State()
 
 
-async def notify_admins_of_new_receipt(bot: Bot, user: User, receipt: PaymentReceipt) -> None:
-    """Sends the screenshot + user/payment info + Approve/Reject buttons to every configured admin."""
+async def notify_admins_of_new_receipt(
+    bot: Bot, session: AsyncSession, user: User, receipt: PaymentReceipt
+) -> None:
+    """
+    Sends the screenshot and Approve/Reject buttons to administrators who
+    can actually act on it.
+
+    Addressed by permission rather than to every configured admin id: the
+    buttons only work for someone holding MANAGE_PAYMENTS, so notifying
+    anyone else hands them a control that will refuse them — and shows a
+    user's payment screenshot to administrators with no business seeing it.
+    """
     caption = (
         f"🧾 <b>New payment receipt</b>\n"
         f"User: {user.full_name or user.username or user.telegram_id} (<code>{user.telegram_id}</code>)\n"
@@ -46,16 +56,22 @@ async def notify_admins_of_new_receipt(bot: Bot, user: User, receipt: PaymentRec
         + (f" ({receipt.subscription_plan.value})" if receipt.subscription_plan else "")
         + f"\nAmount: {receipt.amount:,}"
     )
-    for admin_id in settings.admin_ids_list:
+    reviewers = await admins_with_permission(session, Permission.MANAGE_PAYMENTS)
+    if not reviewers:
+        logger.error("No administrator holds MANAGE_PAYMENTS — receipt %s unreviewed", receipt.id)
+
+    for reviewer in reviewers:
         try:
             await bot.send_photo(
-                chat_id=admin_id,
+                chat_id=reviewer.telegram_id,
                 photo=receipt.receipt_photo_file_id,
                 caption=caption,
                 reply_markup=get_admin_review_keyboard(receipt.id),
             )
         except TelegramForbiddenError:
-            logger.warning("Admin %s has not started the bot — cannot notify", admin_id)
+            logger.warning(
+                "Admin %s has not started the bot — cannot notify", reviewer.telegram_id
+            )
 
 
 async def _get_reviewer_id(session: AsyncSession, telegram_id: int) -> int | None:
@@ -65,9 +81,12 @@ async def _get_reviewer_id(session: AsyncSession, telegram_id: int) -> int | Non
 
 
 @router.callback_query(F.data.startswith(PAY_APPROVE_PREFIX))
-async def handle_approve(callback: CallbackQuery, session: AsyncSession) -> None:
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Ruxsat yo'q.", show_alert=True)
+async def handle_approve(callback: CallbackQuery, session: AsyncSession, _) -> None:
+    actor = await actor_with_permission(
+        session, callback.from_user.id, Permission.MANAGE_PAYMENTS
+    )
+    if actor is None:
+        await callback.answer(_("admin.no_permission"), show_alert=True)
         return
 
     receipt_id = int(callback.data.removeprefix(PAY_APPROVE_PREFIX))
@@ -75,10 +94,10 @@ async def handle_approve(callback: CallbackQuery, session: AsyncSession) -> None
     try:
         await approve_receipt(session, receipt_id, reviewer_id)
     except ReceiptNotFoundError:
-        await callback.answer("Chek topilmadi.", show_alert=True)
+        await callback.answer(_("admin.receipt_not_found"), show_alert=True)
         return
     except ReceiptReviewError:
-        await callback.answer("Bu chek allaqachon ko'rib chiqilgan.", show_alert=True)
+        await callback.answer(_("admin.receipt_already_reviewed"), show_alert=True)
         return
 
     await callback.message.edit_caption(caption=f"{callback.message.caption}\n\n✅ Approved", reply_markup=None)
@@ -86,20 +105,27 @@ async def handle_approve(callback: CallbackQuery, session: AsyncSession) -> None
 
 
 @router.callback_query(F.data.startswith(PAY_REJECT_PREFIX))
-async def handle_reject_start(callback: CallbackQuery, state: FSMContext) -> None:
-    if not is_admin(callback.from_user.id):
-        await callback.answer("Ruxsat yo'q.", show_alert=True)
+async def handle_reject_start(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, _
+) -> None:
+    actor = await actor_with_permission(
+        session, callback.from_user.id, Permission.MANAGE_PAYMENTS
+    )
+    if actor is None:
+        await callback.answer(_("admin.no_permission"), show_alert=True)
         return
 
     receipt_id = int(callback.data.removeprefix(PAY_REJECT_PREFIX))
     await state.update_data(reject_receipt_id=receipt_id)
     await state.set_state(AdminPaymentStates.awaiting_rejection_reason)
-    await callback.message.answer("Rad etish sababini yozing:")
+    await callback.message.answer(_("admin.reject_reason_prompt"))
     await callback.answer()
 
 
 @router.message(AdminPaymentStates.awaiting_rejection_reason)
-async def handle_reject_reason(message: Message, state: FSMContext, session: AsyncSession) -> None:
+async def handle_reject_reason(
+    message: Message, state: FSMContext, session: AsyncSession, _
+) -> None:
     data = await state.get_data()
     receipt_id = data["reject_receipt_id"]
     await state.clear()
@@ -108,10 +134,10 @@ async def handle_reject_reason(message: Message, state: FSMContext, session: Asy
     try:
         await reject_receipt(session, receipt_id, reviewer_id, message.text)
     except ReceiptNotFoundError:
-        await message.answer("Chek topilmadi.")
+        await message.answer(_("admin.receipt_not_found"))
         return
     except ReceiptReviewError:
-        await message.answer("Bu chek allaqachon ko'rib chiqilgan.")
+        await message.answer(_("admin.receipt_already_reviewed"))
         return
 
-    await message.answer("Rad etildi va foydalanuvchiga xabar yuborildi.")
+    await message.answer(_("admin.rejected_notified"))

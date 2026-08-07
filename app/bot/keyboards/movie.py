@@ -1,4 +1,4 @@
-"""Keyboards for movie discovery and the watch/auto-delete flow."""
+"""Keyboards for movie discovery and the watch flow."""
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.core.i18n import t
@@ -32,7 +32,7 @@ def get_genre_filter_keyboard(genres: list[str]) -> InlineKeyboardMarkup:
 
 
 def get_resend_keyboard(episode_id: int, lang: UILanguage) -> InlineKeyboardMarkup:
-    """Shown alongside the auto-delete warning so the user can re-request the file later."""
+    """Lets the user re-request a file — handy if they cleared the chat themselves."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [

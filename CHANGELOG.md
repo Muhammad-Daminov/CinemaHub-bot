@@ -7,6 +7,69 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pro
 
 ## [Unreleased]
 
+### Phase 3 — Identity & Access Control (2026-08-07)
+
+#### Added
+- **Super Admin role and a 19-permission system (FR-1).** Administrator authority moved out of the `ADMIN_IDS` environment variable and into the database, where it is a role plus explicit grants.
+  - Exactly one Super Admin, named by `SUPER_ADMIN_TELEGRAM_ID`. Promoted on every boot and on contact, with any previous holder demoted — which is how ownership transfers.
+  - The Super Admin holds every permission **implicitly** rather than being seeded with rows. Seeded rows can be revoked, and a Super Admin who revoked their own `manage_admins` would lock the platform out of itself.
+  - Administrators hold exactly what was granted, one row per capability. Permissions are stored as VARCHAR, so adding one to the vocabulary costs no migration.
+  - Grants are diffed rather than rewritten on edit, so an untouched permission keeps its original `granted_at`/`granted_by` — the audit trail is the reason to record them.
+- **One enforcement path for both surfaces (FR-1 §4).** `app/services/permissions.has_permission` is the only place the question is answered. The REST API reaches it through `require_permission`, the bot through `app/bot/permissions.py`. `app/core/admin.py` and its `ADMIN_IDS` membership test are deleted, so no second authorization path exists to drift.
+- All 41 admin routes now carry a per-route permission alongside the router-wide admin gate, kept so a newly added route is never accidentally public.
+- Admin management API and panel: list, appoint, remove, and toggle each permission individually. The permission vocabulary is **served by the backend**, so a capability added in Python appears in the panel without a frontend release.
+- `/api/auth/me` returns role and permissions. The Mini App previously discovered admin status by calling an admin-only route and reading the status code — a 403 on every load for every ordinary user.
+- Admin panel tabs are filtered by permission, and receipt notifications are addressed to administrators holding `manage_payments` rather than to every configured id — which also stops a user's payment screenshot reaching administrators with no business seeing it.
+
+#### Changed
+- **`POST /watch` no longer silently starts episode 1 of a serial.** Omitting `episode_id` is still valid for a title with exactly one episode — a film — and that path is unchanged. For a multi-episode title it now returns **422** with a translated message, because starting episode 1 is wrong for a viewer resuming at episode 40. Enforced at the endpoint rather than only in the UI, so the guarantee does not depend on which client is calling. Covered by `tests/test_watch_endpoint.py`, verified to fail against the old fallback.
+- **Auto-deletion of delivered video removed entirely**, at the owner's direction. The Redis delay queue, its background worker, `AUTO_DELETE_SECONDS`, and the "will be deleted in 15 minutes" notice are all gone; the notice is replaced by a plain send confirmation. Films and episodes now stay in the chat until someone deletes them.
+- **The Mini App no longer forces playback to start at episode 1.** Phase 2 added the episode picker, but the sheet kept a generic Watch button that silently played the first episode. It is hidden whenever a chooser is on screen, so every play action names its episode.
+
+#### Database
+- `c41d5b8ae902` — adds `SUPER_ADMIN` to the `userrole` enum, inside an `autocommit_block`: PostgreSQL refuses to *use* a label added by the still-open transaction that added it, and Alembic runs an entire upgrade as one transaction.
+- `d72e4f1c8b35` — creates `chp_admin_permissions` and seeds administrators. Every id previously in `ADMIN_IDS` is promoted with the full permission set, because they already had unrestricted access; narrowing them is the Super Admin's deliberate decision, not a side effect of a deploy.
+- **Applied to production 2026-08-07.** Verified afterwards: 1 Super Admin (0 explicit rows, as designed), 1 admin with 19 permissions, no orphaned or non-admin permission rows, 508 users unchanged.
+
+
+### Phase 2 — Playback & Series Experience (2026-08-07)
+
+#### Added
+- **Episode and season navigation in the Mini App (FR-9).** The app previously had no concept of episodes: pressing Watch on a serial always delivered episode 1, however far through it you were. The detail sheet now carries a season strip and a paged episode list, and plays the episode you pick.
+  - `GET /api/movies/{id}/seasons` and `GET /api/movies/{id}/episodes` expose season and episode data to viewers. Both already existed in the service layer but were reachable only through `/api/admin`.
+  - `POST /api/movies/{id}/watch` accepts an optional `episode_id`. Omitting it still plays the first episode, so existing clients are unaffected.
+  - Episodes are paged (30 per page) and loaded by infinite scroll. A long-running serial is never fetched whole to render one screen.
+- **Audio tracks shown before playback (FR-7).** Each episode row lists the audio languages that episode actually has, using labels already present in the catalogs. Per episode rather than per title, because a serial can be dubbed only partway through and a title-level list would promise tracks that aren't there. Episodes with no file are marked as such rather than silently appearing playable.
+- Watched episodes are marked, using data `chp_watch_history` already held.
+- `tests/test_api_schema.py` — builds the OpenAPI schema and asserts the new routes and their contracts. See the regression below for why this exists.
+
+#### Fixed
+- **A Phase 0 regression that shipped in `5e98386`: OpenAPI schema generation was broken, so `/docs` and any generated client failed.** Phase 0's review removed `date` from `app/api/admin.py` as an unused import on pyflakes' word. It is used — by `ActivityPointOut.date: date`, where the field name shadows the type, which is why the linter missed it. `import app.main` still succeeded because Pydantic resolves response-model annotations lazily, so nothing caught it until the schema was built. Import restored, marked so it is not deleted again, and covered by a test that fails without it.
+- `POST /watch` no longer loads every episode of a serial to take the first one; `first_episode()` asks the database for one row.
+
+#### Security
+- The `episode_id` accepted by `/watch` is resolved **through its title** (`get_episode_of_title`). Without that check, any episode id would deliver content the request never asked for. Covered by a test.
+
+#### Notes
+- **FR-7 is informational, not a selector.** The request asks to *show* available audio languages before playback; it says nothing about choosing one. Playback still picks a track via the existing `pick_file` fallback chain. Making the display interactive is a small follow-on, recorded in `IDEAS.md`.
+
+### Phase 1 — Correctness Quick Wins (2026-08-05)
+
+#### Fixed
+- **The Mini App showed English to everyone after starting a video.** `POST /api/movies/{id}/watch` returned a hardcoded English confirmation, and the Mini App renders that string straight into a toast. The same endpoint's error responses were hardcoded English too, and `App.tsx` renders `detail` verbatim as well. Every string this endpoint returns is now resolved from the caller's language before it leaves the server.
+- **An internal diagnostic was being shown to users.** When video delivery failed, the endpoint returned `detail=str(exc)` — a message naming the offending `MediaFile` row. That text went to the user's screen. It is now logged server-side, and the user gets a translated, actionable message instead.
+- **`/start` could leave a user permanently unasked about language.** The picker was gated on whether the user row was new. Someone who received the picker and closed the chat without answering still had a row, so their next `/start` counted them as existing and sent them to the main menu — in Uzbek, the default they never chose, and they were never asked again. The gate is now `language_selected`, so the question is repeated until it is actually answered. No existing user is affected: all 508 were backfilled as answered by migration `6b7ec8ebd218`.
+- **Telegram profile changes were never picked up.** `username` and `full_name` were written once at signup and never again, so anyone who changed their Telegram handle or display name kept the stale value forever — visible in the admin user list, the welcome message, and Mini App settings. `get_or_create_user` now refreshes them when Telegram reports a change, assigning only on an actual difference so a read does not become a write on every update. A missing `full_name` no longer blanks a known one.
+- Nine hardcoded Uzbek strings in the bot's admin flows (receipt approval, rejection, upload handling) now come from the locale catalogs, so they follow the admin's own language.
+- Hardcoded English `aria-label`s in the Mini App's theme toggle are now translated.
+
+#### Added
+- 11 locale keys across all three catalogs (196 total): `app.watch_sent`, `app.theme_light`, `app.theme_dark`, and the `admin.*` set for the bot's admin flows.
+- 19 tests: user provisioning and profile refresh (11), and i18n coverage for the API-facing keys (8) — including a check that each is genuinely distinct per language, since three identical strings would pass a parity check while leaving non-English users reading English.
+
+#### Deferred, with reason
+- **Localizing the React admin panel.** The audit behind the roadmap reported it as "inconsistently localized"; it is in fact **entirely** hardcoded Uzbek — roughly 98 user-visible strings across 11 files, using none of the i18n system. Extracting them now means doing it again against the markup FR-3 rewrites in Phase 6, so it moves there and is recorded in `TASKS.md`. The bot's admin strings were localized regardless: there were only nine, and they are bot messages, which is exactly what FR-6 cites.
+
 ### Fixed
 - **Promo codes with an expiry date could never be redeemed.** `PromoCode.valid_until` is a timezone-aware column, but `_validate` compared it against a naive `datetime.utcnow()`, so redemption raised `TypeError: can't compare offset-naive and offset-aware datetimes`. Codes without an expiry worked, which is why it went unnoticed. Every naive `utcnow()` touching a timezone-aware column is now `datetime.now(timezone.utc)` — in `promo.py`, `payment_review.py`, `admin_promo.py`, and the `Subscription.is_active` property, which had the same latent fault.
 - **Promo redemption could exceed its usage cap.** `promo.current_uses += 1` was a read-modify-write, so several users redeeming the last slot at once each saw `current_uses < max_uses` and each proceeded — a code capped at 2 could be redeemed 5 times. Claiming a use is now a single conditional `UPDATE … WHERE max_uses IS NULL OR current_uses < max_uses`, with a zero rowcount meaning the code is exhausted. The use is claimed *before* the effect is applied, so an exhausted code never does work that must be undone.

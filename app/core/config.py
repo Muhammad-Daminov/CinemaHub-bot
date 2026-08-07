@@ -51,10 +51,16 @@ class Settings(BaseSettings):
 
     # --- Business rules ---
     AI_DAILY_LIMIT_FREE: int = Field(default=3)
-    AUTO_DELETE_SECONDS: int = Field(default=900)  # 15 min — copyright safety window
 
     # --- Payments ---
-    ADMIN_IDS: str = Field(default="", description="Comma-separated Telegram user IDs of admins")
+    # Seeds administrators on first migration only. Authority lives in
+    # chp_users.role + chp_admin_permissions from then on, so editing this
+    # afterwards grants nothing — appoint through the admin panel instead.
+    ADMIN_IDS: str = Field(default="", description="Legacy admin seed; superseded by role/permissions")
+    # The one account that may appoint administrators. Authoritative:
+    # whoever is named here is promoted on startup and any previous holder
+    # is demoted, which is how Super Admin ownership transfers.
+    SUPER_ADMIN_TELEGRAM_ID: int | None = Field(default=6427415448)
     PREMIUM_PRICE: float = Field(default=50000)  # in your local currency's smallest display unit
     PREMIUM_SUBSCRIPTION_DAYS: int = Field(default=30)
     TOPUP_PRESET_AMOUNTS: str = Field(default="10000,25000,50000,100000")

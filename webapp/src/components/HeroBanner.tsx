@@ -89,7 +89,9 @@ export function HeroBanner({ movies, onWatch, onDetails }: Props) {
         </h1>
         <div className="flex gap-2">
           <button
-            onClick={() => onWatch(active)}
+            // A serial has no single 'play' — open the sheet so the
+            // viewer picks an episode, rather than silently starting #1.
+            onClick={() => (active.episode_count > 1 ? onDetails(active) : onWatch(active))}
             className="flex items-center gap-1.5 rounded-full bg-marquee px-5 py-2 font-body text-sm font-semibold text-on-marquee shadow-marquee transition-transform active:scale-95"
           >
             <Play size={16} fill="currentColor" />

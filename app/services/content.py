@@ -6,6 +6,7 @@ should get the uz_dub file when it exists, then uz_sub, then anything
 else rather than nothing. Returning None just because the exact match
 is missing would hide content the user can still watch.
 """
+from collections.abc import Sequence
 from dataclasses import dataclass
 
 from sqlalchemy import Integer, case, delete, func, or_, select
@@ -27,6 +28,11 @@ from app.db.models.content import (
 from app.db.models.user import UILanguage
 
 PAGE_SIZE = 5
+
+# Episodes are paged separately from titles: the bot shows a handful of
+# inline buttons, but the Mini App renders a scrolling grid where a page
+# this small would mean constant refetching.
+EPISODE_PAGE_SIZE = 30
 
 # Similarity weights, strongest first. A shared collection is worth more than
 # every other signal combined on purpose: "Marvel" is an editorial statement
@@ -236,6 +242,121 @@ class ContentService:
             select(Episode.season).where(Episode.title_id == title_id).group_by(Episode.season).order_by(Episode.season)
         )
         return [row.season for row in result.all()]
+
+    async def episode_page(
+        self,
+        session: AsyncSession,
+        title_id: int,
+        season: int | None = None,
+        page: int = 0,
+        page_size: int = EPISODE_PAGE_SIZE,
+    ) -> tuple[list[Episode], bool]:
+        """
+        One page of episodes, plus whether another follows.
+
+        Paged rather than returning the whole season because a long-running
+        serial can carry hundreds of episodes, and the Mini App loads them
+        into a scrolling list. Fetches one extra row to detect a next page
+        without a second COUNT query — the same trick browse() uses.
+        """
+        stmt = select(Episode).where(Episode.title_id == title_id)
+        if season is not None:
+            stmt = stmt.where(Episode.season == season)
+
+        result = await session.execute(
+            stmt.order_by(Episode.season, Episode.number).offset(page * page_size).limit(page_size + 1)
+        )
+        rows = list(result.scalars())
+        return rows[:page_size], len(rows) > page_size
+
+    async def get_episode_of_title(
+        self, session: AsyncSession, title_id: int, episode_id: int
+    ) -> Episode | None:
+        """
+        An episode, but only if it belongs to `title_id`.
+
+        The ownership check is the point: episode ids arrive from the
+        client, and without it anyone could pass the id of an episode
+        belonging to a different title and have it delivered.
+        """
+        result = await session.execute(
+            select(Episode).where(Episode.id == episode_id, Episode.title_id == title_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def first_episode(self, session: AsyncSession, title_id: int) -> Episode | None:
+        """
+        Lowest season/number for a title.
+
+        A dedicated query rather than `list_episodes(...)[0]`, which pulled
+        every episode of a serial across the wire to discard all but one.
+        """
+        result = await session.execute(
+            select(Episode)
+            .where(Episode.title_id == title_id)
+            .order_by(Episode.season, Episode.number)
+            .limit(1)
+        )
+        return result.scalar_one_or_none()
+
+    async def languages_by_episode(
+        self, session: AsyncSession, episode_ids: Sequence[int]
+    ) -> dict[int, list[AudioLanguage]]:
+        """
+        {episode_id: [languages]} for a batch of episodes in one query.
+
+        Batched deliberately: the episode list shows an audio badge per
+        row, and calling available_languages() per episode would be one
+        round trip per visible episode.
+        """
+        if not episode_ids:
+            return {}
+
+        result = await session.execute(
+            select(MediaFile.episode_id, MediaFile.language)
+            .where(MediaFile.episode_id.in_(episode_ids))
+            .group_by(MediaFile.episode_id, MediaFile.language)
+        )
+        grouped: dict[int, list[AudioLanguage]] = {}
+        for episode_id, language in result.all():
+            grouped.setdefault(episode_id, []).append(language)
+        return grouped
+
+    async def episode_counts(
+        self, session: AsyncSession, title_ids: Sequence[int]
+    ) -> dict[int, int]:
+        """
+        {title_id: episode count} for a batch of titles in one query.
+
+        The client needs this to know whether a title is a single film or
+        something with episodes to choose from, and it must know that
+        *before* offering a play button — otherwise a "Watch" control on a
+        serial silently starts episode 1, which is the behaviour the
+        episode selector exists to replace.
+        """
+        if not title_ids:
+            return {}
+
+        result = await session.execute(
+            select(Episode.title_id, func.count(Episode.id))
+            .where(Episode.title_id.in_(title_ids))
+            .group_by(Episode.title_id)
+        )
+        return {title_id: count for title_id, count in result.all()}
+
+    async def watched_episode_ids(
+        self, session: AsyncSession, user_id: int, episode_ids: Sequence[int]
+    ) -> set[int]:
+        """Which of these episodes the user has already watched — one query, same reasoning."""
+        if not episode_ids:
+            return set()
+
+        result = await session.execute(
+            select(WatchHistory.episode_id).where(
+                WatchHistory.user_id == user_id, WatchHistory.episode_id.in_(episode_ids)
+            )
+        )
+        return set(result.scalars())
 
     # ---------- discovery ----------
 

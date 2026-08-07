@@ -159,4 +159,4 @@ async def handle_receipt_screenshot(
     await state.clear()
 
     await message.answer(_("payment.received"))
-    await notify_admins_of_new_receipt(message.bot, user, receipt)
+    await notify_admins_of_new_receipt(message.bot, session, user, receipt)

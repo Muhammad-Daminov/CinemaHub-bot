@@ -3,10 +3,10 @@ Scheduled maintenance tasks.
 
 Deliberately a standalone script (`python -m app.tasks.cron`), meant to
 run as a Render Cron Job, NOT another asyncio.sleep loop bolted onto
-the web service's lifespan like Phase 5's auto-delete worker. Reasons:
+the web service's lifespan. Reasons:
 
   - Most state in this system already self-cleans via Redis TTLs
-    (throttling keys, AI quota counters, auto-delete queue) — no cron
+    (throttling keys, AI quota counters) — no cron
     needed for those at all.
   - What's left (monthly order-limit reset, stale payment receipts,
     expired promos) only needs to run once a day/month, not be polled

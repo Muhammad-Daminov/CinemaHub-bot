@@ -23,10 +23,16 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.admin import is_admin
 from app.core.config import settings
-from app.db.models.user import UILanguage, User
+from app.core.permissions import Permission
+from app.db.models.user import UILanguage, User, UserRole
 from app.db.session import get_db_session
+from app.services.permissions import (
+    has_permission,
+    is_admin_user,
+    is_super_admin,
+    load_permissions,
+)
 from app.services.subscriptions import is_user_premium
 from app.services.users import get_or_create_user
 
@@ -72,10 +78,47 @@ async def get_current_user(
 
 
 async def get_current_admin(user: User = Depends(get_current_user)) -> User:
-    """Layers an admin_ids_list check on top of get_current_user — for every /api/admin/* route."""
-    if not is_admin(user.telegram_id):
+    """
+    Any administrator — the outer gate on every /api/admin/* route.
+
+    Deliberately coarse. It answers "may this person reach the panel at
+    all"; what they may *do* there is decided per route by
+    `require_permission`. Keeping the blanket gate means a newly added
+    admin route is never accidentally public, even if its author forgets
+    the specific permission.
+    """
+    if not await is_admin_user(user):
         raise HTTPException(status_code=403, detail="Admin access required")
     return user
+
+
+async def get_super_admin(user: User = Depends(get_current_admin)) -> User:
+    """The Super Admin alone — appointing and re-permissioning administrators."""
+    if not is_super_admin(user):
+        raise HTTPException(status_code=403, detail="Super Admin access required")
+    return user
+
+
+def require_permission(permission: Permission):
+    """
+    Dependency factory gating a route on one capability.
+
+    Resolves through app.services.permissions.has_permission, the single
+    place authority is decided — the bot's admin handlers ask the same
+    function, so the two surfaces cannot drift apart.
+    """
+
+    async def dependency(
+        user: User = Depends(get_current_admin),
+        session: AsyncSession = Depends(get_db_session),
+    ) -> User:
+        if not await has_permission(session, user, permission):
+            raise HTTPException(
+                status_code=403, detail=f"Missing permission: {permission.value}"
+            )
+        return user
+
+    return dependency
 
 
 class UserProfileOut(BaseModel):
@@ -89,13 +132,19 @@ class UserProfileOut(BaseModel):
     # False means the user has never picked one and is still on the UZ
     # default — the Mini App shows its first-open picker on that.
     language_selected: bool
+    # Replaces the Mini App's old trick of probing an admin-only route and
+    # reading the status code: it now knows what it may do before it asks.
+    role: UserRole
+    is_admin: bool
+    is_super_admin: bool
+    permissions: list[str]
 
 
 class LanguageIn(BaseModel):
     language: UILanguage
 
 
-def _profile(user: User, premium: bool) -> UserProfileOut:
+def _profile(user: User, premium: bool, permissions: set[Permission]) -> UserProfileOut:
     return UserProfileOut(
         telegram_id=user.telegram_id,
         username=user.username,
@@ -105,6 +154,11 @@ def _profile(user: User, premium: bool) -> UserProfileOut:
         is_premium=premium,
         language=user.language,
         language_selected=user.language_selected,
+        role=user.role,
+        is_admin=user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN),
+        is_super_admin=is_super_admin(user),
+        # Sorted so the payload is stable between requests and diffs cleanly.
+        permissions=sorted(p.value for p in permissions),
     )
 
 
@@ -113,7 +167,7 @@ async def get_my_profile(
     user: User = Depends(get_current_user), session: AsyncSession = Depends(get_db_session)
 ) -> UserProfileOut:
     premium = await is_user_premium(session, user.id)
-    return _profile(user, premium)
+    return _profile(user, premium, await load_permissions(session, user))
 
 
 @router.patch("/me", response_model=UserProfileOut)
@@ -131,4 +185,4 @@ async def update_my_profile(
     await session.flush()
 
     premium = await is_user_premium(session, user.id)
-    return _profile(user, premium)
+    return _profile(user, premium, await load_permissions(session, user))

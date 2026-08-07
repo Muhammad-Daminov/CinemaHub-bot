@@ -12,24 +12,24 @@ Finished work moves to §Done (kept, not deleted) and gets a `CHANGELOG.md` entr
 ## P0 — Correctness & risk
 
 ### P0-1 · Duplicate `GEMINI_MODEL` in config
-`TODO` · `app/core/config.py` (~L46, ~L48)
+`DONE` (Phase 0) · kept for the record
 Declared twice; the second (`gemini-2.5-flash`) silently wins. Anyone editing the first sees no effect. Delete the stale line and confirm the intended model.
 **Effort:** minutes.
 
 ### P0-2 · Subscription receipts credit balance *and* grant premium
-`TODO` · `app/services/payment_review.py:35`
+`DONE` (Phase 0) · resolved as a row-lock + atomic-increment fix, plus the TOPUP-only credit decision; production ledger cleaned and backstop index applied
 `user.balance += receipt.amount` runs unconditionally, then a `SUBSCRIPTION`-purpose receipt *also* activates premium. A user paying 50,000 for premium receives premium **plus** 50,000 in balance.
 Not currently exploitable — balance cannot be spent (see P2-1) — but it becomes a live double-credit the moment a spending path exists, and the ledger is already wrong today.
 **Decide:** should a subscription receipt credit balance at all? Likely fix is to credit only for `PaymentPurpose.TOPUP`.
 **Blocks:** P2-1.
 
 ### P0-3 · No staging or local database
-`TODO` · infrastructure
+`DONE` (Phase 0) for testing via `scripts/test_db.sh`; a Neon branch for migration rehearsal against production-shaped data is still worth having
 Every migration and every manual query hits production. Cheapest fix: a **Neon branch** as a dev database, with `DATABASE_URL` switched by environment.
 **Effort:** ~1h. **High leverage** — de-risks everything below.
 
 ### P0-4 · `is_banned` is not enforced
-`TODO` · `app/bot/middlewares/`, `app/api/auth.py`
+`TODO` · unchanged by Phase 3 — the role system governs *administrators*; banning *users* is still unenforced and has no setter · `app/bot/middlewares/`, `app/api/auth.py`
 The column exists and the admin panel displays it, but nothing checks it and no endpoint sets it. There is currently **no way to remove an abusive user**. Needs enforcement in bot middleware + `get_current_user`, and an admin toggle endpoint.
 
 ### P0-5 · Verify scheduled maintenance actually runs
@@ -89,7 +89,7 @@ Users can top up but cannot spend. `DEDUCTION`/`REFUND` tx types are unused. Dec
 
 ### P2-2 · Give premium real benefits
 `TODO`
-Premium's only current benefit is unlimited AI recommendations. Options: skip the 15-min auto-delete window, higher-quality files, early access, ad-free, larger favorites cap. **Product decision needed before implementation.**
+Premium's only current benefit is unlimited AI recommendations. Options: higher-quality files, early access, ad-free, larger favorites cap. (The "skip auto-delete" option is gone — auto-delete was removed entirely in Phase 3.) **Product decision needed before implementation.**
 
 ### P2-3 · Pay out referral rewards
 `TODO`
@@ -117,6 +117,14 @@ Reset monthly by cron, never incremented. Same reasoning as P2-7.
 
 ---
 
+### P2-9 · Localize the React admin panel
+`TODO` · deferred from Phase 1 · **schedule with FR-3 (Phase 6)**
+The panel is **entirely** hardcoded Uzbek — roughly 98 user-visible strings across 11 files in [webapp/src/admin/](webapp/src/admin/), using none of the i18n system. An earlier audit recorded it as "inconsistently localized", which understated it.
+Deliberately not done in Phase 1: FR-3 rewrites this markup in Phase 6, so extracting keys now means extracting them twice. Do it as part of that redesign, against the final markup.
+The bot's admin strings were localized in Phase 1 — those were only nine, and they are bot messages.
+
+---
+
 ## P3 — Polish
 
 - **P3-1** · Admin usage report from `ai_requests_today` / `ai_limit_reset_at` — reserved for this per `services/ai_quota.py`, currently written by nothing.
@@ -128,6 +136,24 @@ Reset monthly by cron, never incremented. Same reasoning as P2-7.
 ---
 
 ## Done
+
+### Phase 3 (2026-08-07)
+- **FR-1 · Super Admin & granular permissions** — 19 capabilities in [app/core/permissions.py](app/core/permissions.py); single enforcement in [app/services/permissions.py](app/services/permissions.py) used by both the API and the bot; `app/core/admin.py` deleted. Migrations `c41d5b8ae902` + `d72e4f1c8b35` applied to production.
+- **Admin management** — REST endpoints plus [AdminsPanel.tsx](webapp/src/admin/AdminsPanel.tsx); permission vocabulary served by the backend so the panel cannot drift.
+- **Auto-delete removed** — engine, worker, config, notice, and locale key, at the owner's direction.
+- **Playback no longer forced to episode 1** — the sheet's generic Watch button is hidden whenever an episode chooser is shown.
+
+### Phase 2 (2026-08-07)
+- **FR-9 · Episode and season navigation** — viewer-facing `GET /movies/{id}/seasons` and `/episodes` (both existed in the service layer but were reachable only via `/api/admin`); `POST /watch` accepts an optional `episode_id`, keeping older clients working; new [EpisodeSelector.tsx](webapp/src/components/EpisodeSelector.tsx) with a season strip, paged episode list and infinite scroll. Ends "every serial plays episode 1".
+- **FR-7 · Audio languages before playback** — per-episode audio badges resolved in one batch query, using labels already in the catalogs. Informational by design; selection recorded as **I-13** in `IDEAS.md`.
+- **Regression fixed** — the `date` import removed during Phase 0's review broke OpenAPI generation (and `/docs`) while leaving `import app.main` green. Restored, annotated, and covered by [tests/test_api_schema.py](tests/test_api_schema.py).
+- **P3-3 partially superseded** — the bot already had season/episode navigation; this closes the gap on the Mini App side.
+
+### Phase 1 (2026-08-05)
+- **FR-6 reqs 1–2 · Interface and system text localization** — `POST /movies/{id}/watch` no longer returns hardcoded English (confirmation *and* errors, both rendered verbatim as toasts by the Mini App); nine hardcoded Uzbek strings in the bot's admin flows moved to the catalogs; theme-toggle `aria-label`s translated. 11 new keys, 196 total, parity verified.
+- **FR-6 side-finding · Information disclosure** — the watch endpoint returned `detail=str(exc)`, an internal diagnostic naming a `MediaFile` row, straight to the user's screen. Now logged server-side with a translated message returned instead.
+- **FR-8 · `/start` reliability** — the language picker is gated on `language_selected` rather than row age, so a user who never answered is asked again instead of being silently left on the Uzbek default; `get_or_create_user` refreshes `username`/`full_name`, which had been written once at signup and never updated.
+- **P0-1 follow-through** — removed the last pre-existing unused import in [app/api/movies.py](app/api/movies.py), flagged during the Phase 0 review.
 
 - **Mini App i18n** — `GET /api/i18n/{lang}`, `lib/i18n.ts` + React context, all hardcoded strings replaced across `App.tsx` and `components/`. (`9bd6d48`, 2026-08-05)
 - **First-open language picker** + `PATCH /api/auth/me` accepting `{language}`, with `language_selected` migration backfilling 508 existing users. (`9bd6d48`, 2026-08-05)

@@ -1,6 +1,9 @@
 """
-Admin REST API — every route requires get_current_admin (verified
-Telegram initData + admin_ids_list membership). Receipt approval and
+Admin REST API. Two gates apply to every route: the router-wide
+get_current_admin (verified Telegram initData + an administrator role),
+and a per-route require_permission naming the exact capability. The
+blanket gate is kept so a newly added route is never accidentally
+public even if its author forgets the specific permission. Receipt approval and
 promo creation delegate to the same shared services the bot's own
 admin commands use (app.services.payment_review, app.services.promo),
 so the bot and this dashboard can never apply different business
@@ -8,7 +11,11 @@ rules to the same action. Catalog writes go through
 app.services.admin_content for the same reason.
 """
 from dataclasses import asdict
-from datetime import datetime, timedelta, timezone
+# `date` looks unused to a linter — the only reference is the annotation in
+# ActivityPointOut, where the field is itself named `date` and shadows it.
+# Removing it breaks OpenAPI schema generation but NOT import, so it once
+# got deleted as dead and shipped. tests/test_api_schema.py now catches that.
+from datetime import date, datetime, timedelta, timezone  # noqa: F401  (see above)
 
 import aiohttp
 from aiogram.exceptions import TelegramAPIError
@@ -18,9 +25,10 @@ from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import get_current_admin
+from app.api.auth import get_current_admin, get_super_admin, require_permission
 from app.bot.instance import bot
 from app.core.codegen import generate_code
+from app.core.permissions import PERMISSION_GROUPS, Permission, parse_permission
 from app.db.models.content import (
     AudioLanguage,
     Collection,
@@ -32,7 +40,7 @@ from app.db.models.content import (
 )
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt, PaymentStatus
 from app.db.models.promo import PromoCode, PromoDiscountType
-from app.db.models.user import SubscriptionPlan, User
+from app.db.models.user import SubscriptionPlan, User, UserRole
 from app.db.session import get_db_session
 from app.services.admin_content import admin_content_service
 from app.services.payment_review import (
@@ -40,6 +48,15 @@ from app.services.payment_review import (
     ReceiptReviewError,
     approve_receipt,
     reject_receipt,
+)
+from app.services.permissions import (
+    AdminNotFoundError,
+    PermissionError_,
+    create_admin,
+    list_admins,
+    load_permissions,
+    remove_admin,
+    set_permissions,
 )
 from app.services.promo import promo_service
 
@@ -86,18 +103,18 @@ class TopUserOut(BaseModel):
     balance: float
 
 
-@router.get("/stats", response_model=StatsOut)
+@router.get("/stats", response_model=StatsOut, dependencies=[Depends(require_permission(Permission.VIEW_ANALYTICS))])
 async def get_stats(session: AsyncSession = Depends(get_db_session)) -> StatsOut:
     stats = await admin_content_service.dashboard_stats(session)
     return StatsOut(**asdict(stats))
 
 
-@router.get("/activity", response_model=list[ActivityPointOut])
+@router.get("/activity", response_model=list[ActivityPointOut], dependencies=[Depends(require_permission(Permission.VIEW_ANALYTICS))])
 async def get_activity(session: AsyncSession = Depends(get_db_session)) -> list[dict]:
     return await admin_content_service.activity_last_7_days(session)
 
 
-@router.get("/top-users", response_model=list[TopUserOut])
+@router.get("/top-users", response_model=list[TopUserOut], dependencies=[Depends(require_permission(Permission.VIEW_ANALYTICS))])
 async def get_top_users(
     limit: int = Query(default=5, ge=1, le=50), session: AsyncSession = Depends(get_db_session)
 ) -> list[dict]:
@@ -124,7 +141,7 @@ class RejectIn(BaseModel):
     notes: str
 
 
-@router.get("/receipts", response_model=list[ReceiptOut])
+@router.get("/receipts", response_model=list[ReceiptOut], dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def list_receipts(
     status: PaymentStatus = PaymentStatus.PENDING,
     limit: int = Query(default=50, ge=1, le=200),
@@ -155,7 +172,7 @@ async def list_receipts(
     ]
 
 
-@router.get("/receipts/{receipt_id}/photo")
+@router.get("/receipts/{receipt_id}/photo", dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def get_receipt_photo_route(
     receipt_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> Response:
@@ -190,7 +207,7 @@ async def get_receipt_photo_route(
     )
 
 
-@router.post("/receipts/{receipt_id}/approve")
+@router.post("/receipts/{receipt_id}/approve", dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def approve_receipt_route(
     receipt_id: int, admin: User = Depends(get_current_admin), session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -203,7 +220,7 @@ async def approve_receipt_route(
     return {"status": "approved"}
 
 
-@router.post("/receipts/{receipt_id}/reject")
+@router.post("/receipts/{receipt_id}/reject", dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def reject_receipt_route(
     receipt_id: int,
     body: RejectIn,
@@ -236,13 +253,13 @@ class AdminCardIn(BaseModel):
     bank_name: str | None = None
 
 
-@router.get("/cards", response_model=list[AdminCardOut])
+@router.get("/cards", response_model=list[AdminCardOut], dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def list_cards(session: AsyncSession = Depends(get_db_session)) -> list[AdminCard]:
     result = await session.execute(select(AdminCard).order_by(AdminCard.created_at.desc()))
     return list(result.scalars())
 
 
-@router.post("/cards", response_model=AdminCardOut)
+@router.post("/cards", response_model=AdminCardOut, dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def create_card(body: AdminCardIn, session: AsyncSession = Depends(get_db_session)) -> AdminCard:
     card = AdminCard(**body.model_dump())
     session.add(card)
@@ -250,7 +267,7 @@ async def create_card(body: AdminCardIn, session: AsyncSession = Depends(get_db_
     return card
 
 
-@router.patch("/cards/{card_id}/toggle", response_model=AdminCardOut)
+@router.patch("/cards/{card_id}/toggle", response_model=AdminCardOut, dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def toggle_card(card_id: int, session: AsyncSession = Depends(get_db_session)) -> AdminCard:
     card = await session.get(AdminCard, card_id)
     if card is None:
@@ -284,13 +301,13 @@ class PromoCodeIn(BaseModel):
     campaign_name: str | None = None
 
 
-@router.get("/promo", response_model=list[PromoCodeOut])
+@router.get("/promo", response_model=list[PromoCodeOut], dependencies=[Depends(require_permission(Permission.MANAGE_PROMO_CODES))])
 async def list_promo_codes(session: AsyncSession = Depends(get_db_session)) -> list[PromoCode]:
     result = await session.execute(select(PromoCode).order_by(PromoCode.created_at.desc()))
     return list(result.scalars())
 
 
-@router.post("/promo", response_model=PromoCodeOut)
+@router.post("/promo", response_model=PromoCodeOut, dependencies=[Depends(require_permission(Permission.MANAGE_PROMO_CODES))])
 async def create_promo_code_route(
     body: PromoCodeIn, admin: User = Depends(get_current_admin), session: AsyncSession = Depends(get_db_session)
 ) -> PromoCode:
@@ -366,7 +383,7 @@ class TitleUpdateIn(BaseModel):
     is_active: bool | None = None
 
 
-@router.get("/titles", response_model=TitlePageOut)
+@router.get("/titles", response_model=TitlePageOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def list_titles(
     q: str | None = None,
     content_type: ContentType | None = None,
@@ -393,12 +410,12 @@ async def list_titles(
     )
 
 
-@router.post("/titles", response_model=TitleOut)
+@router.post("/titles", response_model=TitleOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def create_title_route(body: TitleIn, session: AsyncSession = Depends(get_db_session)) -> Title:
     return await admin_content_service.create_title(session, **body.model_dump())
 
 
-@router.patch("/titles/{title_id}", response_model=TitleOut)
+@router.patch("/titles/{title_id}", response_model=TitleOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def update_title_route(
     title_id: int, body: TitleUpdateIn, session: AsyncSession = Depends(get_db_session)
 ) -> Title:
@@ -409,7 +426,7 @@ async def update_title_route(
     return title
 
 
-@router.delete("/titles/{title_id}")
+@router.delete("/titles/{title_id}", dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def delete_title_route(
     title_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -418,7 +435,7 @@ async def delete_title_route(
     return {"status": "deleted"}
 
 
-@router.patch("/titles/{title_id}/toggle", response_model=TitleOut)
+@router.patch("/titles/{title_id}/toggle", response_model=TitleOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def toggle_title_route(title_id: int, session: AsyncSession = Depends(get_db_session)) -> Title:
     title = await session.get(Title, title_id)
     if title is None:
@@ -427,7 +444,7 @@ async def toggle_title_route(title_id: int, session: AsyncSession = Depends(get_
     return updated
 
 
-@router.post("/titles/{title_id}/enrich", response_model=TitleOut)
+@router.post("/titles/{title_id}/enrich", response_model=TitleOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def enrich_title_route(title_id: int, session: AsyncSession = Depends(get_db_session)) -> Title:
     title = await admin_content_service.enrich_from_tmdb(session, title_id)
     if title is None:
@@ -478,7 +495,7 @@ class TitleCollectionsIn(BaseModel):
     collection_ids: list[int]
 
 
-@router.get("/collections", response_model=list[CollectionListItemOut])
+@router.get("/collections", response_model=list[CollectionListItemOut], dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def list_collections_route(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[CollectionListItemOut]:
@@ -491,14 +508,14 @@ async def list_collections_route(
     ]
 
 
-@router.post("/collections", response_model=CollectionOut)
+@router.post("/collections", response_model=CollectionOut, dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def create_collection_route(
     body: CollectionIn, session: AsyncSession = Depends(get_db_session)
 ) -> Collection:
     return await admin_content_service.create_collection(session, **body.model_dump())
 
 
-@router.patch("/collections/{collection_id}", response_model=CollectionOut)
+@router.patch("/collections/{collection_id}", response_model=CollectionOut, dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def update_collection_route(
     collection_id: int, body: CollectionUpdateIn, session: AsyncSession = Depends(get_db_session)
 ) -> Collection:
@@ -510,7 +527,7 @@ async def update_collection_route(
     return collection
 
 
-@router.patch("/collections/{collection_id}/toggle", response_model=CollectionOut)
+@router.patch("/collections/{collection_id}/toggle", response_model=CollectionOut, dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def toggle_collection_route(
     collection_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> Collection:
@@ -522,7 +539,7 @@ async def toggle_collection_route(
     )
 
 
-@router.delete("/collections/{collection_id}")
+@router.delete("/collections/{collection_id}", dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def delete_collection_route(
     collection_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -531,14 +548,14 @@ async def delete_collection_route(
     return {"status": "deleted"}
 
 
-@router.get("/collections/{collection_id}/titles", response_model=list[TitleOut])
+@router.get("/collections/{collection_id}/titles", response_model=list[TitleOut], dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def collection_titles_route(
     collection_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> list[Title]:
     return await admin_content_service.collection_titles(session, collection_id)
 
 
-@router.post("/collections/{collection_id}/titles")
+@router.post("/collections/{collection_id}/titles", dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def add_title_to_collection_route(
     collection_id: int, body: CollectionTitleIn, session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -550,7 +567,7 @@ async def add_title_to_collection_route(
     return {"status": "added"}
 
 
-@router.delete("/collections/{collection_id}/titles/{title_id}")
+@router.delete("/collections/{collection_id}/titles/{title_id}", dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def remove_title_from_collection_route(
     collection_id: int, title_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -558,14 +575,14 @@ async def remove_title_from_collection_route(
     return {"status": "removed"}
 
 
-@router.get("/titles/{title_id}/collections", response_model=list[int])
+@router.get("/titles/{title_id}/collections", response_model=list[int], dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def title_collections_route(
     title_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> list[int]:
     return await admin_content_service.title_collection_ids(session, title_id)
 
 
-@router.put("/titles/{title_id}/collections", response_model=list[int])
+@router.put("/titles/{title_id}/collections", response_model=list[int], dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))])
 async def set_title_collections_route(
     title_id: int, body: TitleCollectionsIn, session: AsyncSession = Depends(get_db_session)
 ) -> list[int]:
@@ -585,7 +602,7 @@ class TMDBSearchResultOut(BaseModel):
     overview: str | None
 
 
-@router.get("/tmdb/search", response_model=list[TMDBSearchResultOut])
+@router.get("/tmdb/search", response_model=list[TMDBSearchResultOut], dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def tmdb_search_route(
     q: str = Query(min_length=1),
     limit: int = Query(default=10, ge=1, le=20),
@@ -601,7 +618,7 @@ async def tmdb_search_route(
         raise HTTPException(status_code=502, detail=f"TMDB request failed: {exc}") from exc
 
 
-@router.post("/titles/{title_id}/tmdb/{tmdb_id}", response_model=TitleOut)
+@router.post("/titles/{title_id}/tmdb/{tmdb_id}", response_model=TitleOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def apply_tmdb_match_route(
     title_id: int, tmdb_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> Title:
@@ -627,7 +644,7 @@ class SimilarTitleOut(BaseModel):
     languages: list[AudioLanguage]
 
 
-@router.get("/titles/similar", response_model=list[SimilarTitleOut])
+@router.get("/titles/similar", response_model=list[SimilarTitleOut], dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def similar_titles_route(
     name: str = Query(min_length=1),
     limit: int = Query(default=5, ge=1, le=20),
@@ -673,7 +690,7 @@ class EpisodeIn(BaseModel):
     duration_minutes: int | None = None
 
 
-@router.get("/titles/{title_id}/episodes", response_model=list[EpisodeListItemOut])
+@router.get("/titles/{title_id}/episodes", response_model=list[EpisodeListItemOut], dependencies=[Depends(require_permission(Permission.MANAGE_SERIES))])
 async def list_episodes_route(
     title_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> list[EpisodeListItemOut]:
@@ -684,7 +701,7 @@ async def list_episodes_route(
     ]
 
 
-@router.post("/titles/{title_id}/episodes", response_model=EpisodeOut)
+@router.post("/titles/{title_id}/episodes", response_model=EpisodeOut, dependencies=[Depends(require_permission(Permission.MANAGE_SERIES))])
 async def create_episode_route(
     title_id: int, body: EpisodeIn, session: AsyncSession = Depends(get_db_session)
 ):
@@ -694,7 +711,7 @@ async def create_episode_route(
     return await admin_content_service.add_episode(session, title_id, **body.model_dump())
 
 
-@router.delete("/episodes/{episode_id}")
+@router.delete("/episodes/{episode_id}", dependencies=[Depends(require_permission(Permission.MANAGE_SERIES))])
 async def delete_episode_route(
     episode_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -725,7 +742,7 @@ class MediaFileIn(BaseModel):
     source_message_id: int | None = None
 
 
-@router.get("/episodes/{episode_id}/files", response_model=list[MediaFileOut])
+@router.get("/episodes/{episode_id}/files", response_model=list[MediaFileOut], dependencies=[Depends(require_permission(Permission.MANAGE_SERIES))])
 async def list_episode_files_route(
     episode_id: int, session: AsyncSession = Depends(get_db_session)
 ):
@@ -735,7 +752,7 @@ async def list_episode_files_route(
     return await admin_content_service.list_files(session, episode_id)
 
 
-@router.post("/episodes/{episode_id}/files", response_model=MediaFileOut)
+@router.post("/episodes/{episode_id}/files", response_model=MediaFileOut, dependencies=[Depends(require_permission(Permission.MANAGE_SERIES))])
 async def attach_file_route(
     episode_id: int, body: MediaFileIn, session: AsyncSession = Depends(get_db_session)
 ):
@@ -745,7 +762,7 @@ async def attach_file_route(
     return await admin_content_service.attach_file(session, episode_id, **body.model_dump())
 
 
-@router.delete("/files/{file_id}")
+@router.delete("/files/{file_id}", dependencies=[Depends(require_permission(Permission.MANAGE_AUDIO_TRACKS))])
 async def detach_file_route(
     file_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -780,14 +797,14 @@ class PendingAttachIn(BaseModel):
     quality: VideoQuality = VideoQuality.HD_720
 
 
-@router.get("/pending-uploads", response_model=list[PendingUploadOut])
+@router.get("/pending-uploads", response_model=list[PendingUploadOut], dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def list_pending_uploads_route(
     limit: int = Query(default=100, ge=1, le=200), session: AsyncSession = Depends(get_db_session)
 ):
     return await admin_content_service.list_pending_uploads(session, limit=limit)
 
 
-@router.delete("/pending-uploads/{pending_id}")
+@router.delete("/pending-uploads/{pending_id}", dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def delete_pending_upload_route(
     pending_id: int, session: AsyncSession = Depends(get_db_session)
 ) -> dict[str, str]:
@@ -796,7 +813,7 @@ async def delete_pending_upload_route(
     return {"status": "deleted"}
 
 
-@router.post("/pending-uploads/{pending_id}/attach", response_model=MediaFileOut)
+@router.post("/pending-uploads/{pending_id}/attach", response_model=MediaFileOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
 async def attach_pending_upload_route(
     pending_id: int, body: PendingAttachIn, session: AsyncSession = Depends(get_db_session)
 ):
@@ -854,7 +871,7 @@ class UserPageOut(BaseModel):
     page_size: int
 
 
-@router.get("/users", response_model=UserPageOut)
+@router.get("/users", response_model=UserPageOut, dependencies=[Depends(require_permission(Permission.MANAGE_USERS))])
 async def list_users_route(
     q: str | None = None,
     page: int = Query(default=0, ge=0),
@@ -893,3 +910,135 @@ async def list_users_route(
         for user in users
     ]
     return UserPageOut(items=items, total=total, page=page, page_size=page_size)
+
+
+# ---------- Administrators & permissions (Super Admin only) ----------
+#
+# Gated on get_super_admin rather than a MANAGE_ADMINS permission: if
+# appointing administrators were itself a grantable capability, an admin
+# holding it could grant themselves everything else, and the single-owner
+# model would be a formality. MANAGE_ADMINS/MANAGE_ROLES still exist in
+# the vocabulary for read-only surfaces and future delegation.
+
+
+class AdminPermissionsIn(BaseModel):
+    permissions: list[str]
+
+
+class CreateAdminIn(BaseModel):
+    telegram_id: int
+    permissions: list[str] = []
+
+
+class AdminOut(BaseModel):
+    id: int
+    telegram_id: int
+    username: str | None
+    full_name: str | None
+    role: UserRole
+    is_super_admin: bool
+    permissions: list[str]
+
+
+class PermissionCatalogOut(BaseModel):
+    """
+    The permission vocabulary, grouped for display.
+
+    Served from the backend so the panel cannot show a stale list: a
+    capability added to app.core.permissions appears here without a
+    frontend release.
+    """
+
+    groups: dict[str, list[str]]
+
+
+def _admin_out(user: User, permissions: set[Permission]) -> AdminOut:
+    return AdminOut(
+        id=user.id,
+        telegram_id=user.telegram_id,
+        username=user.username,
+        full_name=user.full_name,
+        role=user.role,
+        is_super_admin=user.role == UserRole.SUPER_ADMIN,
+        permissions=sorted(p.value for p in permissions),
+    )
+
+
+def _parse_permissions(raw: list[str]) -> set[Permission]:
+    """Rejects the whole request on an unknown name rather than silently dropping it."""
+    parsed: set[Permission] = set()
+    for name in raw:
+        permission = parse_permission(name)
+        if permission is None:
+            raise HTTPException(status_code=422, detail=f"Unknown permission: {name}")
+        parsed.add(permission)
+    return parsed
+
+
+@router.get("/permissions", response_model=PermissionCatalogOut)
+async def get_permission_catalog() -> PermissionCatalogOut:
+    """Readable by any administrator — it is a vocabulary, not a grant."""
+    return PermissionCatalogOut(
+        groups={
+            group: [p.value for p in permissions]
+            for group, permissions in PERMISSION_GROUPS.items()
+        }
+    )
+
+
+@router.get("/admins", response_model=list[AdminOut])
+async def list_admins_route(
+    _actor: User = Depends(get_super_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[AdminOut]:
+    return [_admin_out(user, perms) for user, perms in await list_admins(session)]
+
+
+@router.post("/admins", response_model=AdminOut)
+async def create_admin_route(
+    body: CreateAdminIn,
+    actor: User = Depends(get_super_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> AdminOut:
+    try:
+        user = await create_admin(
+            session, actor, body.telegram_id, _parse_permissions(body.permissions)
+        )
+    except AdminNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError_ as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return _admin_out(user, await load_permissions(session, user))
+
+
+@router.put("/admins/{user_id}/permissions", response_model=AdminOut)
+async def set_admin_permissions_route(
+    user_id: int,
+    body: AdminPermissionsIn,
+    actor: User = Depends(get_super_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> AdminOut:
+    try:
+        await set_permissions(session, actor, user_id, _parse_permissions(body.permissions))
+    except AdminNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError_ as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+
+    user = await session.get(User, user_id)
+    return _admin_out(user, await load_permissions(session, user))
+
+
+@router.delete("/admins/{user_id}")
+async def remove_admin_route(
+    user_id: int,
+    actor: User = Depends(get_super_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    try:
+        await remove_admin(session, actor, user_id)
+    except AdminNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PermissionError_ as exc:
+        raise HTTPException(status_code=403, detail=str(exc)) from exc
+    return {"status": "removed"}

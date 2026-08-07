@@ -52,3 +52,31 @@ def test_every_key_renders_in_every_language(lang):
     """Guards against a malformed template — an unbalanced brace, say."""
     for key in CATALOGS[FALLBACK_LANGUAGE]:
         assert isinstance(t(key, lang), str)
+
+
+# Strings the Mini App renders verbatim into a toast, straight from an API
+# response. They used to be hardcoded English regardless of the viewer's
+# language, which is the defect FR-6 cites.
+API_FACING_KEYS = [
+    "app.watch_sent",
+    "streaming.not_available",
+    "streaming.send_error",
+    "catalog.title_not_found",
+]
+
+
+@pytest.mark.parametrize("key", API_FACING_KEYS)
+def test_api_facing_keys_exist_in_every_locale(key):
+    for lang in UILanguage:
+        assert key in CATALOGS[lang], f"{key} missing from {lang.value}"
+
+
+@pytest.mark.parametrize("key", API_FACING_KEYS)
+def test_api_facing_keys_are_actually_translated(key):
+    """
+    Three identical strings would mean a key was added to all catalogs
+    with the English text pasted in, which passes the parity check while
+    leaving non-English users reading English.
+    """
+    rendered = {t(key, lang) for lang in UILanguage}
+    assert len(rendered) == len(UILanguage), f"{key} is not distinct per language: {rendered}"

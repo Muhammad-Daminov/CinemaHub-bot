@@ -7,6 +7,19 @@ _Audited: 2026-08-05 · commit `9bd6d48` · updated after Phase 0_
 > **Phase 0 complete (2026-08-05).** Every blocker it owned is cleared. The receipt-approval race and two further races in promo redemption are fixed and covered by regression tests that were each verified to fail against the pre-fix code. The production ledger has been cleaned up and the idempotency migration applied; consistency is verified across all 508 users. The project now has 45 passing tests, a throwaway test-database script, a locale parity gate, and CI.
 >
 > **One item remains open**, and it blocks nothing: P0-5, confirming externally whether a Render Cron Job invokes `app/tasks/cron.py`. Nothing in the repository can answer that.
+>
+> **Phase 1 complete (2026-08-05).** FR-6 requirements 1–2 and FR-8 are implemented, with 64 tests passing. Two corrections to this document's earlier findings, both discovered while implementing:
+>
+> - The React admin panel is **entirely** hardcoded Uzbek — ~98 strings across 11 files — not "inconsistently localized" as recorded below. Localizing it moved to Phase 6, where FR-3 rewrites that markup anyway.
+> - The `watch` endpoint leaked an internal diagnostic naming a `MediaFile` row directly to the user's screen. That was a mild information disclosure as well as a localization defect, and is fixed.
+>
+> FR-8 was implemented against the two defects diagnosed in this document, since **no reproduction case was ever supplied**. If the real complaint was something else, it is still open — see Blockers.
+>
+> **Phase 2 complete (2026-08-07).** FR-7 and FR-9 are implemented, with 85 tests passing. The Mini App now reaches parity with the bot on series navigation: it had no concept of episodes at all, so Watch on a serial always sent episode 1.
+>
+> Implementing it surfaced a **Phase 0 regression that had already shipped**: removing an "unused" import broke OpenAPI schema generation and therefore `/docs`, while leaving `import app.main` green. Fixed, and now covered by a schema test — `import app.main` cannot catch that class of fault.
+>
+> **FR-7 was built as an informational display**, matching what the request literally asks for. Letting the viewer *choose* a track is a small follow-on recorded in `IDEAS.md`, not an omission.
 
 ---
 
@@ -14,15 +27,15 @@ _Audited: 2026-08-05 · commit `9bd6d48` · updated after Phase 0_
 
 | ID | Feature | Status |
 |---|---|---|
-| FR-1 | Super Admin & Admin Permission Management | 🟡 Partially Implemented |
-| FR-2 | Role Switching | ❌ Not Implemented |
+| FR-1 | Super Admin & Admin Permission Management | ✅ **Implemented (Phase 3)** |
+| FR-2 | Role Switching | ❌ Not Implemented — deferred; see note below |
 | FR-3 | Super Admin Settings Page Redesign | ❌ Not Implemented |
 | FR-4 | Balance Display & Subscription Purchase | 🟡 Partially Implemented |
 | FR-5 | Subscription Plan Management | ❌ Not Implemented |
-| FR-6 | Complete Localization Coverage | 🟡 Partially Implemented |
-| FR-7 | Audio Languages Before Playback | 🟡 Partially Implemented |
-| FR-8 | `/start` Command Reliability | 🟡 Partially Implemented |
-| FR-9 | TV Series Episode & Season Navigation | 🟡 Partially Implemented |
+| FR-6 | Complete Localization Coverage | 🟡 Partially Implemented — **reqs 1–2 done (Phase 1)**; req 3 (per-language titles) remains |
+| FR-7 | Audio Languages Before Playback | ✅ **Implemented (Phase 2)** — informational display; selection deliberately out of scope |
+| FR-8 | `/start` Command Reliability | ✅ **Implemented (Phase 1)** — against the diagnosed defects, not a supplied repro |
+| FR-9 | TV Series Episode & Season Navigation | ✅ **Implemented (Phase 2)** — Mini App reaches parity with the bot |
 
 **Headline:** nothing requested is finished, but little is starting from zero. Six of nine have working foundations — in three cases (FR-6, FR-7, FR-9) the backend already does the hard part and only the presentation layer is absent. The two genuine greenfield items are FR-2 and FR-5, and FR-3 turns out to have no existing surface to redesign.
 
@@ -30,56 +43,30 @@ _Audited: 2026-08-05 · commit `9bd6d48` · updated after Phase 0_
 
 ## FR-1 · Super Admin & Admin Permission Management
 
-### 🟡 Partially Implemented
-
-An administrator system exists and is enforced consistently, but it is **flat, binary, and statically configured**. Every capability named in the request is absent; what exists is the substrate to build on.
+### ✅ Implemented (Phase 3, 2026-08-07)
 
 | # | Requested behavior | Status |
 |---|---|---|
-| 1 | Super Admin role distinct from administrator | ❌ |
-| 2 | Only Super Admin may create an administrator | ❌ |
-| 3 | Only Super Admin may remove an administrator | ❌ |
-| 4 | Only Super Admin may assign/revoke permissions | ❌ |
-| 5 | Permissions per administrator, individually | ❌ |
-| 6 | Every permission independently configurable | ❌ |
-| 7 | Actions outside granted permissions rejected | 🟡 Rejection exists, but only all-or-nothing |
-| 8 | Revocation takes effect on subsequent actions | ❌ |
+| 1 | Super Admin role distinct from administrator | ✅ `UserRole.SUPER_ADMIN`, exactly one holder |
+| 2 | Only Super Admin may create an administrator | ✅ `get_super_admin` gates `POST /admin/admins` |
+| 3 | Only Super Admin may remove an administrator | ✅ `DELETE /admin/admins/{id}` |
+| 4 | Only Super Admin may assign/revoke permissions | ✅ `PUT /admin/admins/{id}/permissions` |
+| 5 | Permissions per administrator, individually | ✅ one row per grant in `chp_admin_permissions` |
+| 6 | Every permission independently configurable | ✅ 19 capabilities, each its own toggle |
+| 7 | Actions outside granted permissions rejected | ✅ per-route `require_permission` on all 41 routes |
+| 8 | Revocation takes effect on subsequent actions | ✅ permissions are read per request, never cached |
 
-**What already exists**
+**How it is built**
 
-- **A single authorization chokepoint** — the most valuable asset here, because authorization is not scattered. [app/core/admin.py](app/core/admin.py) is the entire rule in six lines: `is_admin(telegram_id)` tests membership of `settings.admin_ids_list`.
-- [app/api/auth.py:74](app/api/auth.py#L74) — `get_current_admin`, layering the admin test over verified Telegram identity.
-- [app/api/admin.py:41](app/api/admin.py#L41) — applied **router-wide**, so all 41 admin routes inherit it and none can be added without it.
-- Bot-side checks at [admin_promo.py:44](app/bot/handlers/admin_promo.py#L44), [admin_upload.py:27](app/bot/handlers/admin_upload.py#L27), [admin_payment.py:64](app/bot/handlers/admin_payment.py#L64) and [:87](app/bot/handlers/admin_payment.py#L87).
-- A working admin panel with eight tabs — [webapp/src/admin/AdminDashboard.tsx](webapp/src/admin/AdminDashboard.tsx).
-- **A dormant role column.** [app/db/models/user.py:35](app/db/models/user.py#L35) defines `UserRole` as `USER`/`MODERATOR`/`ADMIN` on `chp_users.role`, **read nowhere** — a repository-wide search outside the model returns nothing. Tiering was anticipated and never wired up.
+- [app/core/permissions.py](app/core/permissions.py) — the vocabulary. Stored as VARCHAR, so a new capability needs no migration.
+- [app/services/permissions.py](app/services/permissions.py) — the **only** place authority is decided, plus administrator management. The REST API reaches it via `require_permission`; the bot via [app/bot/permissions.py](app/bot/permissions.py). `app/core/admin.py` is deleted, so no second path exists.
+- Super Admin authority is the role, not 19 grantable rows — otherwise they could revoke their own `manage_admins` and lock the platform out of itself.
+- Appointing administrators is Super-Admin-only rather than a `manage_admins` grant: an admin who could grant that could grant themselves everything else.
+- Ownership transfers by changing `SUPER_ADMIN_TELEGRAM_ID`; startup promotes the named account and demotes the previous holder to ADMIN.
 
-**What is missing**
+**Governed surface per permission** — three of the nineteen still govern nothing, unchanged by this phase and tracked elsewhere: `manage_subscriptions` and `manage_subscription_features` await FR-5 (Phase 4), and `manage_notifications` has no notification feature to govern. `manage_users` still governs a read-only screen (see P0-4). They are enforced correctly; they simply gate surfaces that do not exist yet.
 
-- No Super Admin tier; `UserRole` has no such member.
-- **Administrators cannot be created or removed at runtime at all.** Membership comes from the `ADMIN_IDS` environment variable ([config.py:61](app/core/config.py#L61)), so appointing someone requires editing configuration and redeploying. Requirements 2 and 3 are not partially met — they are architecturally unavailable until admin identity moves into the database.
-- No permission model of any kind: no table, column, enum, or constant expressing a permission.
-- No per-route granularity. The router-wide dependency that makes enforcement reliable also makes it uniformly all-or-nothing.
-- **No permission data reaches the frontend.** [App.tsx:176-179](webapp/src/App.tsx#L176-L179) determines admin status by *probing an admin-only route* — 200 means admin, 403 means ordinary user — because `/api/auth/me` carries no admin field. There is no channel for per-permission state, so the panel cannot hide controls per permission.
-- No admin-management UI.
-
-**Governed surface per requested permission** — a permission is only meaningful if the capability it governs exists:
-
-| Permission | Surface | Assessment |
-|---|---|---|
-| Manage Movies | 24 catalog endpoints in [app/api/admin.py](app/api/admin.py) | ✅ Full surface |
-| Manage Payments | receipts, approve/reject, cards | ✅ Full surface |
-| Manage Users | `GET /admin/users`, `/top-users` — read-only. [UsersPanel.tsx](webapp/src/admin/UsersPanel.tsx) has only pagination | 🟡 Nothing mutable to govern |
-| Manage Subscriptions | **None** — see FR-5 | ❌ No surface |
-| Manage Notifications | **None.** Only `notify_admins_of_new_receipt` ([admin_payment.py:35](app/bot/handlers/admin_payment.py#L35)), an internal DM | ❌ No surface |
-
-**Related files** — [app/core/admin.py](app/core/admin.py), [app/core/config.py](app/core/config.py), [app/api/auth.py](app/api/auth.py), [app/api/admin.py](app/api/admin.py), [app/db/models/user.py](app/db/models/user.py), [webapp/src/App.tsx](webapp/src/App.tsx), [webapp/src/admin/](webapp/src/admin/)
-
-**Dependencies** — Blocks FR-2 and FR-5 (its Manage Subscriptions permission). Overlaps `TASKS.md` **P0-4**. Requires a migration, so it depends on **P0-3** (no non-production database exists). Its authorization rewrite touches the receipt-approval path that holds the confirmed **P0-2** race.
-
-**Implement first** — Resolve three blocking decisions before any code: the definitive permission list, how the Super Admin is designated, and whether enforcement covers bot, panel, or both. Then move admin identity from `ADMIN_IDS` into the database, retaining the env var **only** to bootstrap the first Super Admin — otherwise nobody can appoint anybody.
-
----
+**Production** — 1 Super Admin (`6427415448`, 0 explicit rows by design), 1 administrator seeded with all 19, 508 users unchanged.
 
 ## FR-2 · Role Switching
 

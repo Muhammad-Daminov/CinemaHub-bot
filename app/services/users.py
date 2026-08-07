@@ -26,10 +26,27 @@ async def get_or_create_user(
     full_name: str | None,
     referral_payload: str | None = None,
 ) -> User:
-    """Fetches the User for `telegram_id`, creating it (with optional referral) on first contact."""
+    """
+    Fetches the User for `telegram_id`, creating it (with optional referral) on first contact.
+
+    For an existing user this also refreshes their Telegram profile
+    fields. They were previously written once at signup and never again,
+    so anyone who changed their Telegram username or display name kept
+    the old value forever — visible in the admin user list, in the
+    welcome message, and in the Mini App's settings screen. Telegram
+    sends the current values on every update, so the fix is just to
+    notice when they differ.
+
+    Only assigns on an actual change: an unconditional write would dirty
+    the row on every single /start and turn a read into a write.
+    """
     result = await session.execute(select(User).where(User.telegram_id == telegram_id))
     user = result.scalar_one_or_none()
     if user is not None:
+        if username != user.username:
+            user.username = username
+        if full_name and full_name != user.full_name:
+            user.full_name = full_name
         return user
 
     referred_by_id: int | None = None

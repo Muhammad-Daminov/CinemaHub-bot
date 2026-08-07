@@ -50,24 +50,29 @@ alembic upgrade head                        # apply migrations (see warning belo
 alembic revision --autogenerate -m "msg"    # new migration
 python -m app.tasks.cron                    # run scheduled maintenance once
 
+# Tests
+./scripts/test_db.sh start                  # throwaway local Postgres (no sudo); prints the URL to export
+python -m pytest -q                          # DB-backed tests skip unless TEST_DATABASE_URL is set
+python scripts/check_locales.py              # locale parity + every used key resolves
+
 # Frontend (from webapp/)
 npm run build                               # tsc -b && vite build — the real check
 npx tsc --noEmit                            # typecheck only, faster
 npm run dev                                 # vite dev server
 ```
 
-**There is no test suite.** `python -c "import app.main"` and `npm run build` are the current verification gates. Run both before declaring backend or frontend work done.
+**Four gates, all of which must pass** before declaring work done: `python -c "import app.main"`, `python -m pytest -q`, `python scripts/check_locales.py`, and `npm run build`.
 
-### Locale parity check
+`import app.main` alone is not enough — Pydantic resolves response-model annotations lazily, so a broken one passes the import check and fails only when the OpenAPI schema is built. `tests/test_api_schema.py` covers that.
 
-After touching `app/locales/*.json` or any `t(...)` call, verify all three catalogs agree and every used key resolves. See `TASKS.md` P1 for scripting this properly; until then, check that `uz.json`, `ru.json`, and `en.json` have identical key sets.
+Database-backed tests skip silently without `TEST_DATABASE_URL`, so a green run proves less than it looks like. Start `./scripts/test_db.sh` and export the URL it prints. `tests/conftest.py` refuses any Neon host outright — the suite drops and recreates every table.
 
 ---
 
 ## 3. Hard rules
 
 ### Database
-- **`DATABASE_URL` points at a live production Neon database.** There is no local or staging database configured. `alembic upgrade head`, any `UPDATE`, and any destructive SQL hit production.
+- **`DATABASE_URL` points at a live production Neon database.** `scripts/test_db.sh` provides a throwaway cluster for *tests*, but there is still no staging database — rehearse migrations there before applying them. `alembic upgrade head`, any `UPDATE`, and any destructive SQL hit production.
 - **Always confirm with the user before running a migration or any write.** State that it targets production.
 - Migrations that add a `NOT NULL` column must carry a `server_default` **and** backfill existing rows explicitly (see `6b7ec8ebd218` for the pattern).
 
@@ -87,7 +92,9 @@ After touching `app/locales/*.json` or any `t(...)` call, verify all three catal
 
 ### Auth
 - Mini App identity comes only from Telegram `initData` HMAC verification (`app/api/auth.py`). Never trust a `telegram_id` from a query param or body — it is trivially spoofable.
-- Admin routes go through `get_current_admin`, which checks `ADMIN_IDS`.
+- Admin routes carry **two** gates: the router-wide `get_current_admin` (is this an administrator at all) and a per-route `require_permission(Permission.X)` (may they do *this*). Keep both — the blanket gate is what stops a newly added route being accidentally public.
+- **There is exactly one place authority is decided:** `app.services.permissions.has_permission`. The REST API reaches it through `require_permission`; the bot through `app/bot/permissions.py`. Never add a second check that reads roles or `ADMIN_IDS` directly — `ADMIN_IDS` is a legacy seed and grants nothing at runtime.
+- The Super Admin (`SUPER_ADMIN_TELEGRAM_ID`) holds every permission implicitly and has no rows in `chp_admin_permissions`. Do not seed them — a revocable grant could lock the platform out of itself.
 
 ### Money
 - Balance credits, subscription activation, and user notification happen in **one place**: `app/services/payment_review.py`. The bot's inline approve/reject buttons and the admin REST API both call it. Do not add a second crediting path.
@@ -106,7 +113,7 @@ After touching `app/locales/*.json` or any `t(...)` call, verify all three catal
 
 ## 5. Known traps
 
-- `app/core/config.py` declares **`GEMINI_MODEL` twice** (lines ~46 and ~48). The second wins. See `TASKS.md` P0.
 - `app/tasks/cron.py` is a standalone script, intentionally not bolted onto the web lifespan. It only runs if a Render Cron Job is configured — that config is **not in this repo**, so verify externally before assuming maintenance tasks run.
 - The webhook is set on startup and deliberately **never deleted on shutdown** — it is global bot state, not one process's to release.
-- `webapp/tsconfig.tsbuildinfo` is committed and churns on every build. Noise in diffs; see `TASKS.md`.
+- `pyflakes` reports `date` in `app/api/admin.py` as unused. It is **not** — `ActivityPointOut.date: date` shadows it, and removing it breaks OpenAPI generation while leaving `import app.main` green. It was deleted once on that advice and shipped broken; `tests/test_api_schema.py` now catches it.
+- Delivered videos are **never** auto-removed. The 15-minute auto-delete engine was removed in Phase 3 — do not reintroduce timers, Redis delay queues, or deletion notices.

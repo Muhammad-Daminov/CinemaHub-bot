@@ -14,6 +14,7 @@ import { PromoPanel } from "./PromoPanel";
 import { ReceiptsPanel } from "./ReceiptsPanel";
 import { StatsPanel } from "./StatsPanel";
 import { UploadsPanel } from "./UploadsPanel";
+import { AdminsPanel } from "./AdminsPanel";
 import { UsersPanel } from "./UsersPanel";
 
 type TabId =
@@ -24,27 +25,50 @@ type TabId =
   | "receipts"
   | "cards"
   | "promo"
-  | "users";
+  | "users"
+  | "admins";
 
-const TABS: { id: TabId; label: string }[] = [
-  { id: "stats", label: "📊 Statistika" },
-  { id: "content", label: "🎬 Kontent" },
-  { id: "collections", label: "🏷️ To'plamlar" },
-  { id: "uploads", label: "📥 Yuklanganlar" },
-  { id: "receipts", label: "💳 To'lovlar" },
-  { id: "cards", label: "🎴 Kartalar" },
-  { id: "promo", label: "🎟️ Promokod" },
-  { id: "users", label: "👥 Foydalanuvchilar" },
+/**
+ * Each tab names the permission that backs it. The API enforces the same
+ * permission on every route the tab calls, so hiding it is presentation
+ * only — a hidden tab is a courtesy, not the security boundary.
+ *
+ * `superAdminOnly` marks the administrator management tab: appointing
+ * admins is not a grantable capability, so it cannot be expressed as one.
+ */
+const TABS: { id: TabId; label: string; permission?: string; superAdminOnly?: boolean }[] = [
+  { id: "stats", label: "📊 Statistika", permission: "view_analytics" },
+  { id: "content", label: "🎬 Kontent", permission: "manage_movies" },
+  { id: "collections", label: "🏷️ To'plamlar", permission: "manage_categories" },
+  { id: "uploads", label: "📥 Yuklanganlar", permission: "manage_movies" },
+  { id: "receipts", label: "💳 To'lovlar", permission: "manage_payments" },
+  { id: "cards", label: "🎴 Kartalar", permission: "manage_payments" },
+  { id: "promo", label: "🎟️ Promokod", permission: "manage_promo_codes" },
+  { id: "users", label: "👥 Foydalanuvchilar", permission: "manage_users" },
+  { id: "admins", label: "🛡️ Adminlar", superAdminOnly: true },
 ];
 
-export function AdminDashboard() {
-  const [tab, setTab] = useState<TabId>("stats");
+interface Props {
+  permissions: string[];
+  isSuperAdmin: boolean;
+}
+
+export function AdminDashboard({ permissions, isSuperAdmin }: Props) {
+  const visibleTabs = TABS.filter((item) =>
+    item.superAdminOnly
+      ? isSuperAdmin
+      : isSuperAdmin || !item.permission || permissions.includes(item.permission),
+  );
+
+  // Falling back to the first tab they can actually open avoids landing an
+  // admin without analytics on a panel that only 403s at them.
+  const [tab, setTab] = useState<TabId>(visibleTabs[0]?.id ?? "stats");
 
   return (
     <div className="pb-24">
       <div className="sticky top-0 z-10 border-b border-surface-hi bg-bg/95 backdrop-blur">
         <div className="no-scrollbar flex gap-2 overflow-x-auto px-4 py-3">
-          {TABS.map((item) => (
+          {visibleTabs.map((item) => (
             <button
               key={item.id}
               onClick={() => setTab(item.id)}
@@ -69,6 +93,7 @@ export function AdminDashboard() {
         {tab === "cards" && <CardsPanel />}
         {tab === "promo" && <PromoPanel />}
         {tab === "users" && <UsersPanel />}
+        {tab === "admins" && <AdminsPanel />}
       </div>
     </div>
   );

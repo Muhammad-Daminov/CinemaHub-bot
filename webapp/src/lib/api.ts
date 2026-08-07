@@ -1,6 +1,7 @@
 import { getInitData } from "./telegram";
 import type {
   AudioLanguageFilter,
+  EpisodePage,
   Movie,
   MovieCollection,
   MovieContentType,
@@ -9,6 +10,7 @@ import type {
 } from "../types/movie";
 import type {
   ActivityPoint,
+  AdminAccount,
   AdminCard,
   AdminCardInput,
   AdminCollection,
@@ -24,6 +26,7 @@ import type {
   PaymentStatus,
   PendingAttachInput,
   PendingUpload,
+  PermissionCatalog,
   PromoCodeInput,
   CollectionInput,
   CollectionUpdateInput,
@@ -89,8 +92,14 @@ export const api = {
   similar: (movieId: number, limit = 10, audio_language?: AudioLanguageFilter) =>
     request<Movie[]>(`/movies/${movieId}/similar${toQuery({ limit, audio_language })}`),
   collections: () => request<MovieCollection[]>("/movies/collections"),
-  watchMovie: (movieId: number) =>
-    request<WatchResponse>(`/movies/${movieId}/watch`, { method: "POST" }),
+  seasons: (movieId: number) => request<number[]>(`/movies/${movieId}/seasons`),
+  episodes: (movieId: number, season?: number, page = 0) =>
+    request<EpisodePage>(`/movies/${movieId}/episodes${toQuery({ season, page })}`),
+  // episode_id omitted plays the first episode, which is what a film has.
+  watchMovie: (movieId: number, episodeId?: number) =>
+    request<WatchResponse>(`/movies/${movieId}/watch${toQuery({ episode_id: episodeId })}`, {
+      method: "POST",
+    }),
 };
 
 /** Serializes only the params that were actually set — `false` and `0` are kept. */
@@ -184,6 +193,15 @@ export const adminApi = {
   listCards: () => request<AdminCard[]>("/admin/cards"),
   createCard: (body: AdminCardInput) => send<AdminCard>("/admin/cards", "POST", body),
   toggleCard: (id: number) => send<AdminCard>(`/admin/cards/${id}/toggle`, "PATCH"),
+
+  // ---------- administrators & permissions ----------
+  permissionCatalog: () => request<PermissionCatalog>("/admin/permissions"),
+  listAdmins: () => request<AdminAccount[]>("/admin/admins"),
+  createAdmin: (telegram_id: number, permissions: string[] = []) =>
+    send<AdminAccount>("/admin/admins", "POST", { telegram_id, permissions }),
+  setAdminPermissions: (userId: number, permissions: string[]) =>
+    send<AdminAccount>(`/admin/admins/${userId}/permissions`, "PUT", { permissions }),
+  removeAdmin: (userId: number) => send<StatusResponse>(`/admin/admins/${userId}`, "DELETE"),
 
   // ---------- promo ----------
   listPromo: () => request<AdminPromoCode[]>("/admin/promo"),

@@ -2,7 +2,8 @@ import { Play, Star, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n";
-import type { AudioLanguageFilter, Movie } from "../types/movie";
+import type { AudioLanguageFilter, Episode, Movie } from "../types/movie";
+import { EpisodeSelector } from "./EpisodeSelector";
 import { MovieCard } from "./MovieCard";
 
 const SIMILAR_LIMIT = 10;
@@ -10,7 +11,8 @@ const SIMILAR_LIMIT = 10;
 interface Props {
   movie: Movie;
   onClose: () => void;
-  onWatch: (movie: Movie) => void;
+  /** `episode` is omitted for a film, which has exactly one. */
+  onWatch: (movie: Movie, episode?: Episode) => void;
   onSelectSimilar: (movie: Movie) => void;
   /** The catalog's active audio filter, so this row obeys it like every other. */
   audioLanguage: AudioLanguageFilter | null;
@@ -25,6 +27,12 @@ export function MovieDetailSheet({
 }: Props) {
   const t = useT();
   const [similar, setSimilar] = useState<Movie[]>([]);
+
+  // Read from the title itself rather than from whether the selector has
+  // finished loading. Keying off the selector meant a failed episodes
+  // request re-exposed the generic Watch button on a serial — and that
+  // button starts episode 1.
+  const hasEpisodeChooser = movie.episode_count > 1;
 
   useEffect(() => {
     // Clear first: tapping through a chain of similar titles would
@@ -78,6 +86,8 @@ export function MovieDetailSheet({
           <p className="mb-4 text-sm leading-relaxed text-ink-dim">{movie.description}</p>
         )}
 
+        <EpisodeSelector movieId={movie.id} onPlay={(episode) => onWatch(movie, episode)} />
+
         {similar.length > 0 && (
           <section className="mb-4">
             <h3 className="mb-2 font-display text-sm font-medium tracking-wide text-ink">{t("app.similar")}</h3>
@@ -89,6 +99,9 @@ export function MovieDetailSheet({
           </section>
         )}
 
+        {/* Hidden when the episode list is up: each row is its own play
+            control, and this button would silently start episode 1. */}
+        {!hasEpisodeChooser && (
         <button
           onClick={() => onWatch(movie)}
           className="flex w-full items-center justify-center gap-1.5 rounded-full bg-marquee py-3 font-semibold text-on-marquee shadow-marquee transition-transform active:scale-95"
@@ -96,6 +109,7 @@ export function MovieDetailSheet({
           <Play size={16} fill="currentColor" />
           {t("app.watch")}
         </button>
+        )}
       </div>
     </div>
   );

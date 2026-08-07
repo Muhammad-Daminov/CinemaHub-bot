@@ -11,11 +11,12 @@ import { MovieRow } from "./components/MovieRow";
 import { Navbar } from "./components/Navbar";
 import { SettingsPage } from "./components/SettingsPage";
 import { Toast } from "./components/Toast";
-import { adminApi, api, ApiError } from "./lib/api";
+import { api, ApiError } from "./lib/api";
 import { useT, type Language, type Translator } from "./lib/i18n";
 import { getColorScheme, initTelegramApp, onThemeChange } from "./lib/telegram";
 import type {
   AudioLanguageFilter,
+  Episode,
   Movie,
   MovieContentType,
   UserProfile,
@@ -107,7 +108,6 @@ function Shell({
 }) {
   const t = useT();
   const [isDark, setIsDark] = useState(true);
-  const [isAdmin, setIsAdmin] = useState(false);
   const [view, setView] = useState<"home" | "settings" | "admin">("home");
   const [rowMovies, setRowMovies] = useState<Record<string, Movie[]>>({});
   const [collectionRows, setCollectionRows] = useState<RowSpec[]>([]);
@@ -116,6 +116,11 @@ function Shell({
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
+
+  // Comes straight from /api/auth/me. This used to be discovered by calling
+  // an admin-only route and reading the status code, which meant a 403 on
+  // every load for every ordinary user.
+  const isAdmin = profile?.is_admin ?? false;
 
   useEffect(() => {
     const syncTheme = () => setIsDark(getColorScheme() === "dark");
@@ -173,15 +178,6 @@ function Shell({
       .catch(() => setCollectionRows([]));
   }, [baseRows, audioLanguage, t]);
 
-  // /api/auth/me carries no admin flag, so we probe an admin-only route
-  // instead: 200 means admin, 403 means an ordinary user.
-  useEffect(() => {
-    adminApi
-      .stats()
-      .then(() => setIsAdmin(true))
-      .catch(() => setIsAdmin(false));
-  }, []);
-
   useEffect(() => {
     if (!toast) return;
     const timeout = setTimeout(() => setToast(null), 3500);
@@ -203,10 +199,10 @@ function Shell({
     [audioLanguage],
   );
 
-  const handleWatch = async (movie: Movie) => {
+  const handleWatch = async (movie: Movie, episode?: Episode) => {
     setSelectedMovie(null);
     try {
-      const response = await api.watchMovie(movie.id);
+      const response = await api.watchMovie(movie.id, episode?.id);
       setToast({ message: response.message, tone: "success" });
     } catch (error) {
       const message = error instanceof ApiError ? error.message : t("app.generic_error");
@@ -250,7 +246,7 @@ function Shell({
   if (view === "admin" && isAdmin) {
     return (
       <div className="min-h-full bg-bg text-ink">
-        <AdminDashboard />
+        <AdminDashboard permissions={profile?.permissions ?? []} isSuperAdmin={profile?.is_super_admin ?? false} />
         <BottomNav view={view} onChange={setView} isAdmin={isAdmin} />
       </div>
     );

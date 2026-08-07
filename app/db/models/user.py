@@ -16,6 +16,7 @@ from sqlalchemy import (
     ForeignKey,
     Numeric,
     String,
+    UniqueConstraint,
     func,
     text,
 )
@@ -36,6 +37,11 @@ class UserRole(str, enum.Enum):
     USER = "user"
     MODERATOR = "moderator"
     ADMIN = "admin"
+    # Exactly one account holds this. It implicitly has every permission
+    # and is the only role that may appoint or remove an administrator,
+    # so it is deliberately not grantable through the permission system —
+    # ownership transfers, it does not get handed out.
+    SUPER_ADMIN = "super_admin"
 
 
 class SubscriptionPlan(str, enum.Enum):
@@ -133,3 +139,37 @@ class BalanceHistory(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     user: Mapped["User"] = relationship(back_populates="balance_history")
+
+
+class AdminPermission(Base):
+    """
+    One capability granted to one administrator.
+
+    A row per granted permission rather than a bitmask or a JSON blob:
+    revoking is a delete, auditing is a select, and adding a capability to
+    the vocabulary needs no migration. `permission` is a plain string
+    validated against app.core.permissions.Permission on the way in —
+    a PostgreSQL enum would turn every new capability into an ALTER TYPE
+    against production.
+
+    The Super Admin has no rows here. Their authority comes from their
+    role, so granting them permissions individually would create a second,
+    contradictable source of truth.
+    """
+
+    __tablename__ = "chp_admin_permissions"
+    __table_args__ = (
+        UniqueConstraint("user_id", "permission", name="uq_admin_permission"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("chp_users.id"), nullable=False, index=True)
+    permission: Mapped[str] = mapped_column(String(64), nullable=False)
+
+    # Who granted it and when — the audit trail for "why does this person
+    # have access to payments?", which is the first question asked after
+    # anything goes wrong.
+    granted_by_id: Mapped[int | None] = mapped_column(ForeignKey("chp_users.id"))
+    granted_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )

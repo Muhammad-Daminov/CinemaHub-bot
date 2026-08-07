@@ -46,21 +46,29 @@ async def _send_main_menu(message: Message, lang: UILanguage, name: str | None) 
 
 
 @router.message(CommandStart())
-async def handle_start(message: Message, command: CommandObject, session: AsyncSession, lang: UILanguage) -> None:
-    """Welcomes the user and ensures their account exists before showing the main menu."""
-    tg_user = message.from_user
+async def handle_start(message: Message, command: CommandObject, session: AsyncSession) -> None:
+    """
+    Welcomes the user and ensures their account exists before showing the main menu.
 
-    existing = await session.execute(select(User.id).where(User.telegram_id == tg_user.id))
-    is_new_user = existing.scalar_one_or_none() is None
+    The language picker is gated on `language_selected`, not on whether
+    the row is new. A user who was shown the picker and closed the chat
+    without answering still has a row, so on their next /start they
+    counted as existing and went straight to the main menu — in Uzbek,
+    the default they never chose, and they were never asked again. Asking
+    until the question is actually answered is the whole fix.
+    """
+    tg_user = message.from_user
 
     user = await get_or_create_user(session, tg_user.id, tg_user.username, tg_user.full_name, command.args)
 
-    if is_new_user:
+    if not user.language_selected:
         # Ask before anything else — the welcome text itself needs a language.
         await message.answer(t("common.choose_language", user.language), reply_markup=get_language_keyboard())
         return
 
-    await _send_main_menu(message, lang, user.full_name)
+    # `lang` comes from the middleware, which read this same row before the
+    # profile refresh above; user.language is the authoritative value here.
+    await _send_main_menu(message, user.language, user.full_name)
 
 
 @router.callback_query(F.data.startswith(SET_LANG_PREFIX))
