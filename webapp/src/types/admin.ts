@@ -50,6 +50,8 @@ export interface AdminTitle {
   is_active: boolean;
   is_manual_override: boolean;
   created_at: string;
+  /** Set when an admin uploaded a custom poster; overrides poster_url. */
+  poster_image_id?: number | null;
 }
 
 export interface AdminTitleListItem extends AdminTitle {
@@ -226,10 +228,14 @@ export interface AdminCollection {
   sort_order: number;
   is_active: boolean;
   created_at: string;
+  /** Set when an admin uploaded a custom poster; overrides poster_url. */
+  poster_image_id?: number | null;
 }
 
 export interface AdminCollectionListItem extends AdminCollection {
   title_count: number;
+  /** Set when an admin uploaded a custom poster; overrides poster_url. */
+  poster_image_id?: number | null;
 }
 
 export interface CollectionInput {
@@ -280,4 +286,61 @@ export interface AdminAccount {
  */
 export interface PermissionCatalog {
   groups: Record<string, string[]>;
+}
+
+/** Mirrors PlanFeatureOut in app/api/admin.py. */
+export interface PlanFeatureGrant {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  /** Quantitative limit ("5" devices), or null for a plain on/off grant. */
+  value: string | null;
+}
+
+/** Mirrors PlanOut. */
+export interface SubscriptionPlan {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  price: number;
+  duration_days: number;
+  benefits: string[];
+  is_active: boolean;
+  is_free: boolean;
+  sort_order: number;
+  /** Why a delete may be refused — surfaced so the panel can say so up front. */
+  subscriber_count: number;
+  features: PlanFeatureGrant[];
+}
+
+export interface SubscriptionFeature {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  sort_order: number;
+  is_active: boolean;
+}
+
+export interface PlanInput {
+  code: string;
+  name: string;
+  price: number;
+  duration_days: number;
+  description?: string | null;
+  benefits?: string[];
+  is_active?: boolean;
+  is_free?: boolean;
+}
+
+export interface PlanUpdateInput {
+  name?: string;
+  description?: string | null;
+  price?: number;
+  duration_days?: number;
+  benefits?: string[];
+  is_active?: boolean;
+  is_free?: boolean;
 }

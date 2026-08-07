@@ -27,7 +27,7 @@ from app.services.payment_review import (
     approve_receipt,
     reject_receipt,
 )
-from tests.conftest import count_rows, make_user, requires_db
+from tests.conftest import count_rows, make_paid_plan, make_user, requires_db
 
 pytestmark = [requires_db, pytest.mark.db]
 
@@ -35,8 +35,14 @@ AMOUNT = Decimal("50000.00")
 
 
 async def _make_receipt(session, user: User, purpose: PaymentPurpose) -> PaymentReceipt:
+    # A subscription receipt names the plan it was raised against; without
+    # one there is nothing to read a duration from.
+    plan = None
+    if purpose == PaymentPurpose.SUBSCRIPTION:
+        plan = await make_paid_plan(session)
     receipt = PaymentReceipt(
         user_id=user.id,
+        plan_id=plan.id if plan else None,
         purpose=purpose,
         subscription_plan=(
             SubscriptionPlan.PREMIUM if purpose == PaymentPurpose.SUBSCRIPTION else None

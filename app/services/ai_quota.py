@@ -28,13 +28,26 @@ def _seconds_until_next_utc_midnight() -> int:
 
 
 async def increment_and_check(telegram_id: int, daily_limit: int) -> tuple[int, bool]:
-    """Increments today's counter and returns (new_count, allowed)."""
+    """
+    Increments today's counter and returns (new_count, allowed).
+
+    A refused attempt is rolled back rather than left counted. INCR has to
+    come first — checking then incrementing is a race two concurrent
+    requests slip through — but leaving the increment in place meant a
+    blocked user who kept trying drove the counter arbitrarily above their
+    real usage, so anything reporting on it (see TASKS.md P3-1) would be
+    reading a number of retries, not of requests.
+    """
     redis = get_redis()
     key = _today_key(telegram_id)
     count = await redis.incr(key)
     if count == 1:
         await redis.expire(key, _seconds_until_next_utc_midnight())
-    return count, count <= daily_limit
+
+    if count > daily_limit:
+        await redis.decr(key)
+        return daily_limit, False
+    return count, True
 
 
 async def refund(telegram_id: int) -> None:
@@ -59,13 +72,3 @@ async def refund(telegram_id: int) -> None:
         await redis.delete(key)
 
 
-async def get_usage_count(telegram_id: int) -> int:
-    redis = get_redis()
-    value = await redis.get(_today_key(telegram_id))
-    return int(value) if value else 0
-
-
-async def reset_quota(telegram_id: int) -> None:
-    """Manual override — e.g. an admin comping a user extra requests for today."""
-    redis = get_redis()
-    await redis.delete(_today_key(telegram_id))

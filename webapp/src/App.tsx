@@ -8,6 +8,7 @@ import { LanguagePicker } from "./components/LanguagePicker";
 import { MovieCard } from "./components/MovieCard";
 import { MovieDetailSheet } from "./components/MovieDetailSheet";
 import { MovieRow } from "./components/MovieRow";
+import { PlansSheet } from "./components/PlansSheet";
 import { Navbar } from "./components/Navbar";
 import { SettingsPage } from "./components/SettingsPage";
 import { Toast } from "./components/Toast";
@@ -116,6 +117,7 @@ function Shell({
   const [searchResults, setSearchResults] = useState<Movie[]>([]);
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
+  const [plansOpen, setPlansOpen] = useState(false);
 
   // Comes straight from /api/auth/me. This used to be discovered by calling
   // an admin-only route and reading the status code, which meant a 403 on
@@ -255,7 +257,11 @@ function Shell({
   return (
     <div className="min-h-full bg-bg pb-20 text-ink">
       {view === "settings" ? (
-        <SettingsPage profile={profile} onChangeLanguage={handleChangeLanguage} />
+        <SettingsPage
+          profile={profile}
+          onChangeLanguage={handleChangeLanguage}
+          onOpenPlans={() => setPlansOpen(true)}
+        />
       ) : (
         <>
           <Navbar onSearch={handleSearch} isDark={isDark} onToggleTheme={() => setIsDark((d) => !d)} />
@@ -298,6 +304,16 @@ function Shell({
           onWatch={handleWatch}
           onSelectSimilar={setSelectedMovie}
           audioLanguage={audioLanguage}
+        />
+      )}
+      {plansOpen && (
+        <PlansSheet
+          onClose={() => {
+            setPlansOpen(false);
+            // Balance and subscription both move on purchase.
+            void api.me().then(setProfile).catch(() => undefined);
+          }}
+          onToast={(message, tone) => setToast({ message, tone })}
         />
       )}
       {toast && <Toast message={toast.message} tone={toast.tone} />}

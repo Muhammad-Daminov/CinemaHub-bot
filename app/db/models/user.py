@@ -45,6 +45,15 @@ class UserRole(str, enum.Enum):
 
 
 class SubscriptionPlan(str, enum.Enum):
+    """
+    DEPRECATED — superseded by chp_subscription_plans (Phase 4).
+
+    Retained only so the legacy `plan` / `subscription_plan` columns keep
+    a Python type during the expand/contract migration. Nothing should
+    branch on it; read `plan_id` instead. Dropped once every deployment
+    is on the plan table — tracked in TASKS.md.
+    """
+
     FREE = "free"
     PREMIUM = "premium"
 
@@ -111,6 +120,12 @@ class Subscription(Base):
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("chp_users.id"), nullable=False, index=True)
 
+    # Authoritative. `plan` below is the legacy enum, kept written during
+    # the expand/contract migration so a rollback to the previous release
+    # still finds the column it reads. Code reads plan_id.
+    plan_id: Mapped[int | None] = mapped_column(
+        ForeignKey("chp_subscription_plans.id"), index=True
+    )
     plan: Mapped[SubscriptionPlan] = mapped_column(default=SubscriptionPlan.FREE, nullable=False)
     started_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)

@@ -10,6 +10,7 @@ import { useState } from "react";
 import { CardsPanel } from "./CardsPanel";
 import { CollectionsPanel } from "./CollectionsPanel";
 import { ContentPanel } from "./ContentPanel";
+import { PlansPanel } from "./PlansPanel";
 import { PromoPanel } from "./PromoPanel";
 import { ReceiptsPanel } from "./ReceiptsPanel";
 import { StatsPanel } from "./StatsPanel";
@@ -26,6 +27,7 @@ type TabId =
   | "cards"
   | "promo"
   | "users"
+  | "plans"
   | "admins";
 
 /**
@@ -45,6 +47,7 @@ const TABS: { id: TabId; label: string; permission?: string; superAdminOnly?: bo
   { id: "cards", label: "🎴 Kartalar", permission: "manage_payments" },
   { id: "promo", label: "🎟️ Promokod", permission: "manage_promo_codes" },
   { id: "users", label: "👥 Foydalanuvchilar", permission: "manage_users" },
+  { id: "plans", label: "💎 Tariflar", permission: "manage_subscriptions" },
   { id: "admins", label: "🛡️ Adminlar", superAdminOnly: true },
 ];
 
@@ -93,6 +96,7 @@ export function AdminDashboard({ permissions, isSuperAdmin }: Props) {
         {tab === "cards" && <CardsPanel />}
         {tab === "promo" && <PromoPanel />}
         {tab === "users" && <UsersPanel />}
+        {tab === "plans" && <PlansPanel />}
         {tab === "admins" && <AdminsPanel />}
       </div>
     </div>

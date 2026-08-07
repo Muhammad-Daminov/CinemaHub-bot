@@ -11,17 +11,28 @@ thing making the status guard below meaningful, and a caller handing in
 an already-loaded row could not be trusted to have taken it. Owning the
 fetch here means the lock cannot be forgotten at a call site.
 """
+import logging
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.instance import bot
-from app.core.config import settings
 from app.core.i18n import t_for_user
 from app.db.models.payment import PaymentPurpose, PaymentReceipt, PaymentStatus
-from app.db.models.user import BalanceHistory, BalanceTxType, Subscription, User
+from app.db.models.subscription import SubscriptionPlanModel
+from app.db.models.user import (
+    BalanceHistory,
+    BalanceTxType,
+    Subscription,
+    SubscriptionPlan,
+    User,
+)
+from app.services.subscription_plans import default_paid_plan
 from app.services.subscriptions import get_active_subscription
+
+
+logger = logging.getLogger(__name__)
 
 
 class ReceiptReviewError(Exception):
@@ -92,16 +103,39 @@ async def _credit_and_activate(session: AsyncSession, receipt: PaymentReceipt, u
             update(User).where(User.id == user.id).values(balance=User.balance + receipt.amount)
         )
 
-    if receipt.purpose == PaymentPurpose.SUBSCRIPTION and receipt.subscription_plan:
-        active = await get_active_subscription(session, user.id)
-        base_time = active.expires_at if active else datetime.now(timezone.utc)
-        session.add(
-            Subscription(
-                user_id=user.id,
-                plan=receipt.subscription_plan,
-                expires_at=base_time + timedelta(days=settings.PREMIUM_SUBSCRIPTION_DAYS),
-            )
+    if receipt.purpose != PaymentPurpose.SUBSCRIPTION:
+        return
+
+    # The plan the receipt was raised against. A receipt from before the
+    # plan table existed carries only the legacy enum, so fall back to the
+    # cheapest active paid plan rather than refusing to honour a payment
+    # someone already made.
+    plan = None
+    if receipt.plan_id is not None:
+        plan = await session.get(SubscriptionPlanModel, receipt.plan_id)
+    if plan is None:
+        plan = await default_paid_plan(session)
+    if plan is None:
+        logger.error(
+            "Receipt %s approved but no active paid plan exists — no subscription granted",
+            receipt.id,
         )
+        return
+
+    active = await get_active_subscription(session, user.id)
+    base_time = active.expires_at if active else datetime.now(timezone.utc)
+    session.add(
+        Subscription(
+            user_id=user.id,
+            plan_id=plan.id,
+            # Legacy column, still written so a rollback to the previous
+            # release finds what it reads. Dropped when the enum goes.
+            plan=receipt.subscription_plan or SubscriptionPlan.PREMIUM,
+            # Duration comes from the plan, not a global setting — that is
+            # the whole point of plans being data.
+            expires_at=base_time + timedelta(days=plan.duration_days),
+        )
+    )
 
 
 async def approve_receipt(

@@ -7,6 +7,51 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pro
 
 ## [Unreleased]
 
+### Phase 5 — Purchase Flow (2026-08-07)
+
+#### Added
+- **Subscription purchase inside the Mini App.** Balance → plan catalogue with a feature comparison matrix → buy. The balance is debited and the subscription activated in one transaction. Insufficient balance returns **402** carrying current / required / missing, so the dialog renders the backend's numbers rather than recomputing them.
+- **Tier rules driven entirely by relative priority**, never a plan name — a new tier is a number, not a code change. Same priority extends; higher activates immediately and carries remaining days **1:1**; lower is **queued** and starts when the current term ends. Multiple queues chain rather than overlap, with no expiry cap.
+- **Queued subscriptions need no new column or job.** A queued purchase is an ordinary row whose `started_at` is in the future, so it activates by the clock. `get_active_subscription` now filters on that column — the one change that made all of it work.
+- **Top-up entirely in the Mini App** — select a card, choose an image from gallery or camera, preview it, replace it, submit. Multipart upload; the user is never handed off to the bot.
+- **Image storage** (`chp_uploaded_images`) serving receipts and custom posters. Uploads are decoded and **re-encoded**, which discards EXIF — phone photos carry GPS coordinates, a real privacy leak on a payment receipt — bounds stored size, and neutralises polyglot files. Transparency is preserved as PNG; everything else becomes JPEG.
+- **Receipt retention:** images are purged 30 days after upload by the cron job. The row survives with `data = NULL`, so **payment history is permanent** and its reference still resolves. Idempotent.
+- **Custom posters** for titles and collections, uploadable from the gallery, replacing TMDB's while keeping `poster_url` as the fallback — clearing the upload reverts to TMDB with no client change.
+- **Admin receipt history** with status filter and search by username, full name or Telegram id; plus an endpoint serving Mini-App-uploaded receipts.
+- Collection search for viewers.
+
+#### Fixed
+- **A purchase race that let the balance go negative.** The row lock was taken correctly, but SQLAlchemy returned the identity-mapped `User` instance carrying the balance read *before* the lock, so four concurrent purchases all saw the same stale figure and all succeeded. `populate_existing` on the locked select fixes it; the regression test drove four concurrent buys against a balance covering one.
+
+#### Database
+- `f6b2d94ae713` — `priority` on plans (seeded by price, free at 0), `chp_uploaded_images`, poster/receipt image references, and an index on `(user_id, started_at)` because every premium check now filters on it. **Applied to production 2026-08-07**; verified consistent, 508 users and 102 titles untouched.
+
+
+### Phase 4 — Commerce Data Model (2026-08-07)
+
+#### Added
+- **Subscription plans are data (FR-5).** The two-member `SubscriptionPlan` enum and the `PREMIUM_PRICE` / `PREMIUM_SUBSCRIPTION_DAYS` environment variables are replaced by `chp_subscription_plans`. Any number of plans, each with its own price, duration, benefits, ordering and on/off state — a price change no longer needs a redeploy.
+- **Features as first-class entities.** `chp_subscription_features` defines a capability once; `chp_plan_features` grants it to a plan with an optional value ("5" devices, "1080" quality). Separate from benefits so the Mini App can render a real comparison matrix instead of diffing marketing prose, and so the same capability can sit at different levels on different tiers.
+- **Admin panel plan management** — create, edit, delete, reprice, re-duration, edit benefits, add/remove features, enable/disable and reorder. Gated on `manage_subscriptions`; the feature catalog on `manage_subscription_features`, since defining what a feature *means* changes what every plan grants.
+- 11 REST endpoints and a `Tariflar` tab.
+
+#### Changed
+- Receipt approval reads the duration from the plan the receipt names, not from a global setting. A receipt raised before plans existed falls back to the cheapest active paid plan rather than refusing a payment someone already made.
+- The bot's premium button prices from the plan table.
+- `SubscriptionPlan`, `PREMIUM_PRICE` and `PREMIUM_SUBSCRIPTION_DAYS` are marked deprecated. They survive only so migration `e58a3c7b91d4` can seed from the terms in force and so the legacy columns keep a Python type during expand/contract.
+
+#### Invariants enforced
+- A plan with subscribers **cannot be deleted** — those rows record what someone paid for. Deactivation is the intended alternative: the plan stops being offered while existing terms run out.
+- **Repricing never touches an existing subscription.** Terms are fixed when bought.
+- **Exactly one plan may be the free plan**; marking a second demotes the first.
+- **Plan codes are immutable** — the migration and Phase 5 branch on them.
+
+#### Database
+- `e58a3c7b91d4` — three new tables plus `plan_id` on `chp_subscriptions` and `chp_payment_receipts`. **Expand, not replace:** the legacy enum columns are left in place and still written, because dropping them would break the currently-deployed release the moment the migration ran. Contracting them is a follow-up.
+- Seeds a `free` plan and a `premium` plan reproducing the terms actually in force, then repoints every existing subscription and receipt by its old enum value. Idempotent — plans are found by code and only NULL `plan_id`s are backfilled.
+- **Applied to production 2026-08-07.** Verified: 2 plans, the single existing subscription repointed with its expiry unchanged, no unmapped or orphaned rows, 508 users untouched.
+
+
 ### Phase 3 — Identity & Access Control (2026-08-07)
 
 #### Added

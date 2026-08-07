@@ -149,17 +149,21 @@ export function Button({
   tone = "primary",
   disabled,
   full,
+  title,
 }: {
   children: ReactNode;
   onClick?: () => void;
   tone?: ButtonTone;
   disabled?: boolean;
   full?: boolean;
+  /** Native tooltip — the only affordance a disabled button has to say why. */
+  title?: string;
 }) {
   return (
     <button
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={`rounded-lg px-3 py-2 font-body text-sm font-medium transition-opacity disabled:opacity-50 ${
         TONE_CLASS[tone]
       } ${full ? "w-full" : ""}`}

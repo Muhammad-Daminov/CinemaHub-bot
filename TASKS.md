@@ -84,7 +84,7 @@ Build artifact; churns on every build and pollutes diffs.
 ## P2 — Product value
 
 ### P2-1 · Make balance spendable
-`TODO` · **blocked by P0-2**
+`DONE` (Phase 5) — subscriptions are purchasable from balance in the Mini App
 Users can top up but cannot spend. `DEDUCTION`/`REFUND` tx types are unused. Decide what balance buys — most naturally, premium itself (removing the second receipt round trip). Until then, top-up is a dead end that takes money and returns a number.
 
 ### P2-2 · Give premium real benefits
@@ -117,6 +117,10 @@ Reset monthly by cron, never incremented. Same reasoning as P2-7.
 
 ---
 
+### P2-10 · Contract the SubscriptionPlan enum
+`TODO` · follow-up to Phase 4 · **do not start until the plan release is deployed everywhere**
+`chp_subscriptions.plan` and `chp_payment_receipts.subscription_plan` are still written alongside the authoritative `plan_id`, so a rollback to the pre-Phase-4 release still finds what it reads. Once that is no longer a possibility, drop both columns and the `SubscriptionPlan` enum, and make `plan_id` NOT NULL.
+
 ### P2-9 · Localize the React admin panel
 `TODO` · deferred from Phase 1 · **schedule with FR-3 (Phase 6)**
 The panel is **entirely** hardcoded Uzbek — roughly 98 user-visible strings across 11 files in [webapp/src/admin/](webapp/src/admin/), using none of the i18n system. An earlier audit recorded it as "inconsistently localized", which understated it.
@@ -136,6 +140,17 @@ The bot's admin strings were localized in Phase 1 — those were only nine, and 
 ---
 
 ## Done
+
+### Phase 5 (2026-08-07)
+- **FR-4 · In-app purchase flow** — [app/api/billing.py](app/api/billing.py), [app/services/subscription_purchase.py](app/services/subscription_purchase.py), [PlansSheet.tsx](webapp/src/components/PlansSheet.tsx), [TopUpSheet.tsx](webapp/src/components/TopUpSheet.tsx).
+- **FR-10 · Tier rules** — extend / upgrade with 1:1 carry-over / queued downgrade, all keyed on relative priority.
+- **FR-11 · Receipt retention** — [app/services/images.py](app/services/images.py); 30-day purge wired into `app/tasks/cron.py`.
+- **FR-12 · Admin receipt history** with search and filter.
+- **Custom posters** for titles and collections.
+- Migration `f6b2d94ae713` applied to production.
+
+### Phase 4 (2026-08-07)
+- **FR-5 · Database-driven subscription plans** — [app/db/models/subscription.py](app/db/models/subscription.py), [app/services/subscription_plans.py](app/services/subscription_plans.py), 11 admin endpoints, [PlansPanel.tsx](webapp/src/admin/PlansPanel.tsx). Migration `e58a3c7b91d4` applied to production; existing subscription and receipt repointed with terms unchanged.
 
 ### Phase 3 (2026-08-07)
 - **FR-1 · Super Admin & granular permissions** — 19 capabilities in [app/core/permissions.py](app/core/permissions.py); single enforcement in [app/services/permissions.py](app/services/permissions.py) used by both the API and the bot; `app/core/admin.py` deleted. Migrations `c41d5b8ae902` + `d72e4f1c8b35` applied to production.

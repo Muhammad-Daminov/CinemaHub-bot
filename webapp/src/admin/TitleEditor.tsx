@@ -12,6 +12,7 @@
 import { ArrowLeft, ChevronDown, ChevronRight, Plus, Search, Sparkles, Trash2 } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { adminApi, ApiError } from "../lib/api";
+import { PosterPicker } from "./PosterPicker";
 import type {
   AdminCollectionListItem,
   AdminEpisode,
@@ -573,6 +574,14 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [duplicates, setDuplicates] = useState<SimilarTitle[]>([]);
+  // Poster state is kept separately from the text form: it is saved by its
+  // own upload request, not by the Save button, so folding it into `form`
+  // would imply an unsaved edit that does not exist.
+  const [poster, setPoster] = useState<{ url: string | null; imageId: number | null }>({
+    url: null,
+    imageId: null,
+  });
+
 
   // Only while creating: when editing, the title's own row would match
   // itself and every result would be noise.
@@ -590,16 +599,30 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
     return () => clearTimeout(timer);
   }, [form.name, savedId]);
 
+  const syncPoster = useCallback((title: AdminTitle) => {
+    setPoster({ url: title.poster_url ?? null, imageId: title.poster_image_id ?? null });
+  }, []);
+
+  const reloadTitle = useCallback(
+    async (id: number) => {
+      try {
+        const page = await adminApi.listTitles({ page_size: 100 });
+        const found = page.items.find((item) => item.id === id);
+        if (found) {
+          setForm(toForm(found));
+          syncPoster(found);
+        }
+      } catch {
+        /* the editor stays usable on a failed refresh */
+      }
+    },
+    [syncPoster],
+  );
+
   useEffect(() => {
     if (titleId == null) return;
-    adminApi
-      .listTitles({ page_size: 100 })
-      .then((page) => {
-        const found = page.items.find((item) => item.id === titleId);
-        if (found) setForm(toForm(found));
-      })
-      .catch(() => undefined);
-  }, [titleId]);
+    void reloadTitle(titleId);
+  }, [titleId, reloadTitle]);
 
   const update = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm((current) => ({ ...current, [key]: value }));
@@ -627,6 +650,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
           : await adminApi.updateTitle(savedId, payload);
       setSavedId(saved.id);
       setForm(toForm(saved));
+      syncPoster(saved);
       setMessage("Saqlandi.");
       setError(null);
     } catch (err) {
@@ -639,6 +663,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
     try {
       const enriched = await adminApi.enrichTitle(savedId);
       setForm(toForm(enriched));
+      syncPoster(enriched);
       setMessage(
         enriched.tmdb_id == null ? "TMDB'dan mos kelmadi." : "TMDB ma'lumotlari yuklandi.",
       );
@@ -700,13 +725,31 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
             placeholder="Komediya, Action"
           />
         </Field>
-        <Field label="Poster havolasi">
+        <Field label="Poster havolasi (TMDB)">
           <TextInput
             value={form.poster_url}
             onChange={(value) => update("poster_url", value)}
             mono
           />
         </Field>
+
+        {/* Upload is offered only once the title exists: the image attaches
+            by id, so there is nothing to attach it to while creating. The
+            TMDB field above stays editable and remains the fallback. */}
+        {savedId != null && (
+          <Field label="Yoki galereyadan yuklash">
+            <PosterPicker
+              currentUrl={
+                poster.imageId ? `/api/movies/images/${poster.imageId}` : poster.url
+              }
+              fallbackUrl={poster.url}
+              hasCustom={Boolean(poster.imageId)}
+              onUpload={(file) => adminApi.uploadTitlePoster(savedId, file)}
+              onClear={() => adminApi.clearTitlePoster(savedId)}
+              onChanged={() => void reloadTitle(savedId)}
+            />
+          </Field>
+        )}
         <Field label="Tavsif">
           <TextArea
             value={form.description}
@@ -736,6 +779,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
             // Name is intentionally absent from the applied fields — keep
             // whatever the admin typed, in Uzbek.
             setForm(toForm(updated));
+            syncPoster(updated);
             setMessage("TMDB ma'lumotlari qo'llandi.");
           }}
         />

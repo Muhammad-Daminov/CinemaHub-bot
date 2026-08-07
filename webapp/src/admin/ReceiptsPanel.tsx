@@ -9,13 +9,17 @@
 import { Check, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { adminApi, ApiError } from "../lib/api";
+import { ZoomIn, ZoomOut } from "lucide-react";
 import { getInitData } from "../lib/telegram";
 import type { AdminReceipt } from "../types/admin";
 import { Badge, Button, EmptyState, Notice, SectionTitle, TextInput, formatMoney } from "./ui";
 
+const ZOOM_STEPS = [1, 1.75, 3];
+
 function PhotoModal({ receipt, onClose }: { receipt: AdminReceipt; onClose: () => void }) {
   const [photoUrl, setPhotoUrl] = useState<string | null>(null);
   const [photoError, setPhotoError] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(0);
 
   // A plain <img src> wouldn't carry X-Telegram-Init-Data, and the route is
   // admin-gated — so fetch the bytes with the header, then hand the <img> an
@@ -26,9 +30,14 @@ function PhotoModal({ receipt, onClose }: { receipt: AdminReceipt; onClose: () =
 
     (async () => {
       try {
-        const response = await fetch(`/api/admin/receipts/${receipt.id}/photo`, {
-          headers: { "X-Telegram-Init-Data": getInitData() },
-        });
+        // Two sources: receipts uploaded in the Mini App have bytes of our
+        // own, older ones are proxied from Telegram. Try ours first and
+        // fall back, so both eras of receipt open in the same viewer.
+        const headers = { "X-Telegram-Init-Data": getInitData() };
+        let response = await fetch(`/api/admin/receipts/${receipt.id}/image`, { headers });
+        if (response.status === 404) {
+          response = await fetch(`/api/admin/receipts/${receipt.id}/photo`, { headers });
+        }
         if (!response.ok) {
           const body = await response.json().catch(() => ({ detail: response.statusText }));
           throw new Error(body.detail ?? "Rasmni yuklab bo'lmadi.");
@@ -59,10 +68,38 @@ function PhotoModal({ receipt, onClose }: { receipt: AdminReceipt; onClose: () =
         className="w-full max-w-sm rounded-xl border border-surface-hi bg-surface p-4"
         onClick={(event) => event.stopPropagation()}
       >
-        <p className="font-display text-sm font-medium text-ink">Chek rasmi</p>
-        <div className="mt-3 flex aspect-[3/4] items-center justify-center overflow-hidden rounded-lg bg-surface-hi">
+        <div className="flex items-center justify-between">
+          <p className="font-display text-sm font-medium text-ink">Chek rasmi</p>
+          {photoUrl && (
+            <div className="flex gap-1">
+              <Button
+                tone="ghost"
+                disabled={zoom === 0}
+                onClick={() => setZoom((z) => Math.max(z - 1, 0))}
+              >
+                <ZoomOut size={14} />
+              </Button>
+              <Button
+                tone="ghost"
+                disabled={zoom === ZOOM_STEPS.length - 1}
+                onClick={() => setZoom((z) => Math.min(z + 1, ZOOM_STEPS.length - 1))}
+              >
+                <ZoomIn size={14} />
+              </Button>
+            </div>
+          )}
+        </div>
+        {/* Scrolls once zoomed, so the admin can pan to the amount rather
+            than squinting at a whole receipt scaled to a phone screen. */}
+        <div className="mt-3 flex aspect-[3/4] items-center justify-center overflow-auto rounded-lg bg-surface-hi">
           {photoUrl ? (
-            <img src={photoUrl} alt="To'lov cheki" className="h-full w-full object-contain" />
+            <img
+              src={photoUrl}
+              alt="To'lov cheki"
+              onClick={() => setZoom((z) => (z + 1) % ZOOM_STEPS.length)}
+              style={{ transform: `scale(${ZOOM_STEPS[zoom]})` }}
+              className="h-full w-full origin-center cursor-zoom-in object-contain transition-transform"
+            />
           ) : (
             <p className="px-4 text-center font-body text-xs text-ink-dim">
               {photoError ? "Rasm yuklanmadi." : "Yuklanmoqda…"}

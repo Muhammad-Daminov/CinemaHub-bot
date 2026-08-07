@@ -24,6 +24,7 @@ from app.bot.keyboards.payment import (
 )
 from app.core.config import settings
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt
+from app.services.subscription_plans import default_paid_plan
 from app.db.models.user import SubscriptionPlan, UILanguage, User
 
 router = Router(name="payment")
@@ -43,6 +44,7 @@ async def _start_payment(
     subscription_plan: SubscriptionPlan | None,
     lang: UILanguage,
     _,
+    plan_id: int | None = None,
 ) -> None:
     """Shared step after amount/purpose is known: pick a card, then await the screenshot."""
     message = target.message if isinstance(target, CallbackQuery) else target
@@ -57,6 +59,7 @@ async def _start_payment(
         amount=amount,
         purpose=purpose.value,
         subscription_plan=subscription_plan.value if subscription_plan else None,
+        plan_id=plan_id,
     )
 
     if len(cards) == 1:
@@ -84,13 +87,22 @@ def _card_prompt_text(card: AdminCard, _) -> str:
 async def handle_premium_start(
     message: Message, state: FSMContext, session: AsyncSession, lang: UILanguage, _
 ) -> None:
+    # Price and identity come from the plan table. PREMIUM_PRICE is only a
+    # fallback for a database with no active paid plan, which should not
+    # happen but must not make the button silently do nothing.
+    plan = await default_paid_plan(session)
+    if plan is None:
+        await message.answer(_("payment.no_plans"))
+        return
+
     await _start_payment(
         message, state, session,
-        amount=settings.PREMIUM_PRICE,
+        amount=float(plan.price),
         purpose=PaymentPurpose.SUBSCRIPTION,
         subscription_plan=SubscriptionPlan.PREMIUM,
         lang=lang,
         _=_,
+        plan_id=plan.id,
     )
 
 
@@ -151,6 +163,7 @@ async def handle_receipt_screenshot(
         admin_card_id=data["card_id"],
         purpose=PaymentPurpose(data["purpose"]),
         subscription_plan=SubscriptionPlan(data["subscription_plan"]) if data.get("subscription_plan") else None,
+        plan_id=data.get("plan_id"),
         amount=data["amount"],
         receipt_photo_file_id=message.photo[-1].file_id,
     )

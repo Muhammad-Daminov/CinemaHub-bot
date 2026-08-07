@@ -14,6 +14,7 @@ import logging
 
 from pydantic import BaseModel
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import Response
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -30,6 +31,7 @@ from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.achievements import continue_watching
 from app.services.content import _has_playable_file, content_service
+from app.services.images import get_image
 from app.services.streaming import streaming_service
 
 logger = logging.getLogger(__name__)
@@ -77,6 +79,19 @@ class EpisodePageOut(BaseModel):
     has_more: bool
 
 
+class SearchResultOut(BaseModel):
+    """
+    Search hits across both kinds of thing a query can name.
+
+    Collections are returned alongside titles because a user typing
+    "Marvel" means the franchise, not one film whose name happens to
+    contain the word — and previously they got only the latter.
+    """
+
+    titles: list["MovieOut"]
+    collections: list["CollectionOut"]
+
+
 class CollectionOut(BaseModel):
     id: int
     name: str
@@ -86,13 +101,43 @@ class CollectionOut(BaseModel):
     title_count: int
 
 
+def _collection_out(item) -> "CollectionOut":
+    """Shared so the two endpoints returning collections cannot drift."""
+    collection = item.collection
+    return CollectionOut(
+        id=collection.id,
+        name=collection.name,
+        slug=collection.slug,
+        description=collection.description,
+        poster_url=(
+            f"/api/movies/images/{collection.poster_image_id}"
+            if collection.poster_image_id
+            else collection.poster_url
+        ),
+        title_count=item.title_count,
+    )
+
+
+def _poster_for(title: Title) -> str | None:
+    """
+    An uploaded poster wins over TMDB's.
+
+    Returned as a URL to our own endpoint rather than raw bytes so the
+    client caches it like any other image, and so clearing the upload
+    falls straight back to `poster_url` with no client change.
+    """
+    if title.poster_image_id:
+        return f"/api/movies/images/{title.poster_image_id}"
+    return title.poster_url
+
+
 def _to_movie_out(title: Title, episode_count: int = 1) -> MovieOut:
     return MovieOut(
         id=title.id,
         title=title.name,
         year=title.year,
         genres=title.genres,
-        poster_url=title.poster_url,
+        poster_url=_poster_for(title),
         description=title.description,
         rating=float(title.rating) if title.rating is not None else None,
         view_count=title.view_count,
@@ -118,24 +163,41 @@ def _playable_titles(audio_language: AudioLanguage | None = None) -> Select:
     return select(Title).where(Title.is_active.is_(True), _has_playable_file(audio_language))
 
 
+@router.get("/images/{image_id}")
+async def get_public_image(
+    image_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    _user: User = Depends(get_current_user),
+) -> Response:
+    """
+    Serves an uploaded poster.
+
+    Behind auth like the rest of the catalog, but not per-owner: a poster
+    is public artwork within the app, unlike a payment receipt.
+    """
+    image = await get_image(session, image_id)
+    if image is None or image.data is None:
+        raise HTTPException(status_code=404, detail="Not found")
+    return Response(
+        content=image.data,
+        media_type=image.content_type,
+        # Posters change rarely and are requested constantly.
+        headers={"Cache-Control": "private, max-age=86400"},
+    )
+
+
 @router.get("/collections", response_model=list[CollectionOut])
 async def list_collections(
+    q: str | None = Query(default=None, description="Filters collections by name"),
     session: AsyncSession = Depends(get_db_session),
     _user: User = Depends(get_current_user),
 ) -> list[CollectionOut]:
     """Active collections only — the admin panel is where inactive ones live."""
     summaries = await content_service.list_collections(session)
-    return [
-        CollectionOut(
-            id=item.collection.id,
-            name=item.collection.name,
-            slug=item.collection.slug,
-            description=item.collection.description,
-            poster_url=item.collection.poster_url,
-            title_count=item.title_count,
-        )
-        for item in summaries
-    ]
+    if q:
+        needle = q.strip().lower()
+        summaries = [s for s in summaries if needle in s.collection.name.lower()]
+    return [_collection_out(item) for item in summaries]
 
 
 @router.get("", response_model=list[MovieOut])
@@ -175,6 +237,37 @@ async def top_movies(
         _playable_titles(audio_language).order_by(Title.view_count.desc()).limit(limit)
     )
     return await _to_movie_outs(session, list(result.scalars()))
+
+
+@router.get("/search/all", response_model=SearchResultOut)
+async def search_everything(
+    q: str = Query(min_length=1),
+    limit: int = Query(default=20, ge=1, le=100),
+    audio_language: AudioLanguage | None = None,
+    session: AsyncSession = Depends(get_db_session),
+    _user: User = Depends(get_current_user),
+) -> SearchResultOut:
+    """
+    Titles *and* collections matching `q`.
+
+    Separate from /search, which stays title-only so existing clients keep
+    the response shape they parse.
+    """
+    result = await session.execute(
+        _playable_titles(audio_language)
+        .where(Title.name.ilike(f"%{q}%"))
+        .order_by(Title.view_count.desc())
+        .limit(limit)
+    )
+    titles = await _to_movie_outs(session, list(result.scalars()))
+
+    needle = q.strip().lower()
+    summaries = [
+        item
+        for item in await content_service.list_collections(session)
+        if needle in item.collection.name.lower()
+    ]
+    return SearchResultOut(titles=titles, collections=[_collection_out(item) for item in summaries])
 
 
 @router.get("/search", response_model=list[MovieOut])

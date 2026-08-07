@@ -11,5 +11,6 @@ relying on some other import to have triggered it as a side effect.
 """
 from app.db.models import user  # noqa: F401
 from app.db.models import content  # noqa: F401
+from app.db.models import subscription  # noqa: F401
 from app.db.models import payment  # noqa: F401
 from app.db.models import promo  # noqa: F401

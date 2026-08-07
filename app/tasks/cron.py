@@ -13,6 +13,10 @@ the web service's lifespan. Reasons:
     continuously — a separate scheduled process is the right shape,
     and it keeps this maintenance work decoupled from the web
     service's own uptime/scaling.
+  - Receipt images are purged 30 days after upload here. That promise
+    depends on this script actually being scheduled — if no Render Cron
+    Job exists, images are kept indefinitely and nobody is told.
+
   - It's naturally safe to run more than once (every operation here
     is idempotent — resetting an already-reset counter or expiring an
     already-expired receipt is a no-op), so overlapping Render cron
@@ -28,6 +32,7 @@ from app.db.models.payment import PaymentReceipt, PaymentStatus
 from app.db.models.promo import PromoCode
 from app.db.models.user import User
 from app.db.session import db_session_ctx, engine
+from app.services.images import purge_expired_receipt_images
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("cron")
@@ -77,10 +82,12 @@ async def run_all() -> None:
         reset_count = await reset_monthly_order_limits(session)
         expired_receipts = await expire_stale_payment_receipts(session)
         deactivated_promos = await deactivate_expired_promos(session)
+        purged_images = await purge_expired_receipt_images(session)
 
     logger.info(
-        "cron done: monthly_limits_reset=%d stale_receipts_expired=%d promos_deactivated=%d",
-        reset_count, expired_receipts, deactivated_promos,
+        "cron done: monthly_limits_reset=%d stale_receipts_expired=%d "
+        "promos_deactivated=%d receipt_images_purged=%d",
+        reset_count, expired_receipts, deactivated_promos, purged_images,
     )
     await engine.dispose()  # short-lived process — release the pool explicitly before exit
 

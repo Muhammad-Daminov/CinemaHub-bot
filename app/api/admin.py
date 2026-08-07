@@ -19,10 +19,10 @@ from datetime import date, datetime, timedelta, timezone  # noqa: F401  (see abo
 
 import aiohttp
 from aiogram.exceptions import TelegramAPIError
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_admin, get_super_admin, require_permission
@@ -43,6 +43,7 @@ from app.db.models.promo import PromoCode, PromoDiscountType
 from app.db.models.user import SubscriptionPlan, User, UserRole
 from app.db.session import get_db_session
 from app.services.admin_content import admin_content_service
+from app.services.images import ImageError, get_image, store_image
 from app.services.payment_review import (
     ReceiptNotFoundError,
     ReceiptReviewError,
@@ -59,6 +60,22 @@ from app.services.permissions import (
     set_permissions,
 )
 from app.services.promo import promo_service
+from app.services.subscription_plans import (
+    PlanError,
+    PlanNotFoundError,
+    create_feature,
+    create_plan,
+    delete_feature,
+    delete_plan,
+    get_plan,
+    list_features,
+    list_plans,
+    plan_features,
+    reorder_plans,
+    set_plan_features,
+    subscriber_count,
+    update_plan,
+)
 
 router = APIRouter(dependencies=[Depends(get_current_admin)])
 
@@ -338,6 +355,7 @@ class TitleOut(BaseModel):
     country: str | None
     tmdb_id: int | None
     poster_url: str | None
+    poster_image_id: int | None = None
     description: str | None
     rating: float | None
     view_count: int
@@ -461,6 +479,7 @@ class CollectionOut(BaseModel):
     slug: str
     description: str | None
     poster_url: str | None
+    poster_image_id: int | None = None
     sort_order: int
     is_active: bool
     created_at: datetime
@@ -1042,3 +1061,446 @@ async def remove_admin_route(
     except PermissionError_ as exc:
         raise HTTPException(status_code=403, detail=str(exc)) from exc
     return {"status": "removed"}
+
+
+# ---------- Subscription plans & features ----------
+#
+# Plans are gated on MANAGE_SUBSCRIPTIONS and the feature catalog on
+# MANAGE_SUBSCRIPTION_FEATURES: the two are separate permissions because
+# editing a price is a commercial decision, while defining what a feature
+# *means* changes what every plan grants.
+
+
+class PlanFeatureOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: str | None
+    value: str | None
+
+
+class PlanOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: str | None
+    price: float
+    duration_days: int
+    benefits: list[str]
+    is_active: bool
+    is_free: bool
+    sort_order: int
+    # Surfaced so the panel can explain why a delete is refused before the
+    # administrator tries it.
+    subscriber_count: int
+    features: list[PlanFeatureOut]
+
+
+class PlanIn(BaseModel):
+    code: str
+    name: str
+    price: float
+    duration_days: int
+    description: str | None = None
+    benefits: list[str] = []
+    is_active: bool = True
+    is_free: bool = False
+    sort_order: int | None = None
+
+
+class PlanUpdateIn(BaseModel):
+    name: str | None = None
+    description: str | None = None
+    price: float | None = None
+    duration_days: int | None = None
+    benefits: list[str] | None = None
+    is_active: bool | None = None
+    is_free: bool | None = None
+    sort_order: int | None = None
+
+
+class ReorderIn(BaseModel):
+    plan_ids: list[int]
+
+
+class FeatureIn(BaseModel):
+    code: str
+    name: str
+    description: str | None = None
+    sort_order: int | None = None
+
+
+class FeatureOut(BaseModel):
+    id: int
+    code: str
+    name: str
+    description: str | None
+    sort_order: int
+    is_active: bool
+
+
+class PlanFeaturesIn(BaseModel):
+    """{feature_id: value}. `value` is null for a plain on/off grant."""
+
+    grants: dict[int, str | None]
+
+
+async def _plan_out(session: AsyncSession, plan) -> PlanOut:
+    features = await plan_features(session, plan.id)
+    return PlanOut(
+        id=plan.id,
+        code=plan.code,
+        name=plan.name,
+        description=plan.description,
+        price=float(plan.price),
+        duration_days=plan.duration_days,
+        benefits=list(plan.benefits or []),
+        is_active=plan.is_active,
+        is_free=plan.is_free,
+        sort_order=plan.sort_order,
+        subscriber_count=await subscriber_count(session, plan.id),
+        features=[
+            PlanFeatureOut(
+                id=feature.id,
+                code=feature.code,
+                name=feature.name,
+                description=feature.description,
+                value=value,
+            )
+            for feature, value in features
+        ],
+    )
+
+
+@router.get(
+    "/plans",
+    response_model=list[PlanOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTIONS))],
+)
+async def list_plans_route(
+    include_inactive: bool = True, session: AsyncSession = Depends(get_db_session)
+) -> list[PlanOut]:
+    """Defaults to including inactive plans — this is the screen for managing them."""
+    plans = await list_plans(session, include_inactive=include_inactive)
+    return [await _plan_out(session, plan) for plan in plans]
+
+
+@router.post(
+    "/plans",
+    response_model=PlanOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTIONS))],
+)
+async def create_plan_route(
+    body: PlanIn, session: AsyncSession = Depends(get_db_session)
+) -> PlanOut:
+    try:
+        plan = await create_plan(session, **body.model_dump())
+    except PlanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await _plan_out(session, plan)
+
+
+@router.post(
+    "/plans/reorder",
+    response_model=list[PlanOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTIONS))],
+)
+async def reorder_plans_route(
+    body: ReorderIn, session: AsyncSession = Depends(get_db_session)
+) -> list[PlanOut]:
+    try:
+        plans = await reorder_plans(session, body.plan_ids)
+    except PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return [await _plan_out(session, plan) for plan in plans]
+
+
+@router.patch(
+    "/plans/{plan_id}",
+    response_model=PlanOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTIONS))],
+)
+async def update_plan_route(
+    plan_id: int, body: PlanUpdateIn, session: AsyncSession = Depends(get_db_session)
+) -> PlanOut:
+    try:
+        plan = await update_plan(session, plan_id, **body.model_dump(exclude_unset=True))
+    except PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PlanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return await _plan_out(session, plan)
+
+
+@router.patch(
+    "/plans/{plan_id}/toggle",
+    response_model=PlanOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTIONS))],
+)
+async def toggle_plan_route(
+    plan_id: int, session: AsyncSession = Depends(get_db_session)
+) -> PlanOut:
+    try:
+        plan = await get_plan(session, plan_id)
+        plan = await update_plan(session, plan_id, is_active=not plan.is_active)
+    except PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return await _plan_out(session, plan)
+
+
+@router.delete(
+    "/plans/{plan_id}",
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTIONS))],
+)
+async def delete_plan_route(
+    plan_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    try:
+        await delete_plan(session, plan_id)
+    except PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except PlanError as exc:
+        # 409, not 422: the request is valid, the plan's state forbids it.
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "deleted"}
+
+
+@router.put(
+    "/plans/{plan_id}/features",
+    response_model=PlanOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTIONS))],
+)
+async def set_plan_features_route(
+    plan_id: int, body: PlanFeaturesIn, session: AsyncSession = Depends(get_db_session)
+) -> PlanOut:
+    try:
+        await set_plan_features(session, plan_id, body.grants)
+    except PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return await _plan_out(session, await get_plan(session, plan_id))
+
+
+@router.get(
+    "/features",
+    response_model=list[FeatureOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTION_FEATURES))],
+)
+async def list_features_route(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[FeatureOut]:
+    return [
+        FeatureOut(
+            id=f.id, code=f.code, name=f.name, description=f.description,
+            sort_order=f.sort_order, is_active=f.is_active,
+        )
+        for f in await list_features(session, include_inactive=True)
+    ]
+
+
+@router.post(
+    "/features",
+    response_model=FeatureOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTION_FEATURES))],
+)
+async def create_feature_route(
+    body: FeatureIn, session: AsyncSession = Depends(get_db_session)
+) -> FeatureOut:
+    try:
+        feature = await create_feature(session, **body.model_dump())
+    except PlanError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return FeatureOut(
+        id=feature.id, code=feature.code, name=feature.name,
+        description=feature.description, sort_order=feature.sort_order,
+        is_active=feature.is_active,
+    )
+
+
+@router.delete(
+    "/features/{feature_id}",
+    dependencies=[Depends(require_permission(Permission.MANAGE_SUBSCRIPTION_FEATURES))],
+)
+async def delete_feature_route(
+    feature_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    try:
+        await delete_feature(session, feature_id)
+    except PlanNotFoundError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    return {"status": "deleted"}
+
+
+# ---------- Receipt history, image serving, poster uploads ----------
+
+
+class ReceiptHistoryOut(BaseModel):
+    id: int
+    telegram_id: int
+    username: str | None
+    full_name: str | None
+    purpose: PaymentPurpose
+    amount: float
+    status: PaymentStatus
+    admin_notes: str | None
+    created_at: datetime
+    reviewed_at: datetime | None
+    # Which endpoint serves the image, or null when there is none to serve.
+    has_image: bool
+
+
+@router.get(
+    "/receipts/history",
+    response_model=list[ReceiptHistoryOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))],
+)
+async def receipt_history(
+    status: PaymentStatus | None = None,
+    q: str | None = Query(default=None, description="Matches username, full name or Telegram id"),
+    limit: int = Query(default=50, ge=1, le=200),
+    offset: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[ReceiptHistoryOut]:
+    """
+    Every receipt, filterable by status and searchable by user.
+
+    Separate from `/receipts`, which is the pending review queue. History
+    is permanent and includes receipts whose image has since been purged —
+    the money record outlives the evidence.
+    """
+    stmt = (
+        select(PaymentReceipt, User)
+        .join(User, User.id == PaymentReceipt.user_id)
+        .order_by(PaymentReceipt.created_at.desc())
+    )
+    if status is not None:
+        stmt = stmt.where(PaymentReceipt.status == status)
+    if q:
+        needle = f"%{q.strip()}%"
+        conditions = [User.username.ilike(needle), User.full_name.ilike(needle)]
+        # A bare number is almost certainly a Telegram id; matching it as
+        # text as well means the same box serves both kinds of search.
+        if q.strip().isdigit():
+            conditions.append(User.telegram_id == int(q.strip()))
+        stmt = stmt.where(or_(*conditions))
+
+    result = await session.execute(stmt.offset(offset).limit(limit))
+    return [
+        ReceiptHistoryOut(
+            id=r.id,
+            telegram_id=u.telegram_id,
+            username=u.username,
+            full_name=u.full_name,
+            purpose=r.purpose,
+            amount=float(r.amount),
+            status=r.status,
+            admin_notes=r.admin_notes,
+            created_at=r.created_at,
+            reviewed_at=r.reviewed_at,
+            has_image=bool(r.receipt_image_id or r.receipt_photo_file_id),
+        )
+        for r, u in result.all()
+    ]
+
+
+@router.get(
+    "/receipts/{receipt_id}/image",
+    dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))],
+)
+async def admin_receipt_image(
+    receipt_id: int, session: AsyncSession = Depends(get_db_session)
+) -> Response:
+    """
+    Serves a Mini-App-uploaded receipt.
+
+    Distinct from `/receipts/{id}/photo`, which proxies a Telegram-hosted
+    one. Both exist because receipts submitted before Phase 5 have no
+    bytes of ours to serve.
+    """
+    receipt = await session.get(PaymentReceipt, receipt_id)
+    if receipt is None or receipt.receipt_image_id is None:
+        raise HTTPException(status_code=404, detail="No stored image for this receipt")
+
+    image = await get_image(session, receipt.receipt_image_id)
+    if image is None or image.data is None:
+        raise HTTPException(status_code=410, detail="Image removed after its retention period")
+    return Response(
+        content=image.data,
+        media_type=image.content_type,
+        headers={"Cache-Control": "private, max-age=300"},
+    )
+
+
+@router.post(
+    "/titles/{title_id}/poster",
+    dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))],
+)
+async def upload_title_poster(
+    title_id: int,
+    poster: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    """Custom poster. Replaces any previous upload; TMDB's URL is kept as the fallback."""
+    title = await session.get(Title, title_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+    try:
+        image = await store_image(session, await poster.read(), poster.content_type)
+    except ImageError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    title.poster_image_id = image.id
+    await session.flush()
+    return {"status": "uploaded", "image_id": image.id}
+
+
+@router.delete(
+    "/titles/{title_id}/poster",
+    dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))],
+)
+async def clear_title_poster(
+    title_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict:
+    """Drops the custom poster, falling back to whatever TMDB supplied."""
+    title = await session.get(Title, title_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+    title.poster_image_id = None
+    await session.flush()
+    return {"status": "cleared"}
+
+
+@router.post(
+    "/collections/{collection_id}/poster",
+    dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))],
+)
+async def upload_collection_poster(
+    collection_id: int,
+    poster: UploadFile = File(...),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict:
+    collection = await session.get(Collection, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    try:
+        image = await store_image(session, await poster.read(), poster.content_type)
+    except ImageError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    collection.poster_image_id = image.id
+    await session.flush()
+    return {"status": "uploaded", "image_id": image.id}
+
+
+@router.delete(
+    "/collections/{collection_id}/poster",
+    dependencies=[Depends(require_permission(Permission.MANAGE_CATEGORIES))],
+)
+async def clear_collection_poster(
+    collection_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict:
+    collection = await session.get(Collection, collection_id)
+    if collection is None:
+        raise HTTPException(status_code=404, detail="Collection not found")
+    collection.poster_image_id = None
+    await session.flush()
+    return {"status": "cleared"}

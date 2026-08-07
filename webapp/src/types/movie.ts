@@ -70,3 +70,66 @@ export interface UserProfile {
   /** Capability names the backend granted. Empty for ordinary users. */
   permissions: string[];
 }
+
+/** Mirrors the billing API in app/api/billing.py. */
+export interface BillingFeature {
+  code: string;
+  name: string;
+  value: string | null;
+}
+
+export interface BillingPlan {
+  id: number;
+  code: string;
+  name: string;
+  description: string | null;
+  price: number;
+  duration_days: number;
+  /** Tier rank. Higher wins; drives extend / upgrade / queue. */
+  priority: number;
+  benefits: string[];
+  is_free: boolean;
+  features: BillingFeature[];
+}
+
+export interface HeldSubscription {
+  plan_id: number | null;
+  plan_name: string | null;
+  started_at: string;
+  expires_at: string;
+}
+
+export interface BillingOverview {
+  balance: number;
+  plans: BillingPlan[];
+  current: HeldSubscription | null;
+  /** Lower-tier purchases waiting for the current term to end. */
+  queued: HeldSubscription[];
+}
+
+export type PurchaseOutcome = "activate" | "extend" | "upgrade" | "queued";
+
+export interface PurchasePreview {
+  outcome: PurchaseOutcome;
+  starts_at: string;
+  price: number;
+  balance: number;
+  missing: number;
+  affordable: boolean;
+}
+
+export interface PaymentCard {
+  id: number;
+  card_number: string;
+  holder_name: string;
+  bank_name: string | null;
+}
+
+export interface PaymentHistoryEntry {
+  id: number;
+  amount: number;
+  kind: string;
+  description: string | null;
+  created_at: string;
+  status: string | null;
+}

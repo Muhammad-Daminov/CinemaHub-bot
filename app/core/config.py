@@ -61,7 +61,11 @@ class Settings(BaseSettings):
     # whoever is named here is promoted on startup and any previous holder
     # is demoted, which is how Super Admin ownership transfers.
     SUPER_ADMIN_TELEGRAM_ID: int | None = Field(default=6427415448)
-    PREMIUM_PRICE: float = Field(default=50000)  # in your local currency's smallest display unit
+    # DEPRECATED — plans live in chp_subscription_plans as of Phase 4.
+    # Retained solely so migration e58a3c7b91d4 can seed the initial
+    # premium plan from whatever was in force at upgrade time; editing
+    # them now changes nothing. Edit the plan in the admin panel instead.
+    PREMIUM_PRICE: float = Field(default=50000)
     PREMIUM_SUBSCRIPTION_DAYS: int = Field(default=30)
     TOPUP_PRESET_AMOUNTS: str = Field(default="10000,25000,50000,100000")
 

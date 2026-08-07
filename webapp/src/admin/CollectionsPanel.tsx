@@ -9,6 +9,7 @@
 import { ArrowLeft, Pencil, Plus, Power, Trash2, X } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { adminApi, ApiError } from "../lib/api";
+import { PosterPicker } from "./PosterPicker";
 import type { AdminCollectionListItem, AdminTitle, AdminTitleListItem } from "../types/admin";
 import {
   Badge,
@@ -305,6 +306,26 @@ export function CollectionsPanel() {
                 />
               </Field>
             </div>
+            {/* Poster upload only once the collection exists — the image
+                is attached by id, so there is nothing to attach it to
+                until it has been created. */}
+            {editingId != null && (() => {
+              const editing = collections.find((c) => c.id === editingId);
+              const customId = editing?.poster_image_id ?? null;
+              return (
+                <PosterPicker
+                  currentUrl={
+                    customId ? `/api/movies/images/${customId}` : editing?.poster_url ?? null
+                  }
+                  fallbackUrl={editing?.poster_url ?? null}
+                  hasCustom={Boolean(customId)}
+                  onUpload={(file) => adminApi.uploadCollectionPoster(editingId, file)}
+                  onClear={() => adminApi.clearCollectionPoster(editingId)}
+                  onChanged={() => void load()}
+                />
+              );
+            })()}
+
             <div className="flex gap-2">
               <Button full onClick={submit}>
                 <span className="inline-flex items-center justify-center gap-1.5">

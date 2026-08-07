@@ -62,11 +62,13 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 ---
 
-## 4. Data model — 16 tables
+## 4. Data model — 20 tables
 
 **Users & money**
 - `chp_users` — telegram_id, `role` (user/moderator/admin/**super_admin**), `referral_code`, `referred_by_id`, balance, AI counters, `is_banned`, `language`, `language_selected`
-- `chp_subscriptions` — plan, `expires_at`, `auto_renew`
+- `chp_subscriptions` — `plan_id` (authoritative) + legacy `plan` enum, `expires_at`, `auto_renew`
+- `chp_subscription_plans` — price, duration, benefits, ordering, active/free flags. Any number of plans; edited entirely from the admin panel
+- `chp_subscription_features` + `chp_plan_features` — a capability defined once, granted per plan with an optional value for quantitative limits
 - `chp_balance_history` — signed ledger; `tx_type` ∈ topup / deduction / refund / admin_adjustment / promo_credit. A partial unique index on (user_id, tx_type, reference_id) blocks duplicate credits.
 - `chp_admin_permissions` — one row per capability granted to an administrator; the Super Admin holds all of them implicitly and has no rows
 
@@ -83,7 +85,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 **Hierarchy:** `Title → Episode → MediaFile`. A film is a Title with one Episode. A title is only "watchable" if it has at least one MediaFile — enforced everywhere by the single `_has_playable_file()` correlated EXISTS.
 
-**Migrations:** 10 revisions, head `d72e4f1c8b35`, applied to production 2026-08-07.
+**Migrations:** 12 revisions, head `f6b2d94ae713`, applied to production 2026-08-07.
 
 ---
 
@@ -123,8 +125,9 @@ Mini App ──REST─────┘         │                 └─> Redis
 |---|---|---|
 | **Premium** | Sold, tracked, displayed | Unlocks **only** unlimited AI. No content, quality, or ad benefit. Weak value proposition for the price. |
 | **Referral** | Code generated, deep-link capture writes `referred_by_id` | **No reward is ever granted** to either party. The Mini App invites users to share a code that pays nothing. |
-| **Balance** | Credited by receipt approval and promo | **Never spent.** `DEDUCTION`/`REFUND` tx types are unused; there is no purchase flow. Money flows in and stops. |
+| **Balance** | Credited *and spent* — subscriptions are purchasable from it in the Mini App (Phase 5) | `REFUND` remains unused; there is no cancellation or refund path. |
 | **Percentage-discount promo** | Stored, redeemable, usage recorded | No checkout to apply it to — explicitly deferred in `services/promo.py`. |
+| **Subscription plans** | Manageable as data (Phase 4) and purchasable (Phase 5), with tier upgrade/queue rules | Features are recorded and displayed but **not enforced** — nothing branches on them yet. |
 | **Ban** | `is_banned` column, shown in admin users list | **Not enforced anywhere**, and no endpoint sets it. Unchanged by Phase 3, which governs *administrators*, not user bans. |
 | **Scheduled maintenance** | `app/tasks/cron.py` correct and idempotent | Never invoked by the app; Render Cron Job config is not in this repo. Unverified whether it runs at all. |
 | **Mini App parity** | Browse, search, settings | No favorites, no AI, no premium purchase, no watch stats/ranks — all bot-only. |

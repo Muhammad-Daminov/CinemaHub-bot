@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models.promo import PromoCode, PromoDiscountType, PromoUsage
 from app.db.models.user import BalanceHistory, BalanceTxType, Subscription, SubscriptionPlan, User
+from app.services.subscription_plans import default_paid_plan
 from app.services.subscriptions import get_active_subscription
 
 
@@ -131,10 +132,14 @@ class PromoService:
             active = await get_active_subscription(session, user.id)
             base_time = active.expires_at if active else now
             days = int(promo.value)
+            # The promo names a number of days, not a plan, so it grants
+            # the cheapest active paid plan for that long.
+            plan = await default_paid_plan(session)
             session.add(
                 Subscription(
                     user_id=user.id,
-                    plan=SubscriptionPlan.PREMIUM,
+                    plan_id=plan.id if plan else None,
+                    plan=SubscriptionPlan.PREMIUM,  # legacy column
                     expires_at=base_time + timedelta(days=days),
                 )
             )

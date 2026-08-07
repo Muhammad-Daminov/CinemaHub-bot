@@ -19,7 +19,14 @@ async def get_active_subscription(session: AsyncSession, user_id: int) -> Subscr
     """Most-recently-expiring subscription that is still valid right now, if any."""
     result = await session.execute(
         select(Subscription)
-        .where(Subscription.user_id == user_id, Subscription.expires_at > datetime.now(timezone.utc))
+        .where(
+            Subscription.user_id == user_id,
+            # Queued purchases are ordinary rows whose window has not
+            # opened yet. Without this they would read as active and hand
+            # the user a tier they have not reached.
+            Subscription.started_at <= datetime.now(timezone.utc),
+            Subscription.expires_at > datetime.now(timezone.utc),
+        )
         .order_by(Subscription.expires_at.desc())
     )
     return result.scalars().first()

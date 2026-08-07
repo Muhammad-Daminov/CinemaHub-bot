@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from app.api import admin as admin_api
+from app.api import billing as billing_api
 from app.api import i18n as i18n_api
 from app.api import auth as auth_api
 from app.api import movies as movies_api
@@ -120,6 +121,7 @@ app.add_middleware(
 app.include_router(auth_api.router, prefix="/api/auth", tags=["auth"])
 app.include_router(i18n_api.router, prefix="/api/i18n", tags=["i18n"])
 app.include_router(movies_api.router, prefix="/api/movies", tags=["movies"])
+app.include_router(billing_api.router, prefix="/api/billing", tags=["billing"])
 app.include_router(admin_api.router, prefix="/api/admin", tags=["admin"])
 
 # The Mini App is a separately-built static bundle (webapp/, `npm run build` ->

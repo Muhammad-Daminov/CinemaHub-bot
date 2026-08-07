@@ -91,6 +91,26 @@ async def make_user(session, telegram_id: int, balance: str = "0"):
     return user
 
 
+async def make_paid_plan(session, code: str = "premium", price: str = "50000", days: int = 30):
+    """
+    A purchasable plan.
+
+    Money tests need one now that plans are data: approving a subscription
+    receipt resolves the plan to read its duration, and a database built
+    from `metadata.create_all` has none of the rows the migration seeds.
+    """
+    from decimal import Decimal
+
+    from app.db.models.subscription import SubscriptionPlanModel
+
+    plan = SubscriptionPlanModel(
+        code=code, name=code.title(), price=Decimal(price), duration_days=days, is_active=True
+    )
+    session.add(plan)
+    await session.flush()
+    return plan
+
+
 async def count_rows(session, model, **filters) -> int:
     """COUNT(*) with equality filters, so assertions read as counts rather than queries."""
     from sqlalchemy import func, select

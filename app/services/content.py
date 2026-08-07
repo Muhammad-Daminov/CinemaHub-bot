@@ -306,7 +306,7 @@ class ContentService:
         {episode_id: [languages]} for a batch of episodes in one query.
 
         Batched deliberately: the episode list shows an audio badge per
-        row, and calling available_languages() per episode would be one
+        row, and one query per episode would be one
         round trip per visible episode.
         """
         if not episode_ids:
@@ -539,11 +539,6 @@ class ContentService:
 
         return files[0]
 
-    async def available_languages(self, session: AsyncSession, episode_id: int) -> list[AudioLanguage]:
-        result = await session.execute(
-            select(MediaFile.language).where(MediaFile.episode_id == episode_id).group_by(MediaFile.language)
-        )
-        return [row.language for row in result.all()]
 
 
 content_service = ContentService()

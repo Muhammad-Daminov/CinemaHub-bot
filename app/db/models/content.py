@@ -86,7 +86,11 @@ class Title(Base):
 
     # TMDB-sourced metadata; nullable so manual entries work without a match.
     tmdb_id: Mapped[int | None] = mapped_column(Integer, index=True)
+    # TMDB's poster. Superseded by poster_image_id when an admin uploads
+    # one — clearing the upload falls back here, which is why this is kept
+    # rather than overwritten.
     poster_url: Mapped[str | None] = mapped_column(String(512))
+    poster_image_id: Mapped[int | None] = mapped_column(ForeignKey("chp_uploaded_images.id"))
     description: Mapped[str | None] = mapped_column(String(2000))
     rating: Mapped[float | None] = mapped_column(Numeric(3, 1))
 

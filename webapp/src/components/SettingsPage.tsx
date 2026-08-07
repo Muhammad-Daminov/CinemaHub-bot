@@ -5,14 +5,17 @@
  * bot reads, so changing it here also changes the bot's replies. That is
  * the feature, not a side effect — one setting, two surfaces.
  */
-import { Check, Copy } from "lucide-react";
+import { Check, ChevronRight, Copy } from "lucide-react";
 import { useState } from "react";
 import { LANGUAGES, useT, type Language } from "../lib/i18n";
 import type { UserProfile } from "../types/movie";
+import { PaymentHistory } from "./PaymentHistory";
 
 interface Props {
   profile: UserProfile | null;
   onChangeLanguage: (language: Language) => Promise<void>;
+  /** Tapping the balance opens the plan catalogue — FR-4's entry point. */
+  onOpenPlans: () => void;
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -24,7 +27,7 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function SettingsPage({ profile, onChangeLanguage }: Props) {
+export function SettingsPage({ profile, onChangeLanguage, onOpenPlans }: Props) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -65,7 +68,18 @@ export function SettingsPage({ profile, onChangeLanguage }: Props) {
         <div className="rounded-xl border border-surface-hi bg-surface px-3">
           <Row label={t("app.settings_name")} value={profile.full_name ?? "—"} />
           <Row label={t("app.settings_telegram_id")} value={String(profile.telegram_id)} />
-          <Row label={t("app.settings_balance")} value={profile.balance.toFixed(2)} />
+          {/* A button, not a Row: the balance is the way into the plan
+              catalogue, which is what makes the purchase flow reachable. */}
+          <button
+            onClick={onOpenPlans}
+            className="flex w-full items-center justify-between gap-3 border-b border-surface-hi py-2.5 text-left last:border-b-0"
+          >
+            <span className="font-body text-sm text-ink-dim">{t("app.settings_balance")}</span>
+            <span className="flex items-center gap-1 font-body text-sm text-marquee">
+              {profile.balance.toFixed(2)}
+              <ChevronRight size={14} />
+            </span>
+          </button>
           <Row
             label={t("app.settings_premium")}
             value={t(profile.is_premium ? "app.settings_premium_yes" : "app.settings_premium_no")}
@@ -90,6 +104,8 @@ export function SettingsPage({ profile, onChangeLanguage }: Props) {
           </button>
         </div>
       </section>
+
+      <PaymentHistory />
 
       <section>
         <h2 className="mb-1 font-display text-sm font-medium tracking-wide text-ink-dim">

@@ -22,6 +22,9 @@ This document records **what has been requested**. It does not assess feasibilit
 | FR-7 | Audio Languages | ✅ Complete |
 | FR-8 | `/start` Command | ✅ Complete |
 | FR-9 | TV Series Experience | ✅ Complete |
+| FR-10 | Subscription Tier & Upgrade Rules | ✅ Complete (batch 2, 2026-08-07) |
+| FR-11 | Receipt Image Retention | ✅ Complete (batch 2, 2026-08-07) |
+| FR-12 | In-App Payment Administration | ✅ Complete (batch 2, 2026-08-07) |
 
 _History: an earlier batch delivered FR-1 in full with FR-2 and FR-9 as titles only, and FR-3 through FR-8 absent. All nine are now specified. Batch 1 of an ongoing series — further requests expected._
 
@@ -122,6 +125,7 @@ Surface the user's account balance in the interface and make it the entry point 
 
 **Expected Behavior**
 
+0. *(batch 2)* The **entire payment flow runs inside the Mini App.** At no point is the user required to switch to the Telegram bot. Top-up specifically must let the user select a card, upload a receipt from **gallery or camera**, **preview** it, **replace** it before submitting, and submit.
 1. The user's **balance is displayed** in the interface.
 2. **Tapping the balance opens the subscription plans** screen.
 3. Each plan displays:
@@ -152,14 +156,14 @@ The plans presented here are those defined and maintained under **FR-5**. No sep
 
 **TODO**
 
-1. **Concurrent or existing subscription.** Behavior when a user purchases while a subscription is already active is unspecified — extend the existing term, replace it, or refuse the purchase.
+1. ~~**Concurrent or existing subscription.**~~ **RESOLVED (batch 2):** same plan extends; higher tier upgrades immediately; lower tier queues. Specified in full under **FR-10**.
 2. **"Feature comparison" presentation.** A comparison across plans is required but its format is unspecified — side-by-side table, per-plan list, or otherwise.
 3. **Dialog copy.** Whether *"Your balance is insufficient."* is final wording or placeholder copy, and how it is phrased in each language.
-4. **Top-up page identity.** Whether "the in-app balance top-up page" refers to an existing top-up surface or a new screen to be designed under this item.
+4. ~~**Top-up page identity.**~~ **RESOLVED (batch 2):** a new Mini App screen. The whole payment flow lives in the Mini App and the user is never sent to the bot.
 5. **Return path after top-up.** Whether the user returns to the pending purchase after topping up, or is left on the top-up page.
 6. **Partial balance.** Whether a user may combine part of their balance with another payment method, or must hold the full price.
 7. **Refunds and cancellation.** Not addressed by this request.
-8. **Surface.** Whether this flow is required in the Mini App, the bot, or both.
+8. ~~**Surface.**~~ **RESOLVED (batch 2):** Mini App. The bot flow may remain, but must never be the only route.
 9. **Priority placement.** Provisionally High as core monetization. Confirm.
 
 ---
@@ -200,9 +204,9 @@ This item is entirely admin-facing. The admin panel must provide a subscription 
 
 **TODO**
 
-1. **"Add new features" meaning.** Ambiguous and consequential. This may mean (a) adding a benefit line item to a plan's advertised list, or (b) defining new platform capabilities that a plan grants and the system then enforces. Interpretation (b) is substantially larger work. Clarify before design.
-2. **Deleting a plan with active subscribers.** Unspecified — whether deletion is blocked, subscribers are retained on the deleted terms, or subscribers are migrated.
-3. **Price changes and existing subscribers.** Whether a change applies at next renewal, immediately, or only to new purchases.
+1. ~~**"Add new features" meaning.**~~ **RESOLVED (Phase 4):** built as (b) — features are entities a plan grants, with an optional value. Recorded now; *enforced* in Phase 5.
+2. ~~**Deleting a plan with active subscribers.**~~ **RESOLVED (Phase 4):** blocked; deactivation is the alternative.
+3. ~~**Price changes and existing subscribers.**~~ **RESOLVED (Phase 4):** future purchases only; terms are fixed when bought.
 4. **Benefits representation.** Whether benefits are free-form text or structured items, and how they are translated per **FR-6**.
 5. **Priority placement.** Provisionally High, since **FR-4** cannot function without plans to sell. Confirm.
 
@@ -278,6 +282,110 @@ None specified.
 2. **Definition of "the correct interface".** What an existing user should see, and how that differs from what they currently see.
 3. **Reproduction.** The circumstances under which an existing user currently receives an incorrect interface, which is needed to confirm a fix.
 4. **Priority placement.** Provisionally High as a correctness defect on the primary entry point. Confirm.
+
+---
+
+#### FR-10 · Subscription Tiers, Upgrades and Queued Downgrades
+
+**Description**
+
+Subscription plans form an ordered hierarchy. Each plan carries a configurable **priority** (weight) — Light = 1, Pro = 2, Premium = 3 — and what happens when a user buys while already subscribed depends on how the purchased plan's priority compares with the one they hold.
+
+The design must accommodate plans added later without changing business logic: the rules are expressed in terms of *relative priority*, never in terms of named plans.
+
+**User Story**
+
+> As a subscriber, I want upgrading to take effect at once and to keep the value of the time I already paid for, and I want a cheaper plan I buy in advance to wait its turn rather than cutting my current one short.
+
+**Expected Behavior**
+
+1. Every plan has a **configurable priority**. Higher means a better tier.
+2. **Same plan** → extends the current expiry.
+3. **Higher priority** → upgrades **immediately**, starting from the purchase moment.
+4. On upgrade, **remaining time on the old plan is converted into additional time on the new one**, using a **configurable conversion strategy**.
+5. **Lower priority** → never downgrades immediately. The purchase is **queued** and starts automatically when the current subscription expires.
+6. Adding a new plan must require **no business-logic change** — only its priority.
+
+**Admin Requirements**
+
+Priority is editable per plan alongside price and duration. The conversion strategy is configurable.
+
+**Technical Notes**
+
+- Priority is **not** display order. `sort_order` already exists for presentation; a plan may be displayed first yet rank lower. These must be separate fields.
+- A queued purchase is subscription state that does not exist yet: something must record "this plan starts when the current one ends".
+- Conversion needs a defined rule — pro-rata by value (remaining days × old price ÷ new price) is the obvious default, but it is a commercial decision, not a technical one.
+
+**TODO**
+
+1. **Conversion strategy.** "Configurable" says it is a setting, not what the default is. Pro-rata by monetary value, one-for-one day carry-over, or something else? And configurable per plan, or platform-wide?
+2. **Multiple queued purchases.** Whether a user may queue more than one, and if so whether they chain.
+3. **Cancelling a queued purchase**, and whether that refunds.
+4. **Equal priority, different plan.** Two plans could share a priority; treat as "same" (extend) or refuse?
+5. **Upgrade when the remainder exceeds the new term.** Whether carried time is capped.
+6. **Refunds.** Still unaddressed anywhere.
+
+---
+
+#### FR-11 · Receipt Image Retention
+
+**Description**
+
+A payment receipt image is evidence for a review decision, not a permanent record. The image is kept for **30 days** and then deleted automatically; the payment history it belongs to is kept **permanently**.
+
+**User Story**
+
+> As the platform owner, I want receipt images to age out automatically so we are not indefinitely holding users' bank documents, while keeping the payment record itself forever.
+
+**Expected Behavior**
+
+1. An uploaded receipt image is **retained for 30 days**.
+2. After 30 days it is **deleted automatically**.
+3. The **payment history is retained permanently** — only the image goes.
+
+**Technical Notes**
+
+- **The platform currently stores no images at all.** A receipt is a Telegram `file_id`; the bytes live in Telegram and are proxied on demand. Accepting uploads from the Mini App means receiving bytes directly and needing somewhere to put them — object storage or a database blob. No such store exists today.
+- Deletion after 30 days needs a scheduled job. `app/tasks/cron.py` is the natural home, but whether it runs at all is still unverified (`TASKS.md` P0-5).
+- Retention must not cascade: deleting the image must leave the receipt row, its amount, status and decision intact.
+
+**TODO**
+
+1. **Where images are stored.** Object storage (S3/R2), a database column, or the existing Telegram-relay approach. This is the deciding question and has cost and privacy implications.
+2. **What a reviewer sees after 30 days** — a placeholder, or is review guaranteed to happen inside the window?
+3. **Whether 30 days is configurable** or fixed.
+4. **Whether existing Telegram-hosted receipts** are migrated into the new store or left as they are.
+
+---
+
+#### FR-12 · In-App Payment Administration
+
+**Description**
+
+The full receipt review process runs inside the Mini App admin panel. No Telegram bot interaction is required for payment administration.
+
+**User Story**
+
+> As an administrator, I want to review, zoom into and decide on payment receipts entirely in the admin panel, without switching to the bot.
+
+**Expected Behavior**
+
+Administrators can, inside the Mini App: view pending receipts; preview the uploaded image; **zoom** it; approve; reject; supply a rejection reason; and view **payment history**.
+
+**Admin Requirements**
+
+Governed by the existing `manage_payments` permission.
+
+**Technical Notes**
+
+- Most of this exists. The admin panel already lists pending receipts, previews the image through an admin-gated proxy, and approves or rejects with a reason through the same service the bot uses.
+- Genuinely missing: **image zoom** and a **payment history** view (the current list shows pending only).
+- The bot's inline approve/reject may remain; the requirement is that it is not *required*.
+
+**TODO**
+
+1. **History scope** — all receipts, or a filterable range? Paged?
+2. **Zoom interaction** — pinch, tap-to-fullscreen, or both.
 
 ---
 
