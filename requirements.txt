@@ -8,3 +8,15 @@ alembic>=1.14
 redis>=5.2
 pydantic>=2.10
 pydantic-settings>=2.7
+
+# Both were added by Phase 5 and never declared here, which is why every
+# deploy since has failed at startup while the previous build kept
+# serving traffic — a failure that is invisible from the repository,
+# since a developer machine already has them installed.
+#
+# Pillow: app/services/images.py re-encodes uploaded receipts and posters.
+# python-multipart: FastAPI needs it to parse the multipart uploads those
+# endpoints accept, and raises at import time when a route declares
+# UploadFile without it — not on the first request.
+Pillow>=11.0
+python-multipart>=0.0.20
