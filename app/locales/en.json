@@ -226,5 +226,17 @@
   "app.remove_image": "Remove image",
   "app.history_title": "Payment history",
   "app.pending_review": "Under review",
-  "app.history_empty": "No payments yet."
+  "app.history_empty": "No payments yet.",
+  "common.banned": "Your account is blocked. Contact support if you think this is a mistake.",
+  "membership.required": "Join {channel} to continue.",
+  "membership.join": "Join the channel",
+  "membership.check": "I have joined",
+  "membership.not_joined": "We can't see you in the channel yet. Join and try again.",
+  "membership.welcome": "Thanks! Everything is open now.",
+  "referral.bonus_paid": "Referral bonus: {amount} has been added to your balance.",
+  "app.row_favorites": "Saved",
+  "app.add_favorite": "Save",
+  "app.remove_favorite": "Remove from saved",
+  "app.blocked_title": "Account blocked",
+  "app.blocked_text": "Your account is blocked, so the service is unavailable."
 }

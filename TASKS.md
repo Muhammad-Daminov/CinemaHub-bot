@@ -29,8 +29,9 @@ Every migration and every manual query hits production. Cheapest fix: a **Neon b
 **Effort:** ~1h. **High leverage** — de-risks everything below.
 
 ### P0-4 · `is_banned` is not enforced
-`TODO` · unchanged by Phase 3 — the role system governs *administrators*; banning *users* is still unenforced and has no setter · `app/bot/middlewares/`, `app/api/auth.py`
-The column exists and the admin panel displays it, but nothing checks it and no endpoint sets it. There is currently **no way to remove an abusive user**. Needs enforcement in bot middleware + `get_current_user`, and an admin toggle endpoint.
+`DONE` (Phase 6) · enforced in both surfaces and settable from the panel
+Enforced by `get_active_user` on every REST route that does something (the catalog, billing, the admin API) and by `AccessMiddleware` on every bot update; `PATCH /api/admin/users/{id}/ban` is the setter, with a confirm step in `UsersPanel.tsx`.
+`/api/auth/me` deliberately still answers for a banned user — it is what tells the Mini App to render the blocked notice instead of an empty catalog. The Super Admin is exempt, and a banned administrator keeps their role so the action is reversible.
 
 ### P0-5 · Verify scheduled maintenance actually runs
 `TODO` · ops
@@ -92,12 +93,15 @@ Users can top up but cannot spend. `DEDUCTION`/`REFUND` tx types are unused. Dec
 Premium's only current benefit is unlimited AI recommendations. Options: higher-quality files, early access, ad-free, larger favorites cap. (The "skip auto-delete" option is gone — auto-delete was removed entirely in Phase 3.) **Product decision needed before implementation.**
 
 ### P2-3 · Pay out referral rewards
-`TODO`
-Capture works; nothing is ever granted. The Mini App actively promotes a code that does nothing. Options: credit both parties on the referee's first approved payment (guards against self-referral farming), or grant premium days. Needs `BalanceTxType` plumbing and a new i18n key set.
+`DONE` (Phase 6) · rule from IDEAS.md I-2; amount is configuration
+[app/services/referral.py](app/services/referral.py) credits **both parties when the referred user's first top-up is approved**, fired from `approve_receipt` inside the same transaction as the credit.
+**Decision recorded:** the amount was undefined anywhere in the project, so it is `REFERRAL_BONUS_AMOUNT` (default **5000**, `0` disables) rather than a number invented in code. Revisit once the business figure is settled — changing it is a config edit, not a release.
+Paying once is enforced by the partial unique index `uq_balance_history_event`, not by a read-then-write check; the reference is scoped to the referred user, so later top-ups collide with the same entry.
 
 ### P2-4 · Mini App feature parity
-`TODO`
-Missing vs the bot: favorites, AI recommendations, premium purchase, watch stats/ranks. Favorites is the cheapest and most-expected — the API and service layer already exist (`toggle_favorite`, `list_favorites`).
+`IN PROGRESS` · favorites and premium purchase done; AI recommendations and watch stats/ranks remain
+Favorites shipped in Phase 6 — `GET /movies/favorites`, `POST`/`DELETE /movies/{id}/favorite`, an `is_favorite` flag on every catalog card, and a Saved row on the home screen. Premium purchase shipped in Phase 5.
+Still missing vs the bot: **AI recommendations** and **watch stats / ranks**.
 
 ### P2-5 · Order history
 `TODO` · `app/bot/handlers/base.py:147`
@@ -122,10 +126,28 @@ Reset monthly by cron, never incremented. Same reasoning as P2-7.
 `chp_subscriptions.plan` and `chp_payment_receipts.subscription_plan` are still written alongside the authoritative `plan_id`, so a rollback to the pre-Phase-4 release still finds what it reads. Once that is no longer a possibility, drop both columns and the `SubscriptionPlan` enum, and make `plan_id` NOT NULL.
 
 ### P2-9 · Localize the React admin panel
-`TODO` · deferred from Phase 1 · **schedule with FR-3 (Phase 6)**
+`TODO` · deferred from Phase 1 · **still open after Phase 6** — the two panels added there (`BroadcastPanel`, `SettingsPanel`) follow the existing hardcoded-Uzbek convention rather than introducing a second one mid-file
 The panel is **entirely** hardcoded Uzbek — roughly 98 user-visible strings across 11 files in [webapp/src/admin/](webapp/src/admin/), using none of the i18n system. An earlier audit recorded it as "inconsistently localized", which understated it.
 Deliberately not done in Phase 1: FR-3 rewrites this markup in Phase 6, so extracting keys now means extracting them twice. Do it as part of that redesign, against the final markup.
 The bot's admin strings were localized in Phase 1 — those were only nine, and they are bot messages.
+
+---
+
+### P2-11 · Broadcast scheduling and rich content
+`TODO` · follow-up to Phase 6
+Broadcasts are plain text, sent immediately, to one of three audience segments. Natural extensions once there is demand: schedule for later, attach an image, target by language or by last-seen date, and cancel a send in flight. None are required by any current request — recorded so the omission is deliberate rather than forgotten.
+
+### P2-13 · Localize collection and plan text
+`TODO` · follow-up to Phase 7
+Titles are now per-language; **collection names, plan names and plan benefits are not** — they are still single-language admin-authored text, and `FEATURE_REQUESTS.md` notes under FR-5 that benefits fall under FR-6. The mechanism exists and generalises: a `chp_collection_translations` shaped like the title one, read through the same fallback helper. Not built because FR-6 requirement 3 names movie titles, and the roadmap flagged the wider scope as needing confirmation.
+
+### P2-14 · Feed translated names to the AI recommender
+`TODO` · follow-up to Phase 7
+`app/services/ai.py` sends the catalog to Gemini using stored names only, so a Russian-speaking user asking in Russian is matched against Uzbek titles. Including translations would improve matching, at the cost of a larger prompt for the 150-title context window.
+
+### P2-12 · Membership check on the bot's own delivery path
+`TODO` · follow-up to Phase 6
+`AccessMiddleware` gates every bot update except `/start`, and the Mini App gates `POST /watch`. Both are correct, but they are two enforcement points for one rule. If a third surface appears, move the gate into `streaming_service.deliver_episode`, which is the single place a file actually leaves the platform.
 
 ---
 
@@ -140,6 +162,23 @@ The bot's admin strings were localized in Phase 1 — those were only nine, and 
 ---
 
 ## Done
+
+### Phase 7 (2026-08-08)
+- **Per-language movie titles** (FR-6 req. 3) — `chp_title_translations`, server-side resolution on every catalog read path in both surfaces, cross-language search, TMDB auto-fill for ru/en, and a translation editor in [TitleEditor.tsx](webapp/src/admin/TitleEditor.tsx).
+- **Three long-open FR-6 decisions recorded** — source of translations (admin-entered + TMDB), fallback (`Title.name`, per field), language set (all three, Uzbek as an override).
+- **CI's backend job fixed** — it had never passed: `BOT_TOKEN: ci-placeholder` fails aiogram's token validator at import. The check is unchanged; only the fixture is now shaped like a token.
+- Migration `c8d3a51fb742` **created and rehearsed, not applied to production**.
+
+### Phase 6 (2026-08-08)
+- **Favorites in the Mini App** (P2-4, partial) — three endpoints, `is_favorite` on every card resolved in one batch query, hearts on cards and in the detail sheet, a Saved home row.
+- **`is_banned` enforced** (P0-4) — `get_active_user` + `AccessMiddleware`, plus the admin toggle.
+- **Referral payouts** (P2-3) — idempotent through the existing ledger index.
+- **Broadcasts** — [app/services/broadcast.py](app/services/broadcast.py), `chp_broadcasts`, [BroadcastPanel.tsx](webapp/src/admin/BroadcastPanel.tsx). Sent once, paced, with delivery counts.
+- **Required-channel membership** — [app/services/membership.py](app/services/membership.py) + `chp_system_settings`, configured from the panel and enforced on delivery only.
+- **Receipt history filters and search** — server-side, so the search reaches past the loaded page.
+- **AI quota verified** — no change needed; the Phase 5 fix is correct and now has [tests/test_ai_quota.py](tests/test_ai_quota.py) covering the rejected-request and concurrency claims.
+- **Schema drift closed** — `uq_balance_history_event` existed only in migration `a3f1c92d7e04`, so it was absent from every test database. Now declared on the model too; the idempotency tests were previously running against a schema that could not enforce it.
+- Migration `b2f7c1a95e30` **created and rehearsed, not yet applied to production**.
 
 ### Phase 5 (2026-08-07)
 - **FR-4 · In-app purchase flow** — [app/api/billing.py](app/api/billing.py), [app/services/subscription_purchase.py](app/services/subscription_purchase.py), [PlansSheet.tsx](webapp/src/components/PlansSheet.tsx), [TopUpSheet.tsx](webapp/src/components/TopUpSheet.tsx).

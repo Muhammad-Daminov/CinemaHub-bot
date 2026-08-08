@@ -13,6 +13,8 @@ export interface Movie {
    * serial, which is what the episode selector exists to prevent.
    */
   episode_count: number;
+  /** Whether the current user has saved this title. */
+  is_favorite: boolean;
 }
 
 /** Mirrors CollectionOut in app/api/movies.py. */
@@ -69,6 +71,12 @@ export interface UserProfile {
   is_super_admin: boolean;
   /** Capability names the backend granted. Empty for ordinary users. */
   permissions: string[];
+  /**
+   * Reported, not enforced, by /auth/me — every other endpoint refuses a
+   * banned user outright. The app renders a blocked notice on it so the
+   * refusals do not look like an empty catalog.
+   */
+  is_banned: boolean;
 }
 
 /** Mirrors the billing API in app/api/billing.py. */

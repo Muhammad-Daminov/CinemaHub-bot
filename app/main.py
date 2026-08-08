@@ -33,6 +33,7 @@ from app.bot.handlers import admin_promo as admin_promo_handlers
 from app.bot.handlers import admin_upload as admin_upload_handlers
 from app.bot.handlers import ai as ai_handlers
 from app.bot.instance import bot
+from app.bot.middlewares.access import AccessMiddleware
 from app.bot.middlewares.db import DbSessionMiddleware
 from app.bot.middlewares.i18n import I18nMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
@@ -48,10 +49,13 @@ dispatcher = Dispatcher(
 
 # Order matters: throttling first (cheap, drops spam before it touches the DB),
 # then the DB session wrapper, then i18n (which reads the user's language
-# through that session), then routers.
+# through that session), then access control (which refuses banned users and
+# non-members, and needs both the session and that translator to say why),
+# then routers.
 dispatcher.update.middleware(ThrottlingMiddleware())
 dispatcher.update.middleware(DbSessionMiddleware())
 dispatcher.update.middleware(I18nMiddleware())
+dispatcher.update.middleware(AccessMiddleware())
 dispatcher.include_router(base_handlers.router)
 dispatcher.include_router(catalog_handlers.router)
 dispatcher.include_router(streaming_handlers.router)

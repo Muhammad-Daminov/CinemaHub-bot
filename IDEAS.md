@@ -28,6 +28,8 @@ Mechanism exists, payout does not. Designs considered:
 
 **Constraint:** rewarding at signup with a bot this easy to script invites abuse. → tracked as **P2-3**.
 
+**Resolved (Phase 6).** The first option shipped: both parties credited on the referee's first *approved* top-up. The other two are not rejected — premium days and tiered rewards remain open, and the payout is one function (`app/services/referral.py`) if either is wanted later.
+
 ### I-3 · Watch-time analytics for admins
 `chp_watch_history` accumulates rich data (per-episode, per-title, timestamps) surfaced today only as personal stats and ranks. An admin-facing view could show retention, drop-off points per serial, and which audio language actually gets watched — the last would directly inform which files are worth sourcing.
 
@@ -96,3 +98,9 @@ The admin panel ships inside the same 216 KB chunk every one of 508 users downlo
 - **Deleting the Telegram webhook on shutdown** — the webhook is global bot state, not one process's to release. A redeploy would leave the bot unreachable until the new instance booted, and a second environment shutting down last would wipe production's registration. Set on startup only. (`1f3192f`)
 - **Bolting scheduled maintenance onto the web service's lifespan** — at the time, the auto-delete worker earned its place there by polling continuously (it has since been removed); monthly resets and stale-receipt expiry never did. Kept as a standalone idempotent script for a Render Cron Job, decoupled from web uptime and scaling.
 - **Putting `GET /api/i18n/{lang}` behind `initData` auth** — the catalogs ship in the repository and contain no user data, and the first-open language picker needs them *before* auth resolves. Gating them would turn an auth hiccup into a blank screen instead of a degraded one.
+
+### I-14 · Translate the rest of the catalog's text
+Phase 7 made **movie titles and descriptions** per-language. Collection names, plan names and plan benefits are still single-language admin-authored text. The mechanism generalises — a translations table shaped like `chp_title_translations`, read through the same per-field fallback — so this is repetition rather than design. → tracked as **P2-13**.
+
+### I-15 · Give the AI recommender the translated names
+`app/services/ai.py` sends the catalog to Gemini using stored names only, so a user asking in Russian is matched against Uzbek titles. Including translations should improve matching; the cost is prompt size across the 150-title context window. → tracked as **P2-14**.

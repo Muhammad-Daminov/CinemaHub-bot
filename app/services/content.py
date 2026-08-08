@@ -22,6 +22,7 @@ from app.db.models.content import (
     Favorite,
     MediaFile,
     Title,
+    TitleTranslation,
     WatchHistory,
     title_collections,
 )
@@ -50,6 +51,39 @@ LANGUAGE_PREFERENCE: dict[UILanguage, list[AudioLanguage]] = {
     UILanguage.RU: [AudioLanguage.RU, AudioLanguage.UZ_DUB, AudioLanguage.ORIGINAL, AudioLanguage.EN, AudioLanguage.UZ_SUB],
     UILanguage.EN: [AudioLanguage.EN, AudioLanguage.ORIGINAL, AudioLanguage.RU, AudioLanguage.UZ_DUB, AudioLanguage.UZ_SUB],
 }
+
+
+@dataclass(frozen=True)
+class LocalizedTitle:
+    """A title's name and description as one viewer should see them."""
+
+    name: str
+    description: str | None
+
+
+def _title_name_matches(needle: str):
+    """
+    Search predicate covering the stored name **and every translation**.
+
+    Deliberately not restricted to the searcher's own language. This
+    catalog is indexed in Uzbek while the same film is widely known by its
+    English name, so a Russian-speaking viewer typing "Dune" or a
+    Uzbek-speaking one typing "Дюна" must both find it. Restricting the
+    match to the viewer's language would hide titles for no benefit.
+
+    An EXISTS rather than a join: a title with three translations must not
+    appear three times in the results.
+    """
+    pattern = f"%{needle.strip()}%"
+    translated = (
+        select(TitleTranslation.id)
+        .where(
+            TitleTranslation.title_id == Title.id,
+            TitleTranslation.name.ilike(pattern),
+        )
+        .exists()
+    )
+    return or_(Title.name.ilike(pattern), translated)
 
 
 @dataclass
@@ -180,7 +214,7 @@ class ContentService:
         if genre:
             stmt = stmt.where(Title.genres.any(genre))
         if query:
-            stmt = stmt.where(Title.name.ilike(f"%{query.strip()}%"))
+            stmt = stmt.where(_title_name_matches(query))
 
         stmt = stmt.order_by(Title.view_count.desc(), Title.name) if order_by_popularity else stmt.order_by(Title.created_at.desc())
 
@@ -443,6 +477,61 @@ class ContentService:
         )
         return list(result.scalars())
 
+    # ---------- catalog localization ----------
+
+    async def localized_titles(
+        self, session: AsyncSession, titles: Sequence[Title], language: UILanguage
+    ) -> dict[int, LocalizedTitle]:
+        """
+        How each of these titles reads in `language`, keyed by title id.
+
+        One query for the whole page, like every other per-card lookup
+        here — a translation fetched per card would be the N+1 that the
+        favourites batch exists to avoid.
+
+        Falls back field by field rather than row by row: a translation
+        carrying a name but no description keeps the original description
+        instead of blanking it. Every title is present in the result, so
+        callers never have to handle a missing key.
+        """
+        resolved = {
+            title.id: LocalizedTitle(name=title.name, description=title.description)
+            for title in titles
+        }
+        if not resolved:
+            return resolved
+
+        rows = await session.execute(
+            select(TitleTranslation).where(
+                TitleTranslation.title_id.in_(list(resolved)),
+                TitleTranslation.language == language,
+            )
+        )
+        for translation in rows.scalars():
+            original = resolved[translation.title_id]
+            resolved[translation.title_id] = LocalizedTitle(
+                name=translation.name or original.name,
+                description=translation.description or original.description,
+            )
+        return resolved
+
+    async def localized_title(
+        self, session: AsyncSession, title: Title, language: UILanguage
+    ) -> LocalizedTitle:
+        """Single-title convenience — the detail screens read one row, not a page."""
+        return (await self.localized_titles(session, [title], language))[title.id]
+
+    async def localized_names(
+        self, session: AsyncSession, titles: Sequence[Title], language: UILanguage
+    ) -> dict[int, str]:
+        """Just the names — what the bot's cards, prompts and captions need."""
+        return {
+            title_id: localized.name
+            for title_id, localized in (
+                await self.localized_titles(session, titles, language)
+            ).items()
+        }
+
     # ---------- favourites ----------
 
     async def toggle_favorite(self, session: AsyncSession, user_id: int, title_id: int) -> bool:
@@ -471,6 +560,20 @@ class ContentService:
         )
         await session.flush()
         return False
+
+    async def remove_favorite(self, session: AsyncSession, user_id: int, title_id: int) -> bool:
+        """
+        Unsaves a title whether or not it was saved. Returns whether a row went.
+
+        Separate from toggle_favorite because a "remove" action must be
+        idempotent: a stale saved-list, a retried request or a double-tap
+        would otherwise re-add the title the user was removing.
+        """
+        result = await session.execute(
+            delete(Favorite).where(Favorite.user_id == user_id, Favorite.title_id == title_id)
+        )
+        await session.flush()
+        return bool(result.rowcount)
 
     async def list_favorites(self, session: AsyncSession, user_id: int, page: int = 0) -> TitlePage:
         """

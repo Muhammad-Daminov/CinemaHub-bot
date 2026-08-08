@@ -226,5 +226,17 @@
   "app.remove_image": "Rasmni olib tashlash",
   "app.history_title": "To'lovlar tarixi",
   "app.pending_review": "Ko'rib chiqilmoqda",
-  "app.history_empty": "Hali to'lov yo'q."
+  "app.history_empty": "Hali to'lov yo'q.",
+  "common.banned": "Hisobingiz bloklangan. Savollar bo'lsa, qo'llab-quvvatlash xizmatiga murojaat qiling.",
+  "membership.required": "Davom etish uchun {channel} kanaliga a'zo bo'ling.",
+  "membership.join": "Kanalga qo'shilish",
+  "membership.check": "Men qo'shildim",
+  "membership.not_joined": "Hali kanalda ko'rinmayapsiz. Qo'shilib, qayta urinib ko'ring.",
+  "membership.welcome": "Rahmat! Endi hammasi ochiq.",
+  "referral.bonus_paid": "Referal bonusi: hisobingizga {amount} qo'shildi.",
+  "app.row_favorites": "Saqlanganlar",
+  "app.add_favorite": "Saqlash",
+  "app.remove_favorite": "Saqlanganlardan olib tashlash",
+  "app.blocked_title": "Hisob bloklangan",
+  "app.blocked_text": "Hisobingiz bloklangani uchun xizmatdan foydalana olmaysiz."
 }

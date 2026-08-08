@@ -11,7 +11,7 @@ import { useCallback, useEffect, useState } from "react";
 import { adminApi, ApiError } from "../lib/api";
 import { ZoomIn, ZoomOut } from "lucide-react";
 import { getInitData } from "../lib/telegram";
-import type { AdminReceipt } from "../types/admin";
+import type { AdminReceipt, PaymentStatus } from "../types/admin";
 import { Badge, Button, EmptyState, Notice, SectionTitle, TextInput, formatMoney } from "./ui";
 
 const ZOOM_STEPS = [1, 1.75, 3];
@@ -121,20 +121,37 @@ function PhotoModal({ receipt, onClose }: { receipt: AdminReceipt; onClose: () =
   );
 }
 
+const FILTERS: { id: PaymentStatus | "all"; label: string }[] = [
+  { id: "pending", label: "Kutilmoqda" },
+  { id: "approved", label: "Tasdiqlangan" },
+  { id: "rejected", label: "Rad etilgan" },
+  { id: "all", label: "Hammasi" },
+];
+
 export function ReceiptsPanel() {
   const [receipts, setReceipts] = useState<AdminReceipt[]>([]);
   const [photo, setPhoto] = useState<AdminReceipt | null>(null);
   const [rejectingId, setRejectingId] = useState<number | null>(null);
   const [reason, setReason] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [filter, setFilter] = useState<PaymentStatus | "all">("pending");
+  const [query, setQuery] = useState("");
 
+  // Searched server-side: filtering the loaded list would only ever search
+  // the most recent page, and the receipt an admin is looking for is
+  // usually the one that has scrolled off it.
   const load = useCallback(async () => {
     try {
-      setReceipts(await adminApi.listReceipts("pending"));
+      setReceipts(
+        await adminApi.listReceipts({
+          status: filter === "all" ? undefined : filter,
+          q: query.trim() || undefined,
+        }),
+      );
     } catch {
       setReceipts([]);
     }
-  }, []);
+  }, [filter, query]);
 
   useEffect(() => {
     load();
@@ -168,11 +185,29 @@ export function ReceiptsPanel() {
 
   return (
     <div className="space-y-3">
-      <SectionTitle>Kutayotgan to'lovlar</SectionTitle>
+      <SectionTitle>To'lovlar</SectionTitle>
       {error && <Notice message={error} tone="error" />}
 
+      <div className="no-scrollbar flex gap-2 overflow-x-auto">
+        {FILTERS.map((item) => (
+          <button
+            key={item.id}
+            onClick={() => setFilter(item.id)}
+            className={`shrink-0 rounded-full px-3 py-1.5 font-body text-xs transition-colors ${
+              filter === item.id
+                ? "bg-marquee text-on-marquee"
+                : "border border-surface-hi bg-surface text-ink-dim"
+            }`}
+          >
+            {item.label}
+          </button>
+        ))}
+      </div>
+
+      <TextInput value={query} onChange={setQuery} placeholder="Ism, username yoki ID…" />
+
       {receipts.length === 0 ? (
-        <EmptyState message="Kutayotgan to'lov yo'q." />
+        <EmptyState message="To'lov topilmadi." />
       ) : (
         <ul className="space-y-2">
           {receipts.map((receipt) => (
@@ -192,7 +227,14 @@ export function ReceiptsPanel() {
                 </div>
               </button>
 
-              {rejectingId === receipt.id ? (
+              {/* Approve/reject only apply to a receipt still awaiting
+                  review — the history views are read-only. */}
+              {receipt.status !== "pending" ? (
+                <p className="mt-2 font-mono text-[11px] text-ink-dim">
+                  {receipt.status === "approved" ? "Tasdiqlangan" : "Rad etilgan"}
+                  {receipt.admin_notes ? ` · ${receipt.admin_notes}` : ""}
+                </p>
+              ) : rejectingId === receipt.id ? (
                 <div className="mt-2 space-y-2">
                   <TextInput value={reason} onChange={setReason} placeholder="Rad etish sababi…" />
                   <div className="grid grid-cols-2 gap-2">

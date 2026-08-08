@@ -118,6 +118,44 @@ function Shell({
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
   const [plansOpen, setPlansOpen] = useState(false);
+  // One set for the whole app. Rows share titles, so per-row state would
+  // let the same film show a filled heart in one row and an empty one in
+  // the next.
+  const [favorites, setFavorites] = useState<Set<number>>(new Set());
+  const [savedMovies, setSavedMovies] = useState<Movie[]>([]);
+
+  /**
+   * Reconciles the set against a freshly loaded list.
+   *
+   * Adds *and* removes, rather than only adding: a title unsaved on
+   * another device would otherwise keep its filled heart here forever,
+   * because a union can never learn that something stopped being saved.
+   */
+  const absorbFavorites = useCallback((movies: Movie[]) => {
+    setFavorites((current) => {
+      const next = new Set(current);
+      for (const movie of movies) {
+        if (movie.is_favorite) next.add(movie.id);
+        else next.delete(movie.id);
+      }
+      return next;
+    });
+  }, []);
+
+  const loadSaved = useCallback(() => {
+    api
+      .favorites()
+      .then((movies) => {
+        setSavedMovies(movies);
+        absorbFavorites(movies);
+      })
+      .catch(() => setSavedMovies([]));
+  }, [absorbFavorites]);
+
+  useEffect(() => {
+    loadSaved();
+  }, [loadSaved]);
+
 
   // Comes straight from /api/auth/me. This used to be discovered by calling
   // an admin-only route and reading the status code, which meant a 403 on
@@ -150,7 +188,10 @@ function Shell({
     for (const row of [...baseRows, allRow]) {
       row
         .load()
-        .then((movies) => setRowMovies((current) => ({ ...current, [row.key]: movies })))
+        .then((movies) => {
+          setRowMovies((current) => ({ ...current, [row.key]: movies }));
+          absorbFavorites(movies);
+        })
         .catch(() => undefined);
     }
 
@@ -173,12 +214,15 @@ function Shell({
         for (const row of rows) {
           row
             .load()
-            .then((movies) => setRowMovies((current) => ({ ...current, [row.key]: movies })))
+            .then((movies) => {
+              setRowMovies((current) => ({ ...current, [row.key]: movies }));
+              absorbFavorites(movies);
+            })
             .catch(() => undefined);
         }
       })
       .catch(() => setCollectionRows([]));
-  }, [baseRows, audioLanguage, t]);
+  }, [baseRows, audioLanguage, t, absorbFavorites]);
 
   useEffect(() => {
     if (!toast) return;
@@ -195,11 +239,49 @@ function Shell({
       }
       api
         .searchMovies(query, audioLanguage ?? undefined)
-        .then(setSearchResults)
+        .then((results) => {
+          setSearchResults(results);
+          absorbFavorites(results);
+        })
         .catch(() => setSearchResults([]));
     },
-    [audioLanguage],
+    [audioLanguage, absorbFavorites],
   );
+
+  /**
+   * Optimistic: the heart fills on tap and is put back if the server
+   * disagrees. A toggle that waits for a round trip on a phone connection
+   * reads as a dead button, and the usual response to that is a second tap
+   * — which would toggle it straight back.
+   */
+  const handleToggleFavorite = async (movie: Movie) => {
+    const wasSaved = favorites.has(movie.id);
+    setFavorites((current) => {
+      const next = new Set(current);
+      if (wasSaved) next.delete(movie.id);
+      else next.add(movie.id);
+      return next;
+    });
+
+    try {
+      const result = await api.toggleFavorite(movie.id);
+      setFavorites((current) => {
+        const next = new Set(current);
+        if (result.is_favorite) next.add(movie.id);
+        else next.delete(movie.id);
+        return next;
+      });
+      loadSaved();
+    } catch {
+      setFavorites((current) => {
+        const next = new Set(current);
+        if (wasSaved) next.add(movie.id);
+        else next.delete(movie.id);
+        return next;
+      });
+      setToast({ message: t("app.generic_error"), tone: "error" });
+    }
+  };
 
   const handleWatch = async (movie: Movie, episode?: Episode) => {
     setSelectedMovie(null);
@@ -221,6 +303,18 @@ function Shell({
   // Never asked, in the bot or here — pick a language before anything else.
   if (profile && !profile.language_selected) {
     return <LanguagePicker onPick={handleChangeLanguage} />;
+  }
+
+  // Every endpoint below /auth/me refuses a banned account, so without
+  // this the app would render an empty catalog and look broken rather
+  // than blocked.
+  if (profile?.is_banned) {
+    return (
+      <div className="flex min-h-full flex-col items-center justify-center gap-2 bg-bg p-8 text-center">
+        <h1 className="font-display text-lg font-semibold text-ink">{t("app.blocked_title")}</h1>
+        <p className="font-body text-sm text-ink-dim">{t("app.blocked_text")}</p>
+      </div>
+    );
   }
 
   const bannerMovies = (() => {
@@ -271,7 +365,13 @@ function Shell({
               <AudioFilter value={audioLanguage} onChange={setAudioLanguage} />
               <div className="grid grid-cols-3 gap-3 p-4 sm:grid-cols-4">
                 {searchResults.map((movie) => (
-                  <MovieCard key={movie.id} movie={movie} onSelect={setSelectedMovie} />
+                  <MovieCard
+                    key={movie.id}
+                    movie={movie}
+                    onSelect={setSelectedMovie}
+                    isFavorite={favorites.has(movie.id)}
+                    onToggleFavorite={handleToggleFavorite}
+                  />
                 ))}
                 {searchResults.length === 0 && (
                   <p className="col-span-full py-10 text-center text-sm text-ink-dim">
@@ -284,12 +384,24 @@ function Shell({
             <>
               <HeroBanner movies={bannerMovies} onWatch={handleWatch} onDetails={setSelectedMovie} />
               <AudioFilter value={audioLanguage} onChange={setAudioLanguage} />
+              {/* First row when it has anything: what the viewer saved is
+                  what they came back for. MovieRow hides itself when empty,
+                  so a user with no favourites never sees it. */}
+              <MovieRow
+                title={t("app.row_favorites")}
+                movies={savedMovies}
+                onSelect={setSelectedMovie}
+                favorites={favorites}
+                onToggleFavorite={handleToggleFavorite}
+              />
               {homeRows.map((row) => (
                 <MovieRow
                   key={row.key}
                   title={row.title}
                   movies={rowMovies[row.key] ?? []}
                   onSelect={setSelectedMovie}
+                  favorites={favorites}
+                  onToggleFavorite={handleToggleFavorite}
                 />
               ))}
             </>
@@ -304,6 +416,8 @@ function Shell({
           onWatch={handleWatch}
           onSelectSimilar={setSelectedMovie}
           audioLanguage={audioLanguage}
+          isFavorite={favorites.has(selectedMovie.id)}
+          onToggleFavorite={handleToggleFavorite}
         />
       )}
       {plansOpen && (

@@ -20,9 +20,16 @@ jobs:
       # The settings object requires these at import time. Values are
       # placeholders — no test reaches a real service, and DB-backed tests
       # skip unless TEST_DATABASE_URL is set (see tests/conftest.py).
+      #
+      # BOT_TOKEN is the exception: it must be *shaped* like a real token
+      # (`<digits>:<something>`), because app.bot.instance constructs the
+      # Bot at import time and aiogram validates the format there. A plain
+      # word failed with "Token is invalid!" and took the whole backend job
+      # down at the first step. Still a placeholder — it authenticates
+      # nothing, and nothing here calls Telegram.
       - name: Import check
         env:
-          BOT_TOKEN: ci-placeholder
+          BOT_TOKEN: "123456:ci-placeholder"
           TMDB_API_KEY: ci-placeholder
           GEMINI_API_KEY: ci-placeholder
           DATABASE_URL: postgresql+asyncpg://ci:ci@localhost/ci
@@ -33,7 +40,7 @@ jobs:
 
       - name: Tests
         env:
-          BOT_TOKEN: ci-placeholder
+          BOT_TOKEN: "123456:ci-placeholder"
           TMDB_API_KEY: ci-placeholder
           GEMINI_API_KEY: ci-placeholder
           DATABASE_URL: postgresql+asyncpg://ci:ci@localhost/ci

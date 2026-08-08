@@ -19,7 +19,7 @@ from datetime import date, datetime, timedelta, timezone  # noqa: F401  (see abo
 
 import aiohttp
 from aiogram.exceptions import TelegramAPIError
-from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import func, or_, select
@@ -36,13 +36,23 @@ from app.db.models.content import (
     Episode,
     PendingUpload,
     Title,
+    TitleTranslation,
+    TranslationSource,
     VideoQuality,
 )
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt, PaymentStatus
 from app.db.models.promo import PromoCode, PromoDiscountType
-from app.db.models.user import SubscriptionPlan, User, UserRole
-from app.db.session import get_db_session
+from app.db.models.system import Broadcast, BroadcastAudience, BroadcastStatus
+from app.db.models.user import SubscriptionPlan, UILanguage, User, UserRole
+from app.db.session import AsyncSessionFactory, get_db_session
 from app.services.admin_content import admin_content_service
+from app.services.broadcast import (
+    BroadcastError,
+    audience_size,
+    create_broadcast,
+    list_broadcasts,
+    run_broadcast,
+)
 from app.services.images import ImageError, get_image, store_image
 from app.services.payment_review import (
     ReceiptNotFoundError,
@@ -60,6 +70,7 @@ from app.services.permissions import (
     set_permissions,
 )
 from app.services.promo import promo_service
+from app.services.settings_store import get_membership_config, set_membership_config
 from app.services.subscription_plans import (
     PlanError,
     PlanNotFoundError,
@@ -160,14 +171,33 @@ class RejectIn(BaseModel):
 
 @router.get("/receipts", response_model=list[ReceiptOut], dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
 async def list_receipts(
-    status: PaymentStatus = PaymentStatus.PENDING,
+    status: PaymentStatus | None = None,
+    q: str | None = Query(default=None, description="Matches username, name or Telegram id"),
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_db_session),
 ) -> list[ReceiptOut]:
+    """
+    Receipts, newest first. Omitting `status` returns every state — the
+    review queue asks for PENDING, the history screen does not.
+
+    Search is server-side because it has to reach receipts beyond the page
+    the panel is holding; filtering the loaded list would silently only
+    search the most recent fifty.
+    """
+    filters = []
+    if status is not None:
+        filters.append(PaymentReceipt.status == status)
+    if q:
+        needle = q.strip()
+        conditions = [User.username.ilike(f"%{needle}%"), User.full_name.ilike(f"%{needle}%")]
+        if needle.isdigit():
+            conditions.append(User.telegram_id == int(needle))
+        filters.append(or_(*conditions))
+
     result = await session.execute(
         select(PaymentReceipt, User)
         .join(User, User.id == PaymentReceipt.user_id)
-        .where(PaymentReceipt.status == status)
+        .where(*filters)
         .order_by(PaymentReceipt.created_at.desc())
         .limit(limit)
     )
@@ -468,6 +498,101 @@ async def enrich_title_route(title_id: int, session: AsyncSession = Depends(get_
     if title is None:
         raise HTTPException(status_code=404, detail="Title not found")
     return title
+
+
+# ---------- Title translations ----------
+#
+# Gated on MANAGE_MOVIES rather than MANAGE_LANGUAGES: this edits one
+# title's catalog text, and MANAGE_LANGUAGES governs the audio tracks a
+# file carries. Someone trusted to rename a title is trusted to name it
+# in Russian.
+
+
+class TitleTranslationOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    language: UILanguage
+    name: str
+    description: str | None
+    source: TranslationSource
+
+
+class TitleTranslationIn(BaseModel):
+    language: UILanguage
+    # Empty clears the translation for that language — the only way a form
+    # whose single affordance is emptying a field can express "remove this".
+    name: str = ""
+    description: str | None = None
+
+
+class TitleTranslationsIn(BaseModel):
+    translations: list[TitleTranslationIn]
+
+
+@router.get(
+    "/titles/{title_id}/translations",
+    response_model=list[TitleTranslationOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))],
+)
+async def list_title_translations_route(
+    title_id: int, session: AsyncSession = Depends(get_db_session)
+) -> list[TitleTranslation]:
+    return await admin_content_service.list_title_translations(session, title_id)
+
+
+@router.put(
+    "/titles/{title_id}/translations",
+    response_model=list[TitleTranslationOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))],
+)
+async def set_title_translations_route(
+    title_id: int,
+    body: TitleTranslationsIn,
+    session: AsyncSession = Depends(get_db_session),
+) -> list[TitleTranslation]:
+    """
+    Replaces the languages named in the body. Languages the body omits are
+    left alone, so editing Russian cannot silently drop English.
+    """
+    title = await session.get(Title, title_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+
+    if len({entry.language for entry in body.translations}) != len(body.translations):
+        raise HTTPException(
+            status_code=422, detail="One entry per language — the same language appears twice"
+        )
+
+    return await admin_content_service.set_title_translations(
+        session,
+        title_id,
+        {entry.language: (entry.name, entry.description) for entry in body.translations},
+    )
+
+
+@router.post(
+    "/titles/{title_id}/translations/tmdb",
+    response_model=list[TitleTranslationOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))],
+)
+async def fill_title_translations_route(
+    title_id: int, session: AsyncSession = Depends(get_db_session)
+) -> list[TitleTranslation]:
+    """
+    Pulls Russian and English from TMDB for a title that already has a
+    tmdb_id. Separate from enrichment because enrichment refuses to touch
+    a manually-overridden title, and that is exactly the title an admin is
+    most likely to want translations for.
+
+    Manual translations are preserved — see `fill_translations_from_tmdb`.
+    """
+    title = await session.get(Title, title_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+    if title.tmdb_id is None:
+        raise HTTPException(
+            status_code=422, detail="This title has no TMDB match to translate from"
+        )
+    return await admin_content_service.fill_translations_from_tmdb(session, title)
 
 
 # ---------- Collections ----------
@@ -929,6 +1054,67 @@ async def list_users_route(
         for user in users
     ]
     return UserPageOut(items=items, total=total, page=page, page_size=page_size)
+
+
+class BanIn(BaseModel):
+    banned: bool
+
+
+@router.patch(
+    "/users/{user_id}/ban",
+    response_model=AdminUserOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_USERS))],
+)
+async def set_user_ban(
+    user_id: int,
+    body: BanIn,
+    actor: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> AdminUserOut:
+    """
+    Blocks or unblocks a user.
+
+    Three refusals, each protecting the authorization model rather than
+    the user:
+
+    - The Super Admin can never be banned. The role exists so someone
+      always holds every permission; a ban that silenced them would let
+      an administrator lock the platform out of itself.
+    - Only the Super Admin may ban another administrator. Otherwise two
+      admins with MANAGE_USERS could ban each other, and whoever clicked
+      first would win a fight the permission system never sanctioned.
+    - Nobody bans themselves, which is only ever a misclick.
+
+    A banned administrator keeps their role and permissions: the ban stops
+    them *using* the platform, and un-banning restores exactly what they
+    had, so the action is reversible.
+    """
+    target = await session.get(User, user_id)
+    if target is None:
+        raise HTTPException(status_code=404, detail="User not found")
+    if target.id == actor.id:
+        raise HTTPException(status_code=422, detail="You cannot ban yourself")
+    if target.role == UserRole.SUPER_ADMIN:
+        raise HTTPException(status_code=403, detail="The Super Admin cannot be banned")
+    if target.role == UserRole.ADMIN and actor.role != UserRole.SUPER_ADMIN:
+        raise HTTPException(
+            status_code=403, detail="Only the Super Admin may ban an administrator"
+        )
+
+    target.is_banned = body.banned
+    await session.flush()
+
+    premium = await admin_content_service.premium_user_ids(session, [target.id])
+    return AdminUserOut(
+        id=target.id,
+        telegram_id=target.telegram_id,
+        username=target.username,
+        full_name=target.full_name,
+        balance=float(target.balance),
+        is_premium=target.id in premium,
+        is_banned=target.is_banned,
+        created_at=target.created_at,
+    )
 
 
 # ---------- Administrators & permissions (Super Admin only) ----------
@@ -1504,3 +1690,170 @@ async def clear_collection_poster(
     collection.poster_image_id = None
     await session.flush()
     return {"status": "cleared"}
+
+
+# ---------- Broadcasts ----------
+#
+# Creating and starting a broadcast is one request. Splitting them would
+# leave a PENDING row that an operator could start twice from two tabs,
+# and the whole design here is that a broadcast is sent exactly once.
+
+
+class BroadcastIn(BaseModel):
+    message: str
+    audience: BroadcastAudience = BroadcastAudience.ALL
+
+
+class BroadcastOut(BaseModel):
+    id: int
+    message: str
+    audience: BroadcastAudience
+    status: BroadcastStatus
+    total_recipients: int
+    sent_count: int
+    failed_count: int
+    blocked_count: int
+    error: str | None
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class AudienceOut(BaseModel):
+    audience: BroadcastAudience
+    size: int
+
+
+def _broadcast_out(row: Broadcast) -> BroadcastOut:
+    return BroadcastOut(
+        id=row.id,
+        message=row.message,
+        audience=row.audience,
+        status=row.status,
+        total_recipients=row.total_recipients,
+        sent_count=row.sent_count,
+        failed_count=row.failed_count,
+        blocked_count=row.blocked_count,
+        error=row.error,
+        created_at=row.created_at,
+        completed_at=row.completed_at,
+    )
+
+
+@router.get(
+    "/broadcasts",
+    response_model=list[BroadcastOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def list_broadcasts_route(
+    limit: int = Query(default=50, ge=1, le=200),
+    session: AsyncSession = Depends(get_db_session),
+) -> list[BroadcastOut]:
+    """History with delivery counts. Deliberately returns no recipient identities."""
+    return [_broadcast_out(row) for row in await list_broadcasts(session, limit=limit)]
+
+
+@router.get(
+    "/broadcasts/audience",
+    response_model=list[AudienceOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def broadcast_audience_sizes(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[AudienceOut]:
+    """How many people each segment would reach — shown before the send, not after."""
+    return [
+        AudienceOut(audience=audience, size=await audience_size(session, audience))
+        for audience in BroadcastAudience
+    ]
+
+
+@router.post(
+    "/broadcasts",
+    response_model=BroadcastOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def create_broadcast_route(
+    body: BroadcastIn,
+    background: BackgroundTasks,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> BroadcastOut:
+    """
+    Records the broadcast and hands the sending to a background task.
+
+    Sending inline would hold the HTTP request — and its database
+    transaction — open for the minutes a few thousand messages take, and
+    the browser would time out long before the last one went. The task
+    opens its own sessions and claims the row under a lock, so a retried
+    request cannot produce a second send.
+    """
+    try:
+        broadcast = await create_broadcast(session, admin, body.message, body.audience)
+    except BroadcastError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    await session.commit()  # the task runs in its own session and must see this row
+    background.add_task(run_broadcast, AsyncSessionFactory, bot, broadcast.id)
+    return _broadcast_out(broadcast)
+
+
+# ---------- System settings ----------
+
+
+class MembershipSettingsOut(BaseModel):
+    require_membership: bool
+    required_channel: str | None
+    # False when a numeric chat id was configured: it works for the check
+    # but cannot be turned into a join link, so the panel warns instead of
+    # silently showing a prompt with no way to act on it.
+    has_invite_url: bool
+
+
+class MembershipSettingsIn(BaseModel):
+    require_membership: bool
+    required_channel: str | None = None
+
+
+def _membership_out(config) -> MembershipSettingsOut:
+    return MembershipSettingsOut(
+        require_membership=config.enabled,
+        required_channel=config.channel,
+        has_invite_url=config.invite_url is not None,
+    )
+
+
+@router.get(
+    "/settings/membership",
+    response_model=MembershipSettingsOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def get_membership_settings(
+    session: AsyncSession = Depends(get_db_session),
+) -> MembershipSettingsOut:
+    return _membership_out(await get_membership_config(session))
+
+
+@router.put(
+    "/settings/membership",
+    response_model=MembershipSettingsOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def update_membership_settings(
+    body: MembershipSettingsIn,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> MembershipSettingsOut:
+    """
+    Sets the required channel.
+
+    Turning the requirement on without naming a channel is refused rather
+    than stored: the service treats that combination as "off", and an
+    operator who thought they had enabled a gate would never find out.
+    """
+    channel = (body.required_channel or "").strip() or None
+    if body.require_membership and not channel:
+        raise HTTPException(
+            status_code=422, detail="Name the channel before requiring membership"
+        )
+    config = await set_membership_config(session, body.require_membership, channel, admin.id)
+    return _membership_out(config)

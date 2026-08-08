@@ -24,6 +24,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
+from app.core.i18n import t
 from app.core.permissions import Permission
 from app.db.models.user import UILanguage, User, UserRole
 from app.db.session import get_db_session
@@ -77,7 +78,27 @@ async def get_current_user(
     return await get_or_create_user(session, tg_user["id"], tg_user.get("username"), full_name)
 
 
-async def get_current_admin(user: User = Depends(get_current_user)) -> User:
+async def get_active_user(user: User = Depends(get_current_user)) -> User:
+    """
+    A user who may actually *use* the platform — identified and not banned.
+
+    Separate from `get_current_user` on purpose. Identification has to keep
+    working for a banned account: /api/auth/me is what tells the Mini App
+    to show "your account is blocked" instead of an empty catalog, and the
+    same is true of the i18n catalog it renders that message with. Every
+    route that does something — browsing, watching, paying — takes this
+    one instead.
+
+    The Super Admin is exempt. Banning is an administrative action, and a
+    platform whose owner can be locked out of it by one is a platform that
+    can be taken hostage.
+    """
+    if user.is_banned and not is_super_admin(user):
+        raise HTTPException(status_code=403, detail=t("common.banned", user.language))
+    return user
+
+
+async def get_current_admin(user: User = Depends(get_active_user)) -> User:
     """
     Any administrator — the outer gate on every /api/admin/* route.
 
@@ -138,6 +159,10 @@ class UserProfileOut(BaseModel):
     is_admin: bool
     is_super_admin: bool
     permissions: list[str]
+    # The Mini App renders a blocked notice on this. It is reported rather
+    # than enforced here because /me must keep answering for a banned user
+    # — a silent empty catalog explains nothing.
+    is_banned: bool
 
 
 class LanguageIn(BaseModel):
@@ -159,6 +184,7 @@ def _profile(user: User, premium: bool, permissions: set[Permission]) -> UserPro
         is_super_admin=is_super_admin(user),
         # Sorted so the payload is stable between requests and diffs cleanly.
         permissions=sorted(p.value for p in permissions),
+        is_banned=user.is_banned,
     )
 
 

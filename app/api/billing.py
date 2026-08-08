@@ -18,7 +18,7 @@ from pydantic import BaseModel
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import get_current_user
+from app.api.auth import get_active_user
 from app.core.i18n import t
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt, PaymentStatus
 from app.db.models.subscription import SubscriptionPlanModel
@@ -122,7 +122,7 @@ async def _subscription_out(session: AsyncSession, sub) -> SubscriptionOut:
 @router.get("/overview", response_model=BillingOverviewOut)
 async def billing_overview(
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> BillingOverviewOut:
     """Balance, sellable plans with their features, and what the user holds."""
     plans = await list_plans(session, include_inactive=False)
@@ -160,7 +160,7 @@ async def billing_overview(
 async def preview(
     plan_id: int,
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> PurchasePreviewOut:
     """
     What buying this plan would do — computed by the same rules that apply
@@ -184,7 +184,7 @@ async def preview(
 async def purchase(
     plan_id: int,
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> SubscriptionOut:
     try:
         subscription = await purchase_plan(session, user, plan_id)
@@ -211,7 +211,7 @@ async def purchase(
 @router.get("/cards", response_model=list[CardOut])
 async def list_cards(
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    _user: User = Depends(get_active_user),
 ) -> list[CardOut]:
     result = await session.execute(select(AdminCard).where(AdminCard.is_active.is_(True)))
     return [
@@ -228,7 +228,7 @@ async def submit_topup(
     card_id: int = Form(...),
     receipt: UploadFile = File(...),
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> dict:
     """
     Submits a top-up receipt uploaded from the device.
@@ -269,7 +269,7 @@ async def submit_topup(
 async def get_receipt_image(
     receipt_id: int,
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> Response:
     """
     Serves a receipt image to the user who submitted it.
@@ -302,7 +302,7 @@ async def _image_response(session: AsyncSession, image_id: int | None, user: Use
 async def payment_history(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[HistoryOut]:
     """
     The user's own money movements — ledger entries plus pending receipts.

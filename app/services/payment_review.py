@@ -18,6 +18,7 @@ from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.instance import bot
+from app.core.config import settings
 from app.core.i18n import t_for_user
 from app.db.models.payment import PaymentPurpose, PaymentReceipt, PaymentStatus
 from app.db.models.subscription import SubscriptionPlanModel
@@ -28,6 +29,7 @@ from app.db.models.user import (
     SubscriptionPlan,
     User,
 )
+from app.services.referral import pay_referral_bonus
 from app.services.subscription_plans import default_paid_plan
 from app.services.subscriptions import get_active_subscription
 
@@ -151,8 +153,36 @@ async def approve_receipt(
     receipt.reviewed_at = datetime.now(timezone.utc)
     await session.flush()
 
+    # The referral rule keys on an approved top-up, so this is the one
+    # place it can fire. Inside the same transaction as the credit: a
+    # bonus that survived a rolled-back approval would be money created
+    # from a payment that never happened.
+    credited: list[int] = []
+    if receipt.purpose == PaymentPurpose.TOPUP:
+        credited = await pay_referral_bonus(session, user)
+
     await bot.send_message(user.telegram_id, await t_for_user(session, user.id, "payment.approved"))
+    await _announce_referral_bonus(session, credited)
     return receipt
+
+
+async def _announce_referral_bonus(session: AsyncSession, user_ids: list[int]) -> None:
+    """
+    Tells whoever was just credited. Failures are logged, never raised —
+    a Telegram outage must not undo an approved payment.
+    """
+    amount = settings.REFERRAL_BONUS_AMOUNT
+    for user_id in user_ids:
+        recipient = await session.get(User, user_id)
+        if recipient is None:
+            continue
+        try:
+            await bot.send_message(
+                recipient.telegram_id,
+                await t_for_user(session, user_id, "referral.bonus_paid", amount=amount),
+            )
+        except Exception:
+            logger.warning("Could not notify %s about their referral bonus", user_id)
 
 
 async def reject_receipt(

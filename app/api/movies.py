@@ -18,7 +18,7 @@ from fastapi.responses import Response
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.auth import get_current_user
+from app.api.auth import get_active_user
 from app.bot.instance import bot
 from app.core.i18n import t
 from app.db.models.content import (
@@ -30,8 +30,14 @@ from app.db.models.content import (
 from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.achievements import continue_watching
-from app.services.content import _has_playable_file, content_service
+from app.services.content import (
+    LocalizedTitle,
+    _has_playable_file,
+    _title_name_matches,
+    content_service,
+)
 from app.services.images import get_image
+from app.services.membership import check_access
 from app.services.streaming import streaming_service
 
 logger = logging.getLogger(__name__)
@@ -53,6 +59,11 @@ class MovieOut(BaseModel):
     # open the episode selector first — without it, any "Watch" button on a
     # serial silently starts episode 1.
     episode_count: int = 1
+    # Whether the caller has saved this title. Carried on the card itself
+    # so a row of five renders with the right hearts from one response —
+    # the alternative, asking per card, is five round trips for something
+    # a single IN-clause already knows.
+    is_favorite: bool = False
 
 
 class WatchResponse(BaseModel):
@@ -131,24 +142,48 @@ def _poster_for(title: Title) -> str | None:
     return title.poster_url
 
 
-def _to_movie_out(title: Title, episode_count: int = 1) -> MovieOut:
+def _to_movie_out(
+    title: Title,
+    episode_count: int = 1,
+    is_favorite: bool = False,
+    localized: LocalizedTitle | None = None,
+) -> MovieOut:
+    """
+    `localized` carries the name and description as the viewer's language
+    renders them. Resolution happens here, server-side, so the client never
+    learns that a title has more than one name — the same JSON shape serves
+    every language.
+    """
+    text = localized or LocalizedTitle(name=title.name, description=title.description)
     return MovieOut(
         id=title.id,
-        title=title.name,
+        title=text.name,
         year=title.year,
         genres=title.genres,
         poster_url=_poster_for(title),
-        description=title.description,
+        description=text.description,
         rating=float(title.rating) if title.rating is not None else None,
         view_count=title.view_count,
         episode_count=episode_count,
+        is_favorite=is_favorite,
     )
 
 
-async def _to_movie_outs(session: AsyncSession, titles: list[Title]) -> list[MovieOut]:
-    """Serializes a list of titles, resolving episode counts in one query."""
-    counts = await content_service.episode_counts(session, [t.id for t in titles])
-    return [_to_movie_out(title, counts.get(title.id, 1)) for title in titles]
+async def _to_movie_outs(
+    session: AsyncSession, titles: list[Title], user: User
+) -> list[MovieOut]:
+    """
+    Serializes a list of titles, resolving episode counts, saved state and
+    translations in one query each — never one per card.
+    """
+    title_ids = [t.id for t in titles]
+    counts = await content_service.episode_counts(session, title_ids)
+    saved = await content_service.favorite_title_ids(session, user.id, title_ids)
+    localized = await content_service.localized_titles(session, titles, user.language)
+    return [
+        _to_movie_out(title, counts.get(title.id, 1), title.id in saved, localized.get(title.id))
+        for title in titles
+    ]
 
 
 def _playable_titles(audio_language: AudioLanguage | None = None) -> Select:
@@ -167,7 +202,7 @@ def _playable_titles(audio_language: AudioLanguage | None = None) -> Select:
 async def get_public_image(
     image_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> Response:
     """
     Serves an uploaded poster.
@@ -190,7 +225,7 @@ async def get_public_image(
 async def list_collections(
     q: str | None = Query(default=None, description="Filters collections by name"),
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[CollectionOut]:
     """Active collections only — the admin panel is where inactive ones live."""
     summaries = await content_service.list_collections(session)
@@ -209,7 +244,7 @@ async def list_movies(
     content_type: ContentType | None = None,
     audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
     """Newest first. Every home row that is just a filtered slice comes through here."""
     stmt = _playable_titles(audio_language).order_by(Title.created_at.desc())
@@ -223,7 +258,7 @@ async def list_movies(
             title_collections, title_collections.c.title_id == Title.id
         ).where(title_collections.c.collection_id == collection_id)
     result = await session.execute(stmt.offset(skip).limit(limit))
-    return await _to_movie_outs(session, list(result.scalars()))
+    return await _to_movie_outs(session, list(result.scalars()), user)
 
 
 @router.get("/top", response_model=list[MovieOut])
@@ -231,12 +266,12 @@ async def top_movies(
     limit: int = Query(default=10, ge=1, le=50),
     audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
     result = await session.execute(
         _playable_titles(audio_language).order_by(Title.view_count.desc()).limit(limit)
     )
-    return await _to_movie_outs(session, list(result.scalars()))
+    return await _to_movie_outs(session, list(result.scalars()), user)
 
 
 @router.get("/search/all", response_model=SearchResultOut)
@@ -245,7 +280,7 @@ async def search_everything(
     limit: int = Query(default=20, ge=1, le=100),
     audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> SearchResultOut:
     """
     Titles *and* collections matching `q`.
@@ -255,11 +290,11 @@ async def search_everything(
     """
     result = await session.execute(
         _playable_titles(audio_language)
-        .where(Title.name.ilike(f"%{q}%"))
+        .where(_title_name_matches(q))
         .order_by(Title.view_count.desc())
         .limit(limit)
     )
-    titles = await _to_movie_outs(session, list(result.scalars()))
+    titles = await _to_movie_outs(session, list(result.scalars()), user)
 
     needle = q.strip().lower()
     summaries = [
@@ -276,15 +311,15 @@ async def search_movies(
     limit: int = Query(default=20, ge=1, le=100),
     audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
     result = await session.execute(
         _playable_titles(audio_language)
-        .where(Title.name.ilike(f"%{q}%"))
+        .where(_title_name_matches(q))
         .order_by(Title.view_count.desc())
         .limit(limit)
     )
-    return await _to_movie_outs(session, list(result.scalars()))
+    return await _to_movie_outs(session, list(result.scalars()), user)
 
 
 # Declared before /{movie_id}: FastAPI matches in definition order, so a
@@ -294,13 +329,13 @@ async def recommended_movies(
     limit: int = Query(default=10, ge=1, le=50),
     audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
     """Personalised row. Falls back to popularity for a user with no history."""
     titles = await content_service.recommended_for_user(
         session, user.id, limit=limit, audio_language=audio_language
     )
-    return await _to_movie_outs(session, titles)
+    return await _to_movie_outs(session, titles, user)
 
 
 @router.get("/continue", response_model=list[MovieOut])
@@ -308,7 +343,7 @@ async def continue_watching_movies(
     limit: int = Query(default=10, ge=1, le=50),
     audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
     """
     Most recently watched, newest first.
@@ -326,7 +361,71 @@ async def continue_watching_movies(
             continue
         seen.add(item.title.id)
         titles.append(item.title)
-    return await _to_movie_outs(session, titles)
+    return await _to_movie_outs(session, titles, user)
+
+
+# Declared before /{movie_id} for the same reason as /recommended above.
+@router.get("/favorites", response_model=list[MovieOut])
+async def list_favorite_movies(
+    page: int = Query(default=0, ge=0),
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_active_user),
+) -> list[MovieOut]:
+    """
+    Saved titles, most recently saved first.
+
+    Goes through the same content_service.list_favorites the bot's saved
+    list uses, so both surfaces apply the same playable-file gate and a
+    title that has become unwatchable disappears from both at once.
+    """
+    result = await content_service.list_favorites(session, user.id, page=page)
+    return await _to_movie_outs(session, result.titles, user)
+
+
+class FavoriteOut(BaseModel):
+    """The resulting state, so the client renders what the server decided."""
+
+    title_id: int
+    is_favorite: bool
+
+
+@router.post("/{movie_id}/favorite", response_model=FavoriteOut)
+async def toggle_favorite_movie(
+    movie_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_active_user),
+) -> FavoriteOut:
+    """
+    Saves or unsaves a title.
+
+    A toggle rather than separate add/remove calls because that is what the
+    heart control is, and the service's ON CONFLICT DO NOTHING insert makes
+    a double-tap settle on one state instead of raising on the unique
+    constraint. Works identically for a film and a serial — favourites are
+    per *title*, so a serial is saved once rather than per episode.
+    """
+    title = await session.get(Title, movie_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail=t("catalog.title_not_found", user.language))
+    saved = await content_service.toggle_favorite(session, user.id, movie_id)
+    return FavoriteOut(title_id=movie_id, is_favorite=saved)
+
+
+@router.delete("/{movie_id}/favorite", response_model=FavoriteOut)
+async def remove_favorite_movie(
+    movie_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_active_user),
+) -> FavoriteOut:
+    """
+    Unsaves a title, idempotently.
+
+    Exists alongside the toggle because "remove" from a saved-list screen
+    must not re-add the title if the list was stale — which is exactly
+    what a toggle would do.
+    """
+    await content_service.remove_favorite(session, user.id, movie_id)
+    return FavoriteOut(title_id=movie_id, is_favorite=False)
 
 
 @router.get("/{movie_id}/similar", response_model=list[MovieOut])
@@ -335,32 +434,34 @@ async def similar_movies(
     limit: int = Query(default=10, ge=1, le=50),
     audio_language: AudioLanguage | None = None,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
     titles = await content_service.similar_titles(
         session, movie_id, limit=limit, audio_language=audio_language
     )
-    return await _to_movie_outs(session, titles)
+    return await _to_movie_outs(session, titles, user)
 
 
 @router.get("/{movie_id}", response_model=MovieOut)
 async def get_movie(
     movie_id: int,
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> MovieOut:
     title = await session.get(Title, movie_id)
     if title is None:
         raise HTTPException(status_code=404, detail=t("catalog.title_not_found", user.language))
     counts = await content_service.episode_counts(session, [title.id])
-    return _to_movie_out(title, counts.get(title.id, 1))
+    saved = await content_service.is_favorite(session, user.id, title.id)
+    localized = await content_service.localized_title(session, title, user.language)
+    return _to_movie_out(title, counts.get(title.id, 1), saved, localized)
 
 
 @router.get("/{movie_id}/seasons", response_model=list[int])
 async def list_title_seasons(
     movie_id: int,
     session: AsyncSession = Depends(get_db_session),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> list[int]:
     """
     Season numbers for a title, ascending.
@@ -378,7 +479,7 @@ async def list_title_episodes(
     season: int | None = None,
     page: int = Query(default=0, ge=0),
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> EpisodePageOut:
     """
     One page of a title's episodes, each with its audio tracks and whether
@@ -419,7 +520,7 @@ async def watch_movie(
     movie_id: int,
     episode_id: int | None = None,
     session: AsyncSession = Depends(get_db_session),
-    user: User = Depends(get_current_user),
+    user: User = Depends(get_active_user),
 ) -> WatchResponse:
     # Every string returned from here is rendered straight into a toast by
     # the Mini App (App.tsx reads `detail` and `message` verbatim), so it
@@ -429,6 +530,18 @@ async def watch_movie(
     title = await session.get(Title, movie_id)
     if title is None:
         raise HTTPException(status_code=404, detail=unavailable)
+
+    # Membership is checked here rather than on browsing: the catalog stays
+    # open to everyone, and the gate sits on the one action that actually
+    # spends the channel's audience — delivering a file. When no channel is
+    # configured this is a no-op, so nothing changes for a platform that
+    # does not use the feature.
+    allowed, membership = await check_access(session, bot, user)
+    if not allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=t("membership.required", user.language, channel=membership.channel),
+        )
 
     if episode_id is None:
         # A film has exactly one episode, so omitting the id is unambiguous

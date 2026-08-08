@@ -66,8 +66,10 @@ class CatalogStates(StatesGroup):
     awaiting_search_query = State()
 
 
-def _format_card(title: Title, _) -> str:
-    lines = [f"🎬 <b>{title.name}</b>"]
+def _format_card(title: Title, _, name: str | None = None) -> str:
+    """`name` is the title as the viewer's language renders it; it falls back
+    to the stored name, which is the Uzbek one this catalog is indexed by."""
+    lines = [f"🎬 <b>{name or title.name}</b>"]
     meta: list[str] = []
     if title.year:
         meta.append(str(title.year))
@@ -105,9 +107,10 @@ async def _send_page(
         if user_id
         else set()
     )
+    names = await content_service.localized_names(session, page.titles, lang)
 
     for title in page.titles:
-        caption = _format_card(title, _)
+        caption = _format_card(title, _, names.get(title.id))
         keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
         if title.poster_url:
             await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)
@@ -153,10 +156,13 @@ async def _show_episode_page(
         return False
 
     title = await session.get(Title, title_id)
+    name = (
+        (await content_service.localized_title(session, title, lang)).name if title else ""
+    )
     season_suffix = _("catalog.season_suffix", season=season) if len(seasons) > 1 else ""
 
     await message.answer(
-        _("catalog.episodes_prompt", name=title.name if title else "", season_suffix=season_suffix),
+        _("catalog.episodes_prompt", name=name, season_suffix=season_suffix),
         reply_markup=get_episodes_keyboard(
             title_id=title_id,
             season=season,
@@ -246,9 +252,12 @@ async def handle_continue_watching(
         await callback.answer(_("catalog.continue_empty"), show_alert=True)
         return
 
+    names = await content_service.localized_names(
+        session, [item.title for item in items], lang
+    )
     await callback.message.answer(
         _("catalog.continue_header"),
-        reply_markup=get_continue_watching_keyboard(items, lang),
+        reply_markup=get_continue_watching_keyboard(items, lang, names),
     )
     await callback.answer()
 
@@ -354,7 +363,10 @@ async def handle_open_title(callback: CallbackQuery, session: AsyncSession, lang
     seasons = await content_service.list_seasons(session, title_id)
     if len(seasons) > 1:
         await callback.message.answer(
-            _("catalog.choose_season", name=title.name),
+            _(
+                "catalog.choose_season",
+                name=(await content_service.localized_title(session, title, lang)).name,
+            ),
             reply_markup=get_seasons_keyboard(title_id, seasons, lang),
         )
         await callback.answer()

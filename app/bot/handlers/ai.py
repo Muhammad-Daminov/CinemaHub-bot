@@ -82,9 +82,11 @@ async def handle_ai_prompt(
         else set()
     )
 
+    names = await content_service.localized_names(session, result.titles, lang)
+
     await message.answer(_("ai.reason", reason=result.reason))
     for title in result.titles:
-        caption = _("ai.card", name=title.name, year=title.year or "?")
+        caption = _("ai.card", name=names.get(title.id, title.name), year=title.year or "?")
         keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
         if title.poster_url:
             await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)

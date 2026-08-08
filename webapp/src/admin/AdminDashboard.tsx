@@ -16,6 +16,8 @@ import { ReceiptsPanel } from "./ReceiptsPanel";
 import { StatsPanel } from "./StatsPanel";
 import { UploadsPanel } from "./UploadsPanel";
 import { AdminsPanel } from "./AdminsPanel";
+import { BroadcastPanel } from "./BroadcastPanel";
+import { SettingsPanel } from "./SettingsPanel";
 import { UsersPanel } from "./UsersPanel";
 
 type TabId =
@@ -28,6 +30,8 @@ type TabId =
   | "promo"
   | "users"
   | "plans"
+  | "broadcast"
+  | "settings"
   | "admins";
 
 /**
@@ -48,6 +52,8 @@ const TABS: { id: TabId; label: string; permission?: string; superAdminOnly?: bo
   { id: "promo", label: "🎟️ Promokod", permission: "manage_promo_codes" },
   { id: "users", label: "👥 Foydalanuvchilar", permission: "manage_users" },
   { id: "plans", label: "💎 Tariflar", permission: "manage_subscriptions" },
+  { id: "broadcast", label: "📣 Xabarlar", permission: "manage_notifications" },
+  { id: "settings", label: "⚙️ Sozlamalar", permission: "manage_system_settings" },
   { id: "admins", label: "🛡️ Adminlar", superAdminOnly: true },
 ];
 
@@ -97,6 +103,8 @@ export function AdminDashboard({ permissions, isSuperAdmin }: Props) {
         {tab === "promo" && <PromoPanel />}
         {tab === "users" && <UsersPanel />}
         {tab === "plans" && <PlansPanel />}
+        {tab === "broadcast" && <BroadcastPanel />}
+        {tab === "settings" && <SettingsPanel />}
         {tab === "admins" && <AdminsPanel />}
       </div>
     </div>

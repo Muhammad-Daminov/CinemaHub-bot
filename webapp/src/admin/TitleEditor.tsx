@@ -9,11 +9,23 @@
  * but no GET, so on failure we fall back to the episode's file_count and
  * show what was attached in this session.
  */
-import { ArrowLeft, ChevronDown, ChevronRight, Plus, Search, Sparkles, Trash2 } from "lucide-react";
+import {
+  ArrowLeft,
+  ChevronDown,
+  ChevronRight,
+  Languages,
+  Plus,
+  Search,
+  Sparkles,
+  Trash2,
+} from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import { adminApi, ApiError } from "../lib/api";
 import { PosterPicker } from "./PosterPicker";
 import type {
+  AdminTitleTranslation,
+  TranslationLanguage,
+  TranslationSource,
   AdminCollectionListItem,
   AdminEpisode,
   AdminMediaFile,
@@ -60,6 +72,16 @@ interface FormState {
   poster_url: string;
   rating: string;
 }
+
+// The stored Title.name is the Uzbek name and the fallback for every
+// language, so a `uz` row is an override rather than the norm — it is
+// offered because a title can legitimately read differently in Uzbek
+// than the name the catalog is indexed by.
+const TRANSLATION_LANGUAGES: { code: TranslationLanguage; label: string }[] = [
+  { code: "uz", label: "O'zbekcha" },
+  { code: "ru", label: "Ruscha" },
+  { code: "en", label: "Inglizcha" },
+];
 
 const EMPTY_FORM: FormState = {
   name: "",
@@ -336,6 +358,143 @@ function CollectionPicker({ titleId }: { titleId: number }) {
 }
 
 
+/**
+ * Per-language name and description for one title.
+ *
+ * The stored name is deliberately not shown as an editable "Uzbek" row —
+ * it is the title's own name field above, and the fallback for every
+ * language. What is edited here are the overrides.
+ *
+ * Emptying a name and saving removes that language's translation, which
+ * is the only way a form of plain text fields can express "delete this".
+ * TMDB'dan olish fills Russian and English from TMDB without touching
+ * anything an administrator typed.
+ */
+function TranslationEditor({ titleId, hasTmdbId }: { titleId: number; hasTmdbId: boolean }) {
+  const [rows, setRows] = useState<Record<string, { name: string; description: string }>>({});
+  const [sources, setSources] = useState<Record<string, TranslationSource>>({});
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const absorb = useCallback((list: AdminTitleTranslation[]) => {
+    const next: Record<string, { name: string; description: string }> = {};
+    const nextSources: Record<string, TranslationSource> = {};
+    for (const item of list) {
+      next[item.language] = { name: item.name, description: item.description ?? "" };
+      nextSources[item.language] = item.source;
+    }
+    setRows(next);
+    setSources(nextSources);
+  }, []);
+
+  useEffect(() => {
+    adminApi.titleTranslations(titleId).then(absorb).catch(() => undefined);
+  }, [titleId, absorb]);
+
+  const update = (language: string, field: "name" | "description", value: string) =>
+    setRows((current) => ({
+      ...current,
+      // Written out rather than spread-plus-override: a spread after the
+      // defaults would put the stored value back over the character just
+      // typed, and TypeScript flags that shape for exactly this reason.
+      [language]: {
+        name: field === "name" ? value : (current[language]?.name ?? ""),
+        description: field === "description" ? value : (current[language]?.description ?? ""),
+      },
+    }));
+
+  const save = async () => {
+    setBusy(true);
+    try {
+      absorb(
+        await adminApi.setTitleTranslations(
+          titleId,
+          TRANSLATION_LANGUAGES.map(({ code }) => ({
+            language: code,
+            name: rows[code]?.name ?? "",
+            description: rows[code]?.description || null,
+          })),
+        ),
+      );
+      setError(null);
+      setMessage("Tarjimalar saqlandi.");
+    } catch (err) {
+      setMessage(null);
+      setError(err instanceof ApiError ? err.message : "Tarjimani saqlashda xatolik.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const fillFromTmdb = async () => {
+    setBusy(true);
+    try {
+      absorb(await adminApi.fillTitleTranslations(titleId));
+      setError(null);
+      setMessage("TMDB tarjimalari olindi.");
+    } catch (err) {
+      setMessage(null);
+      setError(err instanceof ApiError ? err.message : "TMDB tarjimasi olinmadi.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <section>
+      <SectionTitle>Tarjimalar</SectionTitle>
+      <p className="mb-2 font-body text-xs text-ink-dim">
+        Foydalanuvchi tanlagan tilda ko'radi. Bo'sh qoldirilsa yuqoridagi asosiy nom ishlatiladi.
+      </p>
+
+      <div className="space-y-3">
+        {TRANSLATION_LANGUAGES.map(({ code, label }) => (
+          <div key={code} className="rounded-xl border border-surface-hi bg-surface p-3">
+            <div className="mb-1.5 flex items-center justify-between">
+              <span className="font-body text-xs font-medium text-ink">{label}</span>
+              {sources[code] === "tmdb" && <Badge>TMDB</Badge>}
+            </div>
+            <div className="space-y-2">
+              <TextInput
+                value={rows[code]?.name ?? ""}
+                onChange={(value) => update(code, "name", value)}
+                placeholder="Nom"
+              />
+              <TextArea
+                value={rows[code]?.description ?? ""}
+                onChange={(value) => update(code, "description", value)}
+                placeholder="Tavsif"
+                rows={2}
+              />
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="mt-2 flex flex-wrap gap-2">
+        <Button disabled={busy} onClick={save}>
+          Tarjimalarni saqlash
+        </Button>
+        <Button
+          tone="ghost"
+          disabled={busy || !hasTmdbId}
+          title={hasTmdbId ? undefined : "Avval TMDB mosligini tanlang"}
+          onClick={fillFromTmdb}
+        >
+          <span className="inline-flex items-center gap-1.5">
+            <Languages size={15} /> TMDB'dan olish
+          </span>
+        </Button>
+      </div>
+
+      {message && <div className="mt-2"><Notice message={message} /></div>}
+      {error && <div className="mt-2"><Notice message={error} tone="error" /></div>}
+    </section>
+  );
+}
+
+
 function EpisodeFiles({ episode }: { episode: AdminEpisode }) {
   const [files, setFiles] = useState<AdminMediaFile[]>([]);
   const [listable, setListable] = useState(true);
@@ -581,6 +740,9 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
     url: null,
     imageId: null,
   });
+  // Not part of FormState: tmdb_id is never typed by hand, it only decides
+  // whether "fill translations from TMDB" has anything to fill from.
+  const [hasTmdbId, setHasTmdbId] = useState(false);
 
 
   // Only while creating: when editing, the title's own row would match
@@ -611,6 +773,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
         if (found) {
           setForm(toForm(found));
           syncPoster(found);
+          setHasTmdbId(found.tmdb_id != null);
         }
       } catch {
         /* the editor stays usable on a failed refresh */
@@ -664,6 +827,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
       const enriched = await adminApi.enrichTitle(savedId);
       setForm(toForm(enriched));
       syncPoster(enriched);
+      setHasTmdbId(enriched.tmdb_id != null);
       setMessage(
         enriched.tmdb_id == null ? "TMDB'dan mos kelmadi." : "TMDB ma'lumotlari yuklandi.",
       );
@@ -780,6 +944,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
             // whatever the admin typed, in Uzbek.
             setForm(toForm(updated));
             syncPoster(updated);
+            setHasTmdbId(updated.tmdb_id != null);
             setMessage("TMDB ma'lumotlari qo'llandi.");
           }}
         />
@@ -792,6 +957,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
         <Notice message="Qism qo'shish uchun avval saqlang." />
       ) : (
         <>
+          <TranslationEditor titleId={savedId} hasTmdbId={hasTmdbId} />
           <CollectionPicker titleId={savedId} />
           <EpisodeManager titleId={savedId} contentType={form.content_type} />
         </>

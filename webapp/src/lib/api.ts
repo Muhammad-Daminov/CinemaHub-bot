@@ -24,8 +24,14 @@ import type {
   AdminMediaFile,
   AdminPromoCode,
   AdminReceipt,
+  AdminBroadcast,
   AdminStats,
   AdminTitle,
+  AdminTitleTranslation,
+  AdminUser,
+  BroadcastAudience,
+  BroadcastAudienceSize,
+  MembershipSettings,
   EpisodeInput,
   MediaFileInput,
   PaymentStatus,
@@ -44,6 +50,7 @@ import type {
   TMDBSearchResult,
   TitleInput,
   TitleListParams,
+  TitleTranslationInput,
   TitlePage,
   TitleUpdateInput,
   TopUser,
@@ -105,6 +112,19 @@ export const api = {
   episodes: (movieId: number, season?: number, page = 0) =>
     request<EpisodePage>(`/movies/${movieId}/episodes${toQuery({ season, page })}`),
   // episode_id omitted plays the first episode, which is what a film has.
+
+  // ---------- favourites (Phase 6) ----------
+  favorites: (page = 0) => request<Movie[]>(`/movies/favorites${toQuery({ page })}`),
+  /** Returns the resulting state, so the heart renders what the server decided. */
+  toggleFavorite: (movieId: number) =>
+    request<{ title_id: number; is_favorite: boolean }>(`/movies/${movieId}/favorite`, {
+      method: "POST",
+    }),
+  removeFavorite: (movieId: number) =>
+    request<{ title_id: number; is_favorite: boolean }>(`/movies/${movieId}/favorite`, {
+      method: "DELETE",
+    }),
+
   // ---------- billing (Phase 5) ----------
   billingOverview: () => request<BillingOverview>("/billing/overview"),
   previewPurchase: (planId: number) =>
@@ -184,6 +204,15 @@ export const adminApi = {
   deleteTitle: (id: number) => send<StatusResponse>(`/admin/titles/${id}`, "DELETE"),
   enrichTitle: (id: number) => send<AdminTitle>(`/admin/titles/${id}/enrich`, "POST"),
 
+  // ---------- catalog translations (Phase 7) ----------
+  titleTranslations: (id: number) =>
+    request<AdminTitleTranslation[]>(`/admin/titles/${id}/translations`),
+  setTitleTranslations: (id: number, translations: TitleTranslationInput[]) =>
+    send<AdminTitleTranslation[]>(`/admin/titles/${id}/translations`, "PUT", { translations }),
+  /** Pulls ru/en from TMDB. Manual translations are preserved by the backend. */
+  fillTitleTranslations: (id: number) =>
+    send<AdminTitleTranslation[]>(`/admin/titles/${id}/translations/tmdb`, "POST"),
+
   // ---------- episodes & files ----------
   listEpisodes: (titleId: number) => request<AdminEpisode[]>(`/admin/titles/${titleId}/episodes`),
   createEpisode: (titleId: number, body: EpisodeInput) =>
@@ -233,10 +262,13 @@ export const adminApi = {
 
   // ---------- users ----------
   listUsers: (params: UserListParams = {}) => request<UserPage>(`/admin/users${toQuery(params)}`),
+  setUserBan: (userId: number, banned: boolean) =>
+    send<AdminUser>(`/admin/users/${userId}/ban`, "PATCH", { banned }),
 
   // ---------- receipts ----------
-  listReceipts: (status: PaymentStatus = "pending") =>
-    request<AdminReceipt[]>(`/admin/receipts?status=${status}`),
+  /** `status` omitted means every state — that is the history view, not the queue. */
+  listReceipts: (params: { status?: PaymentStatus; q?: string } = {}) =>
+    request<AdminReceipt[]>(`/admin/receipts${toQuery(params)}`),
   approveReceipt: (id: number) => send<StatusResponse>(`/admin/receipts/${id}/approve`, "POST"),
   rejectReceipt: (id: number, notes: string) =>
     send<StatusResponse>(`/admin/receipts/${id}/reject`, "POST", { notes }),
@@ -287,6 +319,20 @@ export const adminApi = {
   setAdminPermissions: (userId: number, permissions: string[]) =>
     send<AdminAccount>(`/admin/admins/${userId}/permissions`, "PUT", { permissions }),
   removeAdmin: (userId: number) => send<StatusResponse>(`/admin/admins/${userId}`, "DELETE"),
+
+  // ---------- broadcasts ----------
+  listBroadcasts: () => request<AdminBroadcast[]>("/admin/broadcasts"),
+  broadcastAudiences: () => request<BroadcastAudienceSize[]>("/admin/broadcasts/audience"),
+  sendBroadcast: (message: string, audience: BroadcastAudience) =>
+    send<AdminBroadcast>("/admin/broadcasts", "POST", { message, audience }),
+
+  // ---------- system settings ----------
+  membershipSettings: () => request<MembershipSettings>("/admin/settings/membership"),
+  saveMembershipSettings: (require_membership: boolean, required_channel: string | null) =>
+    send<MembershipSettings>("/admin/settings/membership", "PUT", {
+      require_membership,
+      required_channel,
+    }),
 
   // ---------- promo ----------
   listPromo: () => request<AdminPromoCode[]>("/admin/promo"),

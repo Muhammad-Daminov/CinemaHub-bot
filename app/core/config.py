@@ -69,6 +69,16 @@ class Settings(BaseSettings):
     PREMIUM_SUBSCRIPTION_DAYS: int = Field(default=30)
     TOPUP_PRESET_AMOUNTS: str = Field(default="10000,25000,50000,100000")
 
+    # --- Referral ---
+    # Paid to referrer and referee alike when the referee's first top-up is
+    # approved — the rule recorded in IDEAS.md I-2, chosen over rewarding
+    # signup because signups are free to manufacture and an approved
+    # payment is not. The amount was never specified anywhere in the
+    # project, so it is configuration with a documented default rather
+    # than a number invented in code; 0 disables payouts entirely and is
+    # the safe setting if the figure is still being decided.
+    REFERRAL_BONUS_AMOUNT: float = Field(default=5000)
+
     @property
     def admin_ids_list(self) -> list[int]:
         return [int(x) for x in self.ADMIN_IDS.split(",") if x.strip()]

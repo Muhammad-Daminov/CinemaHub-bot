@@ -13,6 +13,7 @@ MissingGreenlet. Deletes use Core `delete()` in child-first order
 rather than relying on ORM cascade, which would need the relationship
 loaded to work.
 """
+import logging
 import re
 from collections.abc import Sequence
 from dataclasses import dataclass, field
@@ -33,15 +34,28 @@ from app.db.models.content import (
     MediaFile,
     PendingUpload,
     Title,
+    TitleTranslation,
+    TranslationSource,
     VideoQuality,
     title_collections,
 )
 from app.db.models.payment import PaymentReceipt, PaymentStatus
 from app.db.models.promo import PromoCode
-from app.db.models.user import Subscription, User
+from app.db.models.user import Subscription, UILanguage, User
+from app.services.content import _title_name_matches
 from app.services.tmdb import tmdb_service
 
+logger = logging.getLogger(__name__)
+
 ACTIVITY_DAYS = 7
+
+# Our interface languages mapped onto TMDB locales. Uzbek is absent on
+# purpose: TMDB holds essentially no Uzbek metadata, and Title.name is
+# already the Uzbek name the catalog is indexed by.
+TMDB_LOCALES: dict[UILanguage, str] = {
+    UILanguage.RU: "ru-RU",
+    UILanguage.EN: "en-US",
+}
 
 # Fields enrich_from_tmdb would overwrite. Editing one of these is what
 # earns a title its is_manual_override flag — housekeeping edits like
@@ -119,6 +133,9 @@ class AdminContentService:
             title.is_manual_override = True
 
         await session.flush()
+        # The admin just told us exactly which TMDB record this is, so its
+        # localised names are as trustworthy as they will ever be.
+        await self.fill_translations_from_tmdb(session, title)
         return title
 
     async def set_title_active(self, session: AsyncSession, title_id: int, is_active: bool) -> Title | None:
@@ -141,6 +158,11 @@ class AdminContentService:
         if episode_ids:
             await session.execute(delete(MediaFile).where(MediaFile.episode_id.in_(episode_ids)))
             await session.execute(delete(Episode).where(Episode.id.in_(episode_ids)))
+        # Explicit, though the foreign key also cascades: this module's rule
+        # is child-first Core deletes, and relying on the database alone
+        # would leave the ORM's create_all-built test schema as the only
+        # place the behaviour is proven.
+        await session.execute(delete(TitleTranslation).where(TitleTranslation.title_id == title_id))
         await session.execute(delete(Title).where(Title.id == title_id))
         await session.flush()
         return True
@@ -172,7 +194,9 @@ class AdminContentService:
 
         filters = []
         if query:
-            filters.append(Title.name.ilike(f"%{query.strip()}%"))
+            # Same predicate the catalog search uses, so an admin looking
+            # for "Дюна" finds the row a Russian-speaking viewer would.
+            filters.append(_title_name_matches(query))
         if content_type is not None:
             filters.append(Title.content_type == content_type)
         if is_active is not None:
@@ -323,6 +347,140 @@ class AdminContentService:
         )
         return list(result.scalars())
 
+    # ---------- catalog translations ----------
+
+    async def list_title_translations(
+        self, session: AsyncSession, title_id: int
+    ) -> list[TitleTranslation]:
+        result = await session.execute(
+            select(TitleTranslation)
+            .where(TitleTranslation.title_id == title_id)
+            .order_by(TitleTranslation.language)
+        )
+        return list(result.scalars())
+
+    async def set_title_translations(
+        self,
+        session: AsyncSession,
+        title_id: int,
+        entries: dict[UILanguage, tuple[str | None, str | None]],
+    ) -> list[TitleTranslation]:
+        """
+        Replaces the translations named in `entries` — `{language: (name, description)}`.
+
+        A blank name **deletes** that language's row rather than storing an
+        empty string: an empty translation would win the fallback and blank
+        the title, and "clear this translation" has to be expressible from
+        a form whose only affordance is emptying the field.
+
+        Languages absent from `entries` are untouched, so editing Russian
+        cannot silently drop English.
+
+        Upserted rather than delete-then-insert so `created_at` survives an
+        edit, and so two administrators saving at once cannot collide on
+        the unique constraint — the second becomes an update.
+        """
+        for language, (name, description) in entries.items():
+            cleaned = (name or "").strip()
+            if not cleaned:
+                await session.execute(
+                    delete(TitleTranslation).where(
+                        TitleTranslation.title_id == title_id,
+                        TitleTranslation.language == language,
+                    )
+                )
+                continue
+
+            await session.execute(
+                pg_insert(TitleTranslation)
+                .values(
+                    title_id=title_id,
+                    language=language,
+                    name=cleaned,
+                    description=(description or "").strip() or None,
+                    source=TranslationSource.MANUAL,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_title_translation_language",
+                    set_={
+                        "name": cleaned,
+                        "description": (description or "").strip() or None,
+                        # An edit through this path is a person's decision,
+                        # so it is promoted to MANUAL and TMDB auto-fill
+                        # will no longer touch it.
+                        "source": TranslationSource.MANUAL.value,
+                        "updated_at": func.now(),
+                    },
+                )
+            )
+
+        await session.flush()
+        return await self.list_title_translations(session, title_id)
+
+    async def fill_translations_from_tmdb(
+        self, session: AsyncSession, title: Title
+    ) -> list[TitleTranslation]:
+        """
+        Fills Russian and English from TMDB, which already holds both.
+
+        Free coverage: the client is here, the id is on the row, and TMDB
+        returns a localised `title` and `overview` for any locale it knows,
+        falling back to the original where it does not. Uzbek is not
+        attempted — TMDB has essentially no Uzbek metadata, and `Title.name`
+        is already the Uzbek name this catalog is indexed by.
+
+        **A manual translation is never overwritten.** An administrator who
+        corrected a name must not have it undone by the next enrichment,
+        which is the whole reason `source` exists.
+
+        A TMDB failure is not an error: enrichment is best-effort and a
+        title without translations still works.
+        """
+        if title.tmdb_id is None:
+            return []
+
+        manual = {
+            row.language
+            for row in await self.list_title_translations(session, title.id)
+            if row.source == TranslationSource.MANUAL
+        }
+
+        for language, locale in TMDB_LOCALES.items():
+            if language in manual:
+                continue
+            try:
+                details = await tmdb_service.get_movie_details(title.tmdb_id, language=locale)
+            except Exception:  # noqa: BLE001 — enrichment is best-effort
+                logger.warning("TMDB %s lookup failed for title %s", locale, title.id)
+                continue
+
+            name = (details.get("title") or "").strip()
+            if not name:
+                continue
+
+            await session.execute(
+                pg_insert(TitleTranslation)
+                .values(
+                    title_id=title.id,
+                    language=language,
+                    name=name,
+                    description=(details.get("overview") or "").strip() or None,
+                    source=TranslationSource.TMDB,
+                )
+                .on_conflict_do_update(
+                    constraint="uq_title_translation_language",
+                    set_={
+                        "name": name,
+                        "description": (details.get("overview") or "").strip() or None,
+                        "source": TranslationSource.TMDB.value,
+                        "updated_at": func.now(),
+                    },
+                )
+            )
+
+        await session.flush()
+        return await self.list_title_translations(session, title.id)
+
     # ---------- TMDB enrichment ----------
 
     async def enrich_from_tmdb(self, session: AsyncSession, title_id: int) -> Title | None:
@@ -356,6 +514,8 @@ class AdminContentService:
             title.year = int(release_date[:4])
 
         await session.flush()
+        # Free coverage while we are already talking to TMDB about this row.
+        await self.fill_translations_from_tmdb(session, title)
         return title
 
     async def search_tmdb(self, query: str, limit: int = 10) -> list[dict]:

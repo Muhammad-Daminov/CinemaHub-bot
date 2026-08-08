@@ -46,6 +46,9 @@ class TMDBService:
             return json.loads(cached)
 
         session = await self._get_session()
+        # `language` is overridable through params, and every caller that
+        # does so must vary its cache key too — the same tmdb_id in two
+        # locales is two different documents.
         request_params = {"api_key": settings.TMDB_API_KEY, "language": "en-US", **params}
         async with session.get(path, params=request_params) as response:
             response.raise_for_status()
@@ -63,10 +66,27 @@ class TMDBService:
         data = await self._cached_get(cache_key, "search/movie", params, CACHE_TTL_SECONDS)
         return data.get("results", [])
 
-    async def get_movie_details(self, tmdb_id: int) -> dict[str, Any]:
-        """Full details for one movie, including genres."""
-        cache_key = f"tmdb:movie:{tmdb_id}"
-        return await self._cached_get(cache_key, f"movie/{tmdb_id}", {}, CACHE_TTL_SECONDS)
+    async def get_movie_details(self, tmdb_id: int, language: str | None = None) -> dict[str, Any]:
+        """
+        Full details for one movie, including genres.
+
+        `language` is a TMDB locale ("ru-RU"), not one of ours. TMDB
+        returns `title` and `overview` in that locale, falling back to the
+        original when it holds no translation — which is what makes this
+        usable as a free source of catalog translations. The cache key
+        carries the locale, or the second language asked for would be
+        served the first one's answer.
+        """
+        if language is None:
+            return await self._cached_get(
+                f"tmdb:movie:{tmdb_id}", f"movie/{tmdb_id}", {}, CACHE_TTL_SECONDS
+            )
+        return await self._cached_get(
+            f"tmdb:movie:{tmdb_id}:{language}",
+            f"movie/{tmdb_id}",
+            {"language": language},
+            CACHE_TTL_SECONDS,
+        )
 
     async def get_genre_map(self) -> dict[int, str]:
         """{genre_id: genre_name} — used to resolve genre_ids on search results."""

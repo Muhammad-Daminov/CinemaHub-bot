@@ -42,6 +42,10 @@ from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+# The interface language is defined once, on the user model. Catalog
+# translations key off the *same* enum so "the language a user picked" and
+# "the language a title is stored in" can never drift into two vocabularies.
+from app.db.models.user import UILanguage
 
 
 class ContentType(str, enum.Enum):
@@ -212,6 +216,62 @@ class WatchHistory(Base):
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), index=True
     )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class TranslationSource(str, enum.Enum):
+    """
+    Where a translation came from.
+
+    Recorded because the two are not equal in authority: an administrator
+    typed the manual one, and TMDB auto-fill must never overwrite it. It
+    also makes "which of these did a person actually check?" answerable.
+    """
+
+    MANUAL = "manual"
+    TMDB = "tmdb"
+
+
+class TitleTranslation(Base):
+    """
+    One title's name (and description) in one interface language.
+
+    A separate table rather than `name_ru` / `name_en` columns: adding a
+    fourth language then costs a row, not a migration against production,
+    and a title with no translation simply has no row instead of a column
+    full of NULLs.
+
+    `Title.name` stays authoritative and is the fallback. It is not a
+    "default" in the abstract — this catalog is indexed in Uzbek
+    ("Qum sayyorasi") while the TMDB record is English ("Dune"), which is
+    why `apply_tmdb_match` deliberately never overwrites it. A row here
+    for `uz` is therefore allowed but rarely needed; `ru` and `en` are the
+    usual cases.
+    """
+
+    __tablename__ = "chp_title_translations"
+    __table_args__ = (
+        UniqueConstraint("title_id", "language", name="uq_title_translation_language"),
+    )
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    title_id: Mapped[int] = mapped_column(
+        ForeignKey("chp_titles.id", ondelete="CASCADE"), nullable=False, index=True
+    )
+    language: Mapped[UILanguage] = mapped_column(nullable=False, index=True)
+
+    name: Mapped[str] = mapped_column(String(255), nullable=False, index=True)
+    # Optional independently of the name: TMDB often has a localised title
+    # with no localised overview, and half a translation is still useful.
+    description: Mapped[str | None] = mapped_column(String(2000))
+
+    source: Mapped[TranslationSource] = mapped_column(
+        default=TranslationSource.MANUAL, nullable=False
+    )
+
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class Favorite(Base):

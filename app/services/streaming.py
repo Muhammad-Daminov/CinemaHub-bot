@@ -23,6 +23,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.i18n import t
 from app.db.models.content import Episode, MediaFile, Title, WatchHistory
 from app.db.models.user import UILanguage
+from app.services.content import content_service
 
 
 class StreamingService:
@@ -43,8 +44,12 @@ class StreamingService:
         Sends `media_file` to `chat_id`. Raises ValueError if there is no way
         to deliver it (send failed and no source-message fallback available).
         """
+        # Resolved here rather than at each call site: the bot and the Mini
+        # App both arrive through this method, so one lookup keeps the
+        # caption in the viewer's language on either route.
+        localized = await content_service.localized_title(session, title, lang)
         sent_message = await self._send_by_file_id_or_fallback(
-            bot, chat_id, title, episode, media_file, lang
+            bot, chat_id, title, episode, media_file, lang, localized.name
         )
 
         # Both counters matter: the episode drives "most-watched episode"
@@ -91,8 +96,9 @@ class StreamingService:
         episode: Episode,
         media_file: MediaFile,
         lang: UILanguage,
+        name: str | None = None,
     ) -> Message:
-        caption = self._build_caption(title, episode, lang)
+        caption = self._build_caption(title, episode, lang, name)
 
         try:
             return await bot.send_video(chat_id=chat_id, video=media_file.file_id, caption=caption)
@@ -112,8 +118,11 @@ class StreamingService:
         )
 
     @staticmethod
-    def _build_caption(title: Title, episode: Episode, lang: UILanguage) -> str:
-        parts = [f"🎬 <b>{title.name}</b>"]
+    def _build_caption(
+        title: Title, episode: Episode, lang: UILanguage, name: str | None = None
+    ) -> str:
+        """`name` is the localised title; the stored name is the fallback."""
+        parts = [f"🎬 <b>{name or title.name}</b>"]
         if title.year:
             parts.append(f"({title.year})")
         if not title.is_single_episode:

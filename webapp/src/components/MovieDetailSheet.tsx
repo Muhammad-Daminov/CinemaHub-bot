@@ -1,4 +1,4 @@
-import { Play, Star, X } from "lucide-react";
+import { Heart, Play, Star, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n";
@@ -16,6 +16,8 @@ interface Props {
   onSelectSimilar: (movie: Movie) => void;
   /** The catalog's active audio filter, so this row obeys it like every other. */
   audioLanguage: AudioLanguageFilter | null;
+  isFavorite: boolean;
+  onToggleFavorite: (movie: Movie) => void;
 }
 
 export function MovieDetailSheet({
@@ -24,6 +26,8 @@ export function MovieDetailSheet({
   onWatch,
   onSelectSimilar,
   audioLanguage,
+  isFavorite,
+  onToggleFavorite,
 }: Props) {
   const t = useT();
   const [similar, setSimilar] = useState<Movie[]>([]);
@@ -66,9 +70,23 @@ export function MovieDetailSheet({
       >
         <div className="mb-3 flex items-start justify-between gap-3">
           <h2 className="font-display text-xl font-semibold text-ink">{movie.title}</h2>
-          <button onClick={onClose} aria-label={t("app.close")} className="shrink-0 text-ink-dim hover:text-ink">
-            <X size={20} />
-          </button>
+          <div className="flex shrink-0 items-center gap-3">
+            <button
+              onClick={() => onToggleFavorite(movie)}
+              aria-label={t(isFavorite ? "app.remove_favorite" : "app.add_favorite")}
+              aria-pressed={isFavorite}
+              className="transition-transform active:scale-90"
+            >
+              <Heart
+                size={20}
+                className={isFavorite ? "text-marquee" : "text-ink-dim"}
+                fill={isFavorite ? "currentColor" : "none"}
+              />
+            </button>
+            <button onClick={onClose} aria-label={t("app.close")} className="text-ink-dim hover:text-ink">
+              <X size={20} />
+            </button>
+          </div>
         </div>
 
         <div className="mb-3 flex items-center gap-3 font-mono text-xs text-ink-dim">

@@ -14,6 +14,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Numeric,
     String,
     UniqueConstraint,
@@ -64,6 +65,11 @@ class BalanceTxType(str, enum.Enum):
     REFUND = "refund"
     ADMIN_ADJUSTMENT = "admin_adjustment"
     PROMO_CREDIT = "promo_credit"
+    # Paid to both sides when a referred user's first top-up is approved.
+    # A distinct type rather than a reused PROMO_CREDIT because the
+    # idempotency index is scoped to (user_id, tx_type, reference_id) —
+    # sharing a type would let a promo and a referral collide on it.
+    REFERRAL_BONUS = "referral_bonus"
 
 
 class User(Base):
@@ -142,6 +148,24 @@ class Subscription(Base):
 
 class BalanceHistory(Base):
     __tablename__ = "chp_balance_history"
+
+    # The idempotency guard for every credit that must happen exactly once
+    # — an approved receipt, a promo, a referral bonus. Partial, because
+    # most entries carry no reference and would otherwise all collide on
+    # NULL. Declared here as well as in migration a3f1c92d7e04: the test
+    # suite builds its schema from these models, so an index that lived
+    # only in the migration would be absent under test and every "cannot
+    # pay twice" assertion would pass against a database that can.
+    __table_args__ = (
+        Index(
+            "uq_balance_history_event",
+            "user_id",
+            "tx_type",
+            "reference_id",
+            unique=True,
+            postgresql_where=text("reference_id IS NOT NULL"),
+        ),
+    )
 
     id: Mapped[int] = mapped_column(primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("chp_users.id"), nullable=False, index=True)

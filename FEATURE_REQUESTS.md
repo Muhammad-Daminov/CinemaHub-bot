@@ -245,10 +245,10 @@ Not specified by this request. Note that if per-language movie titles are suppli
 
 **TODO**
 
-1. **Source of movie title translations.** Whether per-language titles are entered manually by administrators, sourced from an external metadata provider, or machine-translated. This determines whether FR-6 is a data-entry feature, an integration, or both.
-2. **Fallback for missing title translations.** What is displayed when a title has no translation in the selected language.
+1. ~~**Source of movie title translations.**~~ **RESOLVED (Phase 7):** both — administrators enter translations, and TMDB auto-fills Russian and English where a title has a match. Machine translation was rejected: no translation service is configured, and adding one would make catalog text depend on an external call at render time. A manual translation is never overwritten by auto-fill.
+2. ~~**Fallback for missing title translations.**~~ **RESOLVED (Phase 7):** the stored `Title.name` — the Uzbek name the catalog is indexed by — applied per field, so a translation with a name but no description keeps the original description.
 3. **Scope of the audit.** Whether *"Check your chat with the bot…"* is the only known untranslated string or an example, with a full sweep for untranslated text expected.
-4. **Language set.** Whether requirement 3 applies to all supported languages equally.
+4. ~~**Language set.**~~ **RESOLVED (Phase 7):** all three are supported, but Uzbek is an override rather than the norm, since `Title.name` already holds the Uzbek name. TMDB auto-fill covers only ru/en — TMDB has essentially no Uzbek metadata.
 5. **Priority placement.** Provisionally High — requirement 1 is stated as absolute and the request cites a live defect. Confirm.
 
 ---

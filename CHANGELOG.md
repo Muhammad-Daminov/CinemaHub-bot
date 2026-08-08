@@ -7,6 +7,52 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pro
 
 ## [Unreleased]
 
+### Phase 7 — Catalog Localization (2026-08-08)
+
+#### Added
+- **Movie titles now read in the viewer's language (FR-6 requirement 3).** `chp_title_translations` holds a name and description per interface language; `Title.name` stays authoritative and is the fallback. Resolution happens **server-side**, in one batched query per page, so the API response shape is unchanged and the Mini App needed no change at all to display it.
+- **Both surfaces resolve the same way.** The Mini App's catalog, detail and search responses, and the bot's cards, season/episode prompts, AI recommendation cards, continue-watching buttons and delivery captions all read the translated name. The bot's caption is resolved inside `deliver_episode`, which is the one path both surfaces reach.
+- **Search crosses languages.** A viewer typing "Dune" or "Дюна" finds a title stored as "Qum sayyorasi". Implemented as an EXISTS over the translations, so a title with three translations still appears once. The admin title list uses the same predicate.
+- **TMDB auto-fill for Russian and English.** The client already spoke to TMDB and the locale is a query parameter, so enrichment and "apply this TMDB match" now also store localised names and overviews. **A manual translation is never overwritten** — that is what `source` records. Uzbek is deliberately not attempted: TMDB has essentially no Uzbek metadata, and `Title.name` already is the Uzbek name.
+- **Translation editor in the admin title editor** — name and description per language, a TMDB badge on auto-filled rows, and a "fill from TMDB" action for titles that enrichment refuses to touch because they are manually overridden.
+
+#### Decisions recorded
+- **Source of translations** (FR-6 TODO 1, unanswered since the request): **administrator-entered, with TMDB auto-fill for ru/en.** Manual entry always works and depends on nothing; TMDB coverage is free where a title has a match. Machine translation was not used — no translation service is configured, and it would have made the feature depend on one.
+- **Fallback** (FR-6 TODO 2): the stored `Title.name`, per field. A translation with a name but no description keeps the original description rather than blanking it.
+- **Language set** (FR-6 TODO 4): all three, but Uzbek is an override rather than the norm, because the stored name already is the Uzbek one.
+
+#### Database
+- `c8d3a51fb742` — `chp_title_translations`, unique on (title_id, language), cascading on title delete. **No backfill and `chp_titles` is untouched.** Rehearsed on a scratch database (upgrade, `alembic check`, downgrade, re-upgrade). **Not applied to production.**
+
+
+### Phase 6 — Admin Experience & Remaining Core Features (2026-08-08)
+
+#### Added
+- **Favorites in the Mini App.** `GET /movies/favorites`, `POST` / `DELETE /movies/{id}/favorite`, and an `is_favorite` flag on every catalog card resolved in one batch query rather than one request per card. Hearts on cards and in the detail sheet, and a **Saved** home row that hides itself when empty. Films and serials behave identically — a favourite is per *title*, so a serial is saved once, not per episode. The `DELETE` route exists alongside the toggle because "remove" from a stale saved list must not re-add what it is removing.
+- **Admin broadcasts.** Compose, pick an audience (all / subscribers / non-subscribers, each shown with its size *before* sending), send, and watch the delivery counts. Paced at ~20 messages/second, obeys Telegram's `RetryAfter`, counts users who blocked the bot separately from failures, and records no recipient identities — only counts. Gated on `manage_notifications`.
+- **A broadcast cannot be sent twice.** The row moves `PENDING → SENDING` under `SELECT … FOR UPDATE`; a second worker finds it already claimed and stops. A double-clicked button, a retried request and two web processes all collapse to one send.
+- **Required-channel membership.** Configurable from the panel (`chp_system_settings`) rather than an environment variable, because turning it on or pointing it at a different channel is an operational decision, not a redeploy. Browsing stays open; the gate sits on **delivery**, which is the action that actually spends the channel's audience. Administrators are exempt.
+- **Referral payouts.** Both parties are credited when the referred user's first top-up is approved — the rule already recorded in `IDEAS.md` I-2, chosen over rewarding signup because signups are free to manufacture. The amount is `REFERRAL_BONUS_AMOUNT` (default 5000, `0` disables): it was undefined anywhere in the project, so it is configuration with a documented default rather than a number invented in code.
+- **User bans are enforced.** Every REST route that does something takes `get_active_user`, and every bot update passes `AccessMiddleware`. `PATCH /api/admin/users/{id}/ban` is the setter, with a confirm step in the panel.
+- **Receipt history filtering and search** in the panel — by status and by username, full name or Telegram id. Searched server-side, because the receipt an admin is looking for has usually scrolled off the loaded page.
+- **A platform settings tab**, gated on `manage_system_settings`.
+
+#### Changed
+- `GET /api/auth/me` now reports `is_banned`, and is deliberately the one route a banned account can still call — it is what tells the Mini App to render a blocked notice instead of an empty catalog.
+- `GET /api/admin/receipts` with no `status` returns every state. It previously defaulted to `pending`; the panel has always passed the parameter explicitly.
+
+#### Fixed
+- **CI's backend job had never passed.** `BOT_TOKEN: ci-placeholder` is not a syntactically valid Telegram token, and `app.bot.instance` constructs the `Bot` at import time, so aiogram's validator failed the very first step with "Token is invalid!". The placeholder is now shaped like a token (`123456:ci-placeholder`); the check itself is unchanged and still imports the whole application.
+- **Schema drift that silently weakened every idempotency test.** The partial unique index `uq_balance_history_event` existed only in migration `a3f1c92d7e04`, and the test suite builds its schema from the models — so under test the index was absent and "this credit cannot happen twice" was asserted against a database that could not enforce it. Now declared on `BalanceHistory`, and the new referral concurrency test genuinely exercises it.
+
+#### Verified, unchanged
+- **The AI quota fix from Phase 5 is correct.** `INCR` precedes the check, so concurrent requests cannot pass against one stale count, and a refused attempt is rolled back rather than left counted. No change made; [tests/test_ai_quota.py](tests/test_ai_quota.py) now pins both properties.
+- **The user-facing payment history and the receipt image viewer** shipped complete in Phase 5. Reviewed and left alone.
+
+#### Database
+- `b2f7c1a95e30` — `chp_broadcasts`, `chp_system_settings`, and `REFERRAL_BONUS` added to the `balancetxtype` enum. Additive only; nothing existing is touched and nothing is backfilled. **Rehearsed on a scratch database (upgrade, `alembic check`, downgrade, re-upgrade) — NOT yet applied to production.**
+
+
 ### Phase 5 — Purchase Flow (2026-08-07)
 
 #### Added

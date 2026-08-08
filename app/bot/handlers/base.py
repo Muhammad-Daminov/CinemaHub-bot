@@ -28,9 +28,13 @@ from app.bot.keyboards.main_menu import (
     get_mini_app_inline_keyboard,
     menu_texts,
 )
+from app.bot.instance import bot
+from app.bot.middlewares.access import MEMBERSHIP_CHECK_CALLBACK
 from app.core.i18n import t
 from app.db.models.user import UILanguage, User
 from app.services.achievements import OVERALL, current_ranks, watch_stats
+from app.services.membership import check_access, clear_membership_cache
+from app.services.settings_store import get_membership_config
 from app.services.subscriptions import is_user_premium
 from app.services.users import get_or_create_user
 
@@ -88,6 +92,34 @@ async def handle_language_selected(callback: CallbackQuery, session: AsyncSessio
 
     await callback.message.answer(t("common.language_saved", chosen))
     await _send_main_menu(callback.message, chosen, user.full_name)
+    await callback.answer()
+
+
+@router.callback_query(F.data == MEMBERSHIP_CHECK_CALLBACK)
+async def handle_membership_recheck(callback: CallbackQuery, session: AsyncSession, _) -> None:
+    """
+    "I have joined" — re-asks Telegram rather than trusting the click.
+
+    The cached yes from the previous check is dropped first, because the
+    user pressing this button is telling us the earlier answer is stale.
+    """
+    result = await session.execute(select(User).where(User.telegram_id == callback.from_user.id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        await callback.answer(_("common.need_start"), show_alert=True)
+        return
+
+    config = await get_membership_config(session)
+    if config.channel:
+        await clear_membership_cache(config.channel, user.telegram_id)
+
+    allowed, config = await check_access(session, bot, user)
+    if not allowed:
+        await callback.answer(_("membership.not_joined"), show_alert=True)
+        return
+
+    await callback.message.answer(_("membership.welcome"))
+    await _send_main_menu(callback.message, user.language, user.full_name)
     await callback.answer()
 
 

@@ -344,3 +344,56 @@ export interface PlanUpdateInput {
   is_active?: boolean;
   is_free?: boolean;
 }
+
+/** Mirrors the broadcast API in app/api/admin.py. */
+export type BroadcastAudience = "all" | "premium" | "free";
+
+export type BroadcastStatus = "pending" | "sending" | "completed" | "failed";
+
+export interface AdminBroadcast {
+  id: number;
+  message: string;
+  audience: BroadcastAudience;
+  status: BroadcastStatus;
+  total_recipients: number;
+  sent_count: number;
+  /** Users who blocked the bot — churn, not a delivery fault. */
+  blocked_count: number;
+  failed_count: number;
+  error: string | null;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface BroadcastAudienceSize {
+  audience: BroadcastAudience;
+  size: number;
+}
+
+export interface MembershipSettings {
+  require_membership: boolean;
+  required_channel: string | null;
+  /** False for a numeric chat id: the check works, but no join link exists. */
+  has_invite_url: boolean;
+}
+
+/** Mirrors TitleTranslationOut in app/api/admin.py. */
+export type TranslationLanguage = "uz" | "ru" | "en";
+
+export type TranslationSource = "manual" | "tmdb";
+
+export interface AdminTitleTranslation {
+  language: TranslationLanguage;
+  name: string;
+  description: string | null;
+  /** "tmdb" rows are auto-filled and may be overwritten by a later fill;
+   *  "manual" ones never are. */
+  source: TranslationSource;
+}
+
+export interface TitleTranslationInput {
+  language: TranslationLanguage;
+  /** Empty removes the translation for that language. */
+  name: string;
+  description: string | null;
+}

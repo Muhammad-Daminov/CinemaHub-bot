@@ -2,7 +2,7 @@
 
 Assessment of every entry in `FEATURE_REQUESTS.md` against the codebase as it stands.
 
-_Audited: 2026-08-05 · commit `9bd6d48` · updated after Phase 0_
+_Audited: 2026-08-05 · commit `9bd6d48` · updated after each phase; last touched after Phase 6 (2026-08-08)_
 
 > **Phase 0 complete (2026-08-05).** Every blocker it owned is cleared. The receipt-approval race and two further races in promo redemption are fixed and covered by regression tests that were each verified to fail against the pre-fix code. The production ledger has been cleaned up and the idempotency migration applied; consistency is verified across all 508 users. The project now has 45 passing tests, a throwaway test-database script, a locale parity gate, and CI.
 >
@@ -20,6 +20,18 @@ _Audited: 2026-08-05 · commit `9bd6d48` · updated after Phase 0_
 > Implementing it surfaced a **Phase 0 regression that had already shipped**: removing an "unused" import broke OpenAPI schema generation and therefore `/docs`, while leaving `import app.main` green. Fixed, and now covered by a schema test — `import app.main` cannot catch that class of fault.
 >
 > **FR-7 was built as an informational display**, matching what the request literally asks for. Letting the viewer *choose* a track is a small follow-on recorded in `IDEAS.md`, not an omission.
+>
+> **Phases 3–5 complete (2026-08-07), committed as `d23b7e1` and `6b71a11`.** FR-1, FR-4, FR-5, FR-9 and FR-10–12 are implemented; the per-feature sections below were written before those phases and the summary table is the current record where the two disagree.
+>
+> **Phase 6 complete (2026-08-08).** Scoped by the owner to administrative and remaining core features rather than to the roadmap's FR-3-only definition: favorites in the Mini App, broadcasts, required-channel membership, referral payouts, `is_banned` enforcement, and receipt-history filtering. See `TASKS.md` §Done for the item-by-item record.
+>
+> Two findings worth carrying forward. **`uq_balance_history_event` existed only in a migration**, so no test database had it and every "cannot credit twice" assertion was running against a schema that could not enforce the claim — now declared on the model. And **the AI quota fix from Phase 5 is correct**; it was verified rather than changed, and is now pinned by tests.
+>
+> Phase 6's settings tab gives FR-3 a surface for the first time, but the request's *redesign* half — a considered visual treatment of the panel as a whole — is untouched, and its blocking clarification is still unanswered.
+>
+> **Phase 7 complete (2026-08-08).** FR-6 requirement 3 is implemented: movie titles and descriptions now resolve to the viewer's language on every catalog read path in both surfaces, and search matches across languages. Its three open TODOs are answered in `CHANGELOG.md` rather than guessed at — the source is administrator entry with TMDB auto-fill for ru/en, the fallback is the stored `Title.name` resolved per field, and all three languages are supported with Uzbek treated as an override.
+>
+> **FR-6 is now complete.** The remaining catalog text that is still single-language — collection names, plan names and plan benefits — is recorded as P2-13 rather than folded in silently: requirement 3 names movie titles, and the roadmap flagged the wider scope as needing confirmation.
 
 ---
 
@@ -29,15 +41,17 @@ _Audited: 2026-08-05 · commit `9bd6d48` · updated after Phase 0_
 |---|---|---|
 | FR-1 | Super Admin & Admin Permission Management | ✅ **Implemented (Phase 3)** |
 | FR-2 | Role Switching | ❌ Not Implemented — deferred; see note below |
-| FR-3 | Super Admin Settings Page Redesign | ❌ Not Implemented |
-| FR-4 | Balance Display & Subscription Purchase | 🟡 Partially Implemented |
-| FR-5 | Subscription Plan Management | ❌ Not Implemented |
-| FR-6 | Complete Localization Coverage | 🟡 Partially Implemented — **reqs 1–2 done (Phase 1)**; req 3 (per-language titles) remains |
+| FR-3 | Super Admin Settings Page Redesign | 🟡 **Partially Implemented (Phase 6)** — a settings surface now exists (platform settings tab, `manage_system_settings`); the redesign itself is untouched and still blocked on which surface is meant |
+| FR-4 | Balance Display & Subscription Purchase | ✅ **Implemented (Phase 5)** |
+| FR-5 | Subscription Plan Management | ✅ **Implemented (Phase 4)** |
+| FR-6 | Complete Localization Coverage | ✅ **Implemented** — reqs 1–2 (Phase 1), req 3 (Phase 7) |
 | FR-7 | Audio Languages Before Playback | ✅ **Implemented (Phase 2)** — informational display; selection deliberately out of scope |
 | FR-8 | `/start` Command Reliability | ✅ **Implemented (Phase 1)** — against the diagnosed defects, not a supplied repro |
 | FR-9 | TV Series Episode & Season Navigation | ✅ **Implemented (Phase 2)** — Mini App reaches parity with the bot |
 
-**Headline:** nothing requested is finished, but little is starting from zero. Six of nine have working foundations — in three cases (FR-6, FR-7, FR-9) the backend already does the hard part and only the presentation layer is absent. The two genuine greenfield items are FR-2 and FR-5, and FR-3 turns out to have no existing surface to redesign.
+**Headline (original audit, kept for the record):** nothing requested is finished, but little is starting from zero. Six of nine have working foundations — in three cases (FR-6, FR-7, FR-9) the backend already does the hard part and only the presentation layer is absent. The two genuine greenfield items are FR-2 and FR-5, and FR-3 turns out to have no existing surface to redesign.
+
+**Where it stands after Phase 7:** seven of the nine original requests are implemented. Two remain: **FR-2** (role switching, deliberately deferred) and **FR-3**'s redesign half, still blocked on which surface it means.
 
 ---
 
@@ -64,7 +78,7 @@ _Audited: 2026-08-05 · commit `9bd6d48` · updated after Phase 0_
 - Appointing administrators is Super-Admin-only rather than a `manage_admins` grant: an admin who could grant that could grant themselves everything else.
 - Ownership transfers by changing `SUPER_ADMIN_TELEGRAM_ID`; startup promotes the named account and demotes the previous holder to ADMIN.
 
-**Governed surface per permission** — three of the nineteen still govern nothing, unchanged by this phase and tracked elsewhere: `manage_subscriptions` and `manage_subscription_features` await FR-5 (Phase 4), and `manage_notifications` has no notification feature to govern. `manage_users` still governs a read-only screen (see P0-4). They are enforced correctly; they simply gate surfaces that do not exist yet.
+**Governed surface per permission** — as of Phase 6 all four of the previously ungoverned capabilities have a surface: `manage_subscriptions` and `manage_subscription_features` gained the plan editor in Phase 4, `manage_notifications` now gates broadcasts, `manage_system_settings` gates the settings tab, and `manage_users` governs the ban toggle as well as the list.
 
 **Production** — 1 Super Admin (`6427415448`, 0 explicit rows by design), 1 administrator seeded with all 19, 508 users unchanged.
 

@@ -244,21 +244,29 @@ def get_collections_keyboard(summaries, lang: UILanguage) -> InlineKeyboardMarku
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def get_continue_watching_keyboard(items, lang: UILanguage) -> InlineKeyboardMarkup:
+def get_continue_watching_keyboard(
+    items, lang: UILanguage, names: dict[int, str] | None = None
+) -> InlineKeyboardMarkup:
     """
     One button per recently-watched episode, reusing the existing
     `watch:` callback so tapping plays it exactly as it would from the
     catalog — no second delivery path to keep in sync.
+
+    `names` maps title id to the localised name. Passed in rather than
+    looked up here because this module builds keyboards and holds no
+    session; the caller already has one.
     """
+    names = names or {}
     rows = []
     for item in items:
+        name = names.get(item.title.id, item.title.name)
         if item.title.is_single_episode:
-            label = t("catalog.continue_item_film", lang, name=item.title.name)
+            label = t("catalog.continue_item_film", lang, name=name)
         else:
             label = t(
                 "catalog.continue_item_serial",
                 lang,
-                name=item.title.name,
+                name=name,
                 season=item.episode.season,
                 number=item.episode.number,
             )

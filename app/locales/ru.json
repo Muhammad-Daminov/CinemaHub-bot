@@ -226,5 +226,17 @@
   "app.remove_image": "Удалить изображение",
   "app.history_title": "История платежей",
   "app.pending_review": "На рассмотрении",
-  "app.history_empty": "Платежей пока нет."
+  "app.history_empty": "Платежей пока нет.",
+  "common.banned": "Ваш аккаунт заблокирован. По вопросам обратитесь в поддержку.",
+  "membership.required": "Чтобы продолжить, подпишитесь на канал {channel}.",
+  "membership.join": "Подписаться на канал",
+  "membership.check": "Я подписался",
+  "membership.not_joined": "Пока не видим вас в канале. Подпишитесь и попробуйте снова.",
+  "membership.welcome": "Спасибо! Теперь всё доступно.",
+  "referral.bonus_paid": "Реферальный бонус: на ваш счёт зачислено {amount}.",
+  "app.row_favorites": "Избранное",
+  "app.add_favorite": "В избранное",
+  "app.remove_favorite": "Убрать из избранного",
+  "app.blocked_title": "Аккаунт заблокирован",
+  "app.blocked_text": "Ваш аккаунт заблокирован, поэтому сервис недоступен."
 }
