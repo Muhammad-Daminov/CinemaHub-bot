@@ -12,6 +12,7 @@ every process the moment an administrator changed a value — which is
 exactly when being wrong is most visible.
 """
 from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import select
 from sqlalchemy.dialects.postgresql import insert as pg_insert
@@ -21,6 +22,15 @@ from app.db.models.system import SystemSetting
 
 REQUIRED_CHANNEL = "required_channel"
 REQUIRE_MEMBERSHIP = "require_membership"
+# When app/tasks/cron.py last completed. The 30-day receipt-image promise
+# depends on that script running, and nothing in this repository invokes
+# it — so the only way to know whether it runs is to have it say so.
+LAST_MAINTENANCE_RUN = "last_maintenance_run"
+
+# A daily job unheard from for two days has missed at least one run. Wide
+# enough that a late or skipped single run is not alarming, narrow enough
+# that a silently unscheduled job is noticed within a day.
+MAINTENANCE_STALE_AFTER = timedelta(hours=48)
 
 
 @dataclass(frozen=True)
@@ -93,3 +103,55 @@ async def set_membership_config(
     await set_setting(session, REQUIRE_MEMBERSHIP, "true" if enabled else "false", actor_id)
     await set_setting(session, REQUIRED_CHANNEL, (channel or "").strip() or None, actor_id)
     return await get_membership_config(session)
+
+
+# ---------- scheduled maintenance ----------
+
+
+async def record_maintenance_run(
+    session: AsyncSession, when: datetime | None = None
+) -> datetime:
+    """
+    Stamps a completed maintenance run.
+
+    Idempotent by construction: the row is keyed by name and upserted, so
+    running the cron twice in a day leaves one row holding the later time
+    rather than accumulating history. This is a liveness signal, not an
+    audit log — "did it run recently" is the only question it answers.
+    """
+    moment = when or datetime.now(timezone.utc)
+    await set_setting(session, LAST_MAINTENANCE_RUN, moment.isoformat())
+    return moment
+
+
+async def last_maintenance_run(session: AsyncSession) -> datetime | None:
+    """When maintenance last completed, or None if it never has (or the value is unreadable)."""
+    raw = await get_setting(session, LAST_MAINTENANCE_RUN)
+    if not raw:
+        return None
+    try:
+        parsed = datetime.fromisoformat(raw)
+    except ValueError:
+        # A corrupt value reads as "never ran", which is the safe direction:
+        # it warns rather than silently reporting health it cannot prove.
+        return None
+    # Older rows could have been written without a timezone; treat a naive
+    # value as UTC rather than raising when it is compared below.
+    return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+
+
+async def maintenance_is_stale(
+    session: AsyncSession, max_age: timedelta = MAINTENANCE_STALE_AFTER
+) -> tuple[bool, datetime | None]:
+    """
+    Whether maintenance is overdue, with the last run time for the message.
+
+    Never having run counts as stale. That is the case this exists for:
+    the receipt-retention promise has always depended on a Render Cron Job
+    nobody could confirm exists, and "no evidence it ever ran" is exactly
+    what that looks like from inside the application.
+    """
+    last = await last_maintenance_run(session)
+    if last is None:
+        return True, None
+    return datetime.now(timezone.utc) - last > max_age, last

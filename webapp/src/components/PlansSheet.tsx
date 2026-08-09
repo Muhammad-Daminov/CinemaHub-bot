@@ -77,7 +77,14 @@ export function PlansSheet({ onClose, onToast }: Props) {
           else onToast(t("app.balance_insufficient"), "error");
         }
       } else {
-        onToast(err instanceof ApiError ? err.message : t("app.generic_error"), "error");
+        onToast(
+          err instanceof ApiError && err.isRateLimited
+            ? t("app.rate_limited")
+            : err instanceof ApiError
+              ? err.message
+              : t("app.generic_error"),
+          "error",
+        );
       }
     } finally {
       setBusy(false);

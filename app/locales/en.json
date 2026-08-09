@@ -17,7 +17,6 @@
   "start.quick_access": "Quick access:",
   "help.text": "ℹ️ <b>CinemaHub Pro — Help</b>\n\n🎬 Movies — browse the catalog\n🤖 AI Assistant — get personalized recommendations\n📱 Open App — full Mini App experience\n👤 Profile — balance, subscription, referral code\n⭐ Premium — upgrade for unlimited AI + perks\n🧾 My Orders — payment & order history\n⚙️ Settings — change language",
   "profile.text": "👤 <b>Profile</b>\nBalance: {balance}\nReferral code: <code>{code}</code>\nPremium: {premium}",
-  "orders.coming_soon": "🧾 Order history is coming in a later phase.",
   "catalog.menu_prompt": "🎬 Catalog — how would you like to search?",
   "catalog.btn_search": "🔍 Search",
   "catalog.btn_genres": "🎭 Genres",
@@ -238,5 +237,16 @@
   "app.add_favorite": "Save",
   "app.remove_favorite": "Remove from saved",
   "app.blocked_title": "Account blocked",
-  "app.blocked_text": "Your account is blocked, so the service is unavailable."
+  "app.blocked_text": "Your account is blocked, so the service is unavailable.",
+  "orders.header": "🧾 <b>Payment history</b>",
+  "orders.empty": "🧾 No payments yet.",
+  "orders.line": "{date} · {amount} · {kind}",
+  "orders.line_pending": "{date} · {amount} · under review",
+  "orders.kind_topup": "Top-up",
+  "orders.kind_deduction": "Purchase",
+  "orders.kind_refund": "Refund",
+  "orders.kind_admin_adjustment": "Admin adjustment",
+  "orders.kind_promo_credit": "Promo code",
+  "orders.kind_referral_bonus": "Referral bonus",
+  "app.rate_limited": "Too many requests. Please wait a moment and try again."
 }

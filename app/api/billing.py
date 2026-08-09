@@ -22,9 +22,10 @@ from app.api.auth import get_active_user
 from app.core.i18n import t
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt, PaymentStatus
 from app.db.models.subscription import SubscriptionPlanModel
-from app.db.models.user import BalanceHistory, User
+from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.images import ImageError, get_image, store_image
+from app.services.payment_history import payment_history
 from app.services.subscription_plans import list_plans, plan_features
 from app.services.subscription_purchase import (
     InsufficientBalanceError,
@@ -299,7 +300,7 @@ async def _image_response(session: AsyncSession, image_id: int | None, user: Use
 
 
 @router.get("/history", response_model=list[HistoryOut])
-async def payment_history(
+async def payment_history_route(
     limit: int = Query(default=50, ge=1, le=200),
     session: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_active_user),
@@ -307,52 +308,18 @@ async def payment_history(
     """
     The user's own money movements — ledger entries plus pending receipts.
 
-    Pending receipts are included because they have not moved the balance
-    yet, so a user who has just submitted one would otherwise see nothing
-    and resubmit.
+    The query itself lives in app.services.payment_history, because the
+    bot's Orders screen shows the same history and two copies of "what has
+    this user paid" is how the two surfaces start disagreeing.
     """
-    ledger = (
-        await session.execute(
-            select(BalanceHistory)
-            .where(BalanceHistory.user_id == user.id)
-            .order_by(BalanceHistory.created_at.desc())
-            .limit(limit)
-        )
-    ).scalars()
-
-    rows = [
+    return [
         HistoryOut(
             id=entry.id,
             amount=float(entry.amount),
-            kind=entry.tx_type.value,
+            kind=entry.kind,
             description=entry.description,
             created_at=entry.created_at,
-            status=None,
+            status=entry.status,
         )
-        for entry in ledger
+        for entry in await payment_history(session, user.id, limit=limit)
     ]
-
-    pending = (
-        await session.execute(
-            select(PaymentReceipt)
-            .where(
-                PaymentReceipt.user_id == user.id,
-                PaymentReceipt.status == PaymentStatus.PENDING,
-            )
-            .order_by(PaymentReceipt.created_at.desc())
-        )
-    ).scalars()
-    rows.extend(
-        HistoryOut(
-            id=r.id,
-            amount=float(r.amount),
-            kind="pending_receipt",
-            description=None,
-            created_at=r.created_at,
-            status=r.status.value,
-        )
-        for r in pending
-    )
-
-    rows.sort(key=lambda r: r.created_at, reverse=True)
-    return rows[:limit]

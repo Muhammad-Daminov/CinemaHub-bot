@@ -7,6 +7,38 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pro
 
 ## [Unreleased]
 
+### Phase 8 — Operational Trust (2026-08-08)
+
+Every item here is something the platform already promised, sold, or
+claimed to run, but did not. No schema change: the whole phase is
+migration-free.
+
+#### Added
+- **Scheduled maintenance now proves it ran.** Each completed cron run stamps `last_maintenance_run` in `chp_system_settings`, and the web service logs a loud warning on startup when that stamp is missing or older than 48 hours. The 30-day receipt-image retention promise depended on a Render Cron Job nobody could confirm existed; the application can now say so itself. The stamp is written *last*, inside the same transaction as the work, so a run that fails partway leaves the previous timestamp standing and still warns.
+- **Subscription features are enforced.** `app/services/plan_features.py` is the single place an entitlement is decided — the counterpart to `has_permission` for authority. `chp_plan_features` had been read in exactly one place, to render the comparison matrix; tiers differed in price and nothing else. The daily AI limit is the first real feature: it now comes from the plan (`ai_daily_limit`), not from a hardcoded "premium means unlimited". **Behaviour is unchanged on day one with no data seeding** — absent a grant, a subscriber is unlimited and everyone else gets `AI_DAILY_LIMIT_FREE`, exactly as before. Granting the feature in the admin panel changes what subscribers get, with no deploy.
+- **`/health` reports the running commit.** `{"status": "ok", "commit": …, "version": …}` from `RENDER_GIT_COMMIT`, "unknown"/"development" locally. `status` keeps its exact previous shape — Render's health check and an uptime monitor both read it.
+- **A CI job that installs only `requirements.txt`** and imports the app, modelling Render's clean build. The existing backend job installs `requirements-dev.txt`, a superset, which is why a missing runtime dependency passed every gate and crashed only in production.
+- **REST API rate limiting.** Fixed-window, Redis-backed, keyed on the *verified* Telegram id from `initData` and falling back to client IP. A tighter bucket for `/billing/topup` and `/watch`, which cost megabytes and third-party calls. Limits are configuration; `0` disables. **It fails open** — a limiter that denies when Redis is down converts a cache blip into a total outage.
+- **Order history in the bot.** The Orders button showed "coming in a later phase" while the Mini App had rendered this data since Phase 5. Both now read `app/services/payment_history.py`, so the two surfaces cannot disagree about someone's money.
+
+#### Fixed
+- **An undeclared dependency introduced by this phase's own code**, caught by this phase's own guard: the rate limiter imported `starlette` directly, which the project only installs transitively through FastAPI. Rewritten as raw ASGI, which needs no import at all — and is the faster shape anyway.
+- **Gallery poster uploads appeared to fail and revert to TMDB** — two independent causes, both pre-existing:
+  - *The editor could not re-read what it had just saved.* It refreshed by scanning the first page of the paginated admin list (100 rows, newest first), so once the catalog passed 100 titles every older one became invisible to that refresh. The upload succeeded and `poster_image_id` was stored; the editor never saw it and carried on rendering TMDB's URL. Fixed by adding `GET /api/admin/titles/{id}` and refreshing by id — the editor previously had no way to fetch one title. The picker now also applies the id the upload itself returns, so a failed refresh can no longer look like a failed upload.
+  - *A valid photo was rejected on its label.* `store_image` enforced the declared content type as if it were fact, while its own comment said the decode was the real check. A gallery pick inside a mobile WebView — which is exactly what a Telegram Mini App is — commonly arrives as `application/octet-stream` or `image/jpg`, and was refused with "Only JPG, PNG and WEBP images are accepted". The decode is now authoritative: Pillow must read the bytes, and everything is re-encoded to JPEG or PNG, which is what actually neutralises a disguised file. Non-images are still refused, now with a message about the file rather than its label. This reaches every upload — title posters, collection posters and Phase 5 receipts — because they all share one service.
+  - Pillow's `DecompressionBombError` was not caught and would have surfaced as a 500; it is now a clean 422.
+
+#### Changed
+- `orders.coming_soon` is superseded by real order-history strings in all three catalogs.
+- The Mini App renders a localised message on a 429 rather than the backend's English detail, which is English by necessity: the limiter runs before authentication and has no user language to read.
+
+#### Database
+- **None.** No migration, no schema change, no production data touched. The maintenance heartbeat reuses `chp_system_settings`, which Phase 6 added.
+
+#### Blocked
+- **`render.yaml` was deliberately not written.** The repository cannot determine the live service's name, plan, region or cron schedule, and a wrong `render.yaml` would be worse than none — see `TASKS.md` P0-5 for exactly what is needed.
+
+
 ### Phase 7 — Catalog Localization (2026-08-08)
 
 #### Added

@@ -64,6 +64,16 @@ export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
   }
+
+  /**
+   * The API is rate-limited per caller. Callers check this rather than the
+   * raw status so the message shown is the viewer's own language — the
+   * backend's 429 body is English, because a middleware running before
+   * authentication has no user whose language it could read.
+   */
+  get isRateLimited(): boolean {
+    return this.status === 429;
+  }
 }
 
 async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
@@ -197,6 +207,9 @@ export const adminApi = {
 
   // ---------- titles ----------
   listTitles: (params: TitleListParams = {}) => request<TitlePage>(`/admin/titles${toQuery(params)}`),
+  /** One title by id. The editor refreshes through this — scanning a page of
+   *  the list silently missed any title outside the newest 100. */
+  getTitle: (id: number) => request<AdminTitle>(`/admin/titles/${id}`),
   createTitle: (body: TitleInput) => send<AdminTitle>("/admin/titles", "POST", body),
   updateTitle: (id: number, body: TitleUpdateInput) =>
     send<AdminTitle>(`/admin/titles/${id}`, "PATCH", body),

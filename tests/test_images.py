@@ -83,9 +83,54 @@ async def test_an_empty_upload_is_rejected(db_session):
         await store_image(db_session, b"", "image/jpeg")
 
 
-async def test_a_disallowed_content_type_is_rejected(db_session):
-    with pytest.raises(ImageError, match="JPG, PNG and WEBP"):
-        await store_image(db_session, _jpeg(), "application/pdf")
+async def test_the_declared_content_type_does_not_decide(db_session):
+    """
+    Superseded behaviour, kept as an explicit statement of the new rule.
+
+    This used to reject the upload on its *label*, which broke real gallery
+    picks: a mobile WebView — which is exactly what a Telegram Mini App is
+    — commonly sends `application/octet-stream` or `image/jpg` for a photo
+    from the device, and administrators were told "Only JPG, PNG and WEBP
+    images are accepted" while holding a perfectly good JPEG.
+
+    A content type is a claim by the client. The bytes are the fact.
+    """
+    image = await store_image(db_session, _jpeg(), "application/pdf")
+    assert image.content_type == "image/jpeg", "the stored type comes from the decode"
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["image/jpeg", "image/jpg", "application/octet-stream", "IMAGE/JPEG", "", None],
+    ids=["standard", "non-standard", "webview gallery pick", "uppercase", "empty", "absent"],
+)
+async def test_a_real_photo_is_accepted_however_it_is_labelled(db_session, declared):
+    """Every one of these arrives from a real device; all carry valid JPEG bytes."""
+    image = await store_image(db_session, _jpeg(), declared)
+    assert image.data
+
+
+async def test_bytes_that_are_not_an_image_are_still_refused(db_session):
+    """The decode is the gate, and it must actually hold."""
+    for raw in (b"%PDF-1.4 this is a pdf", b"<svg xmlns='http://www.w3.org/2000/svg'/>"):
+        with pytest.raises(ImageError, match="not a readable image"):
+            await store_image(db_session, raw, "image/jpeg")
+
+
+async def test_a_decompression_bomb_is_refused_cleanly(db_session, monkeypatch):
+    """
+    Pillow guards against a small file that decodes to an enormous bitmap,
+    but raises its own error type — which was not caught and escaped as an
+    unhandled 500 instead of a refusal the client can read.
+    """
+    from PIL import Image as PILImage
+
+    def explode(*args, **kwargs):
+        raise PILImage.DecompressionBombError("too big")
+
+    monkeypatch.setattr(PILImage, "open", explode)
+    with pytest.raises(ImageError, match="too large"):
+        await store_image(db_session, _jpeg(), "image/jpeg")
 
 
 async def test_an_oversized_upload_is_rejected(db_session):

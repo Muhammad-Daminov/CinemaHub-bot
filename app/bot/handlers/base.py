@@ -34,6 +34,7 @@ from app.core.i18n import t
 from app.db.models.user import UILanguage, User
 from app.services.achievements import OVERALL, current_ranks, watch_stats
 from app.services.membership import check_access, clear_membership_cache
+from app.services.payment_history import payment_history
 from app.services.settings_store import get_membership_config
 from app.services.subscriptions import is_user_premium
 from app.services.users import get_or_create_user
@@ -182,6 +183,47 @@ async def handle_profile_entry(message: Message, session: AsyncSession, _) -> No
     await message.answer("\n".join(lines), parse_mode="HTML")
 
 
+ORDERS_PAGE_SIZE = 10
+
+
 @router.message(F.text.in_(menu_texts(MENU_ORDERS)))
-async def handle_orders_entry(message: Message, _) -> None:
-    await message.answer(_("orders.coming_soon"))
+async def handle_orders_entry(message: Message, session: AsyncSession, _) -> None:
+    """
+    The user's payment history — the same rows the Mini App shows, read
+    through the same service, so the two surfaces cannot disagree about
+    what someone has paid. Was a "coming in a later phase" stub while the
+    data had existed since Phase 5.
+    """
+    result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        await message.answer(_("common.need_start"))
+        return
+
+    entries = await payment_history(session, user.id, limit=ORDERS_PAGE_SIZE)
+    if not entries:
+        await message.answer(_("orders.empty"))
+        return
+
+    lines = [_("orders.header")]
+    for entry in entries:
+        date = entry.created_at.strftime("%d.%m.%Y")
+        if entry.is_pending:
+            # No sign: nothing has moved yet, and showing "+" would read as
+            # money already received.
+            lines.append(
+                _("orders.line_pending", date=date, amount=f"{entry.amount:.0f}")
+            )
+        else:
+            # Signed, because the ledger is: a purchase is negative and
+            # rendering it unsigned would read as a credit.
+            lines.append(
+                _(
+                    "orders.line",
+                    date=date,
+                    amount=f"{entry.amount:+.0f}",
+                    kind=_(f"orders.kind_{entry.kind}"),
+                )
+            )
+
+    await message.answer("\n".join(lines), parse_mode="HTML")

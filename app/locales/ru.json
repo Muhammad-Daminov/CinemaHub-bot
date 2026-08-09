@@ -17,7 +17,6 @@
   "start.quick_access": "Быстрый доступ:",
   "help.text": "ℹ️ <b>CinemaHub Pro — Помощь</b>\n\n🎬 Фильмы — просмотр каталога\n🤖 AI-помощник — персональные рекомендации\n📱 Открыть приложение — полный режим Mini App\n👤 Профиль — баланс, подписка, реферальный код\n⭐ Премиум — безлимитный AI и привилегии\n🧾 Мои заказы — история платежей и заказов\n⚙️ Настройки — смена языка",
   "profile.text": "👤 <b>Профиль</b>\nБаланс: {balance}\nРеферальный код: <code>{code}</code>\nПремиум: {premium}",
-  "orders.coming_soon": "🧾 История заказов появится на следующем этапе.",
   "catalog.menu_prompt": "🎬 Каталог — как будем искать?",
   "catalog.btn_search": "🔍 Поиск",
   "catalog.btn_genres": "🎭 Жанры",
@@ -238,5 +237,16 @@
   "app.add_favorite": "В избранное",
   "app.remove_favorite": "Убрать из избранного",
   "app.blocked_title": "Аккаунт заблокирован",
-  "app.blocked_text": "Ваш аккаунт заблокирован, поэтому сервис недоступен."
+  "app.blocked_text": "Ваш аккаунт заблокирован, поэтому сервис недоступен.",
+  "orders.header": "🧾 <b>История платежей</b>",
+  "orders.empty": "🧾 Платежей пока нет.",
+  "orders.line": "{date} · {amount} · {kind}",
+  "orders.line_pending": "{date} · {amount} · на проверке",
+  "orders.kind_topup": "Пополнение",
+  "orders.kind_deduction": "Покупка",
+  "orders.kind_refund": "Возврат",
+  "orders.kind_admin_adjustment": "Изменено админом",
+  "orders.kind_promo_credit": "Промокод",
+  "orders.kind_referral_bonus": "Реферальный бонус",
+  "app.rate_limited": "Слишком много запросов. Подождите немного и попробуйте снова."
 }

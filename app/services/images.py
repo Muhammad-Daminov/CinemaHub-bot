@@ -28,6 +28,9 @@ logger = logging.getLogger(__name__)
 # What a browser file picker will offer for "photo". WEBP included per the
 # poster requirement; everything is re-encoded anyway, so this list is
 # about what we can *decode*, not what we store.
+# What we *store*. Not a gate on what may be uploaded — see store_image:
+# every upload is re-encoded into one of these regardless of what it
+# arrived as, and the decode is what decides whether it is an image.
 ALLOWED_CONTENT_TYPES = {"image/jpeg", "image/png", "image/webp"}
 
 # Generous for a phone photo, mean enough to stop a database column being
@@ -58,7 +61,12 @@ def _optimise(raw: bytes) -> tuple[bytes, str, int, int]:
     try:
         image = Image.open(io.BytesIO(raw))
         image.load()
-    except (UnidentifiedImageError, OSError) as exc:
+    except Image.DecompressionBombError as exc:
+        # Pillow's own guard against a small file that decodes to an
+        # enormous bitmap. Its error type is not an OSError, so without
+        # this it escaped as an unhandled 500 rather than a clean refusal.
+        raise ImageError("That image is too large to process") from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
         raise ImageError("That file is not a readable image") from exc
 
     has_alpha = image.mode in ("RGBA", "LA", "PA") or "transparency" in image.info
@@ -102,10 +110,22 @@ async def store_image(
         raise ImageError(
             f"Image is larger than {MAX_UPLOAD_BYTES // (1024 * 1024)}MB"
         )
-    if declared_content_type and declared_content_type.split(";")[0].strip() not in ALLOWED_CONTENT_TYPES:
-        # Advisory only — the real check is whether Pillow can decode it,
-        # since a content type is just a claim the client makes.
-        raise ImageError("Only JPG, PNG and WEBP images are accepted")
+    # The declared content type is a *claim by the client*, and it was
+    # being enforced as though it were fact — which rejected real photos.
+    # A gallery pick inside a mobile WebView (which is exactly what a
+    # Telegram Mini App is) commonly arrives as `application/octet-stream`
+    # or `image/jpg`, and an administrator uploading a perfectly good JPEG
+    # was told "Only JPG, PNG and WEBP images are accepted".
+    #
+    # The decode below is the real check, as this module always claimed:
+    # Pillow must be able to read the bytes, and everything is re-encoded
+    # to JPEG or PNG, which is what actually neutralises a disguised or
+    # polyglot file. A type we cannot decode is refused there, with a
+    # message about the file rather than about its label.
+    if declared_content_type:
+        declared = declared_content_type.split(";")[0].strip().lower()
+        if declared and declared not in ALLOWED_CONTENT_TYPES:
+            logger.info("Upload declared %r; trusting the decoded bytes instead", declared)
 
     data, content_type, width, height = _optimise(raw)
 

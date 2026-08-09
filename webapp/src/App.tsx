@@ -23,6 +23,21 @@ import type {
   UserProfile,
 } from "./types/movie";
 
+/**
+ * Turns a failed request into something readable in the viewer's language.
+ *
+ * A 429 is special-cased: its body is English by necessity (the limiter
+ * runs before the request is authenticated, so there is no user language
+ * to read), and showing that raw would be the one untranslated string in
+ * the app.
+ */
+function errorMessage(error: unknown, t: Translator): string {
+  if (error instanceof ApiError) {
+    return error.isRateLimited ? t("app.rate_limited") : error.message;
+  }
+  return t("app.generic_error");
+}
+
 /** A home row: a translated heading plus the request that fills it. */
 interface RowSpec {
   key: string;
@@ -289,8 +304,7 @@ function Shell({
       const response = await api.watchMovie(movie.id, episode?.id);
       setToast({ message: response.message, tone: "success" });
     } catch (error) {
-      const message = error instanceof ApiError ? error.message : t("app.generic_error");
-      setToast({ message, tone: "error" });
+      setToast({ message: errorMessage(error, t), tone: "error" });
     }
   };
 

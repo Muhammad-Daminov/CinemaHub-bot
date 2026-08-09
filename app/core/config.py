@@ -21,6 +21,11 @@ class Settings(BaseSettings):
     ENVIRONMENT: str = Field(default="development")  # development | production
     DEBUG: bool = Field(default=False)
     PORT: int = Field(default=8000)  # Render injects this at runtime
+    # Injected by Render on every build; absent locally. Reported by
+    # /health so "what is actually running?" is answerable without
+    # fingerprinting the OpenAPI schema — which is how a failed deploy
+    # went unnoticed for a day, serving a build two phases old.
+    RENDER_GIT_COMMIT: str | None = Field(default=None)
 
     # --- Database (NeonDB / Postgres, async) ---
     DATABASE_URL: str = Field(
@@ -51,6 +56,15 @@ class Settings(BaseSettings):
 
     # --- Business rules ---
     AI_DAILY_LIMIT_FREE: int = Field(default=3)
+
+    # --- REST API rate limits (requests per minute, per caller) ---
+    # Generous by design: the Mini App fires a dozen catalog requests on
+    # first paint, and a limit that a normal session can reach is a bug
+    # report, not a protection. 0 disables limiting.
+    API_RATE_LIMIT_PER_MINUTE: int = Field(default=120)
+    # Routes that cost megabytes or a third-party call — receipt upload and
+    # video delivery. A human does these a handful of times a minute at most.
+    API_RATE_LIMIT_EXPENSIVE_PER_MINUTE: int = Field(default=10)
 
     # --- Payments ---
     # Seeds administrators on first migration only. Authority lives in

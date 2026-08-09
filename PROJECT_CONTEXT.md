@@ -127,7 +127,8 @@ Mini App ──REST─────┘         │                 └─> Redis
 - Telegram `initData` HMAC auth; authorization by role + 19 granular permissions, enforced through one function shared by the API and the bot (`services/permissions.has_permission`)
 - Bans enforced on both surfaces — `get_active_user` on the REST side, `AccessMiddleware` on every bot update. `/api/auth/me` deliberately still answers, so the app can say *why* it is empty
 - Optional required-channel membership, gating delivery only
-- Redis-backed throttling, AI quota (self-expiring daily keys), TMDB cache
+- Redis-backed throttling for the bot **and** for `/api/*` (Phase 8: fail-open, keyed on the verified Telegram id, stricter on upload and delivery), AI quota (self-expiring daily keys), TMDB cache
+- `/health` reports the running commit, so "is my deploy live?" is answerable without fingerprinting the OpenAPI schema
 
 ### ⚠️ Partial
 
@@ -137,9 +138,9 @@ Mini App ──REST─────┘         │                 └─> Redis
 | **Referral** | Both parties credited on the referred user's first approved top-up (Phase 6), idempotent through the ledger index | The **amount** is a documented default (`REFERRAL_BONUS_AMOUNT`, 5000) rather than a settled business figure. No tiered rewards, no premium-days variant. |
 | **Balance** | Credited *and spent* — subscriptions are purchasable from it in the Mini App (Phase 5) | `REFUND` remains unused; there is no cancellation or refund path. |
 | **Percentage-discount promo** | Stored, redeemable, usage recorded | No checkout to apply it to — explicitly deferred in `services/promo.py`. |
-| **Subscription plans** | Manageable as data (Phase 4) and purchasable (Phase 5), with tier upgrade/queue rules | Features are recorded and displayed but **not enforced** — nothing branches on them yet. |
+| **Subscription plans** | Manageable as data (Phase 4), purchasable (Phase 5), with tier rules; features **enforced** through one resolver since Phase 8 | Only `ai_daily_limit` is wired to real behaviour so far. Adding a second is a data change plus one resolver call, not a new system. |
 | **Ban** | Enforced on both surfaces and settable from the panel (Phase 6) | No ban reason, no expiry, no audit row — a ban is a boolean. |
-| **Scheduled maintenance** | `app/tasks/cron.py` correct and idempotent | Never invoked by the app; Render Cron Job config is not in this repo. **Still unverified** — the 30-day receipt-image promise depends on it. |
+| **Scheduled maintenance** | Correct, idempotent, and **self-reporting**: each run stamps `chp_system_settings` and startup warns when the stamp is stale. Verified runnable by a plain `cron`/`systemd` invocation | **No scheduler runs it yet.** Deferred to the VPS migration by the owner rather than configured on Render, which is being retired — see TASKS.md P0-5 |
 | **Broadcast** | Plain text, three audience segments, sent once, with delivery counts | No scheduling, no images, no cancel-in-flight, no targeting by language or last-seen. |
 | **Mini App parity** | Browse, search, settings, favorites, premium purchase | Still no AI recommendations and no watch stats/ranks — both bot-only. |
 | **Order history** | — | Stub message: "coming in a later phase". |
@@ -151,7 +152,6 @@ Mini App ──REST─────┘         │                 └─> Redis
 - **README / onboarding docs** — a new contributor has no entry point.
 - **Staging database** — `scripts/test_db.sh` gives a throwaway local cluster for tests, but migrations are still rehearsed there rather than against production-shaped data.
 - **Error monitoring** — no Sentry or equivalent; failures surface only in Render logs.
-- **REST API rate limiting** — throttling middleware covers the bot only; `/api/*` is unprotected.
 - **`auto_renew`** — column exists, zero references outside the model.
 - **`monthly_orders_count`** — reset monthly by cron, never incremented.
 

@@ -46,6 +46,32 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://ci:ci@localhost/ci
         run: python -m pytest -q
 
+  # Installs ONLY the runtime manifest, the way Render's build does, and
+  # imports the application. The other job installs requirements-dev.txt,
+  # which is a superset — so a runtime dependency missing from
+  # requirements.txt passed every gate here and crashed only in
+  # production, serving a build two phases old for a day. This job is the
+  # one that would have caught it.
+  runtime-deps:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.14"
+          cache: pip
+
+      - name: Install runtime dependencies only
+        run: pip install -r requirements.txt
+
+      - name: Import check on a clean runtime environment
+        env:
+          BOT_TOKEN: "123456:ci-placeholder"
+          TMDB_API_KEY: ci-placeholder
+          GEMINI_API_KEY: ci-placeholder
+          DATABASE_URL: postgresql+asyncpg://ci:ci@localhost/ci
+        run: python -c "import app.main"
+
   frontend:
     runs-on: ubuntu-latest
     defaults:

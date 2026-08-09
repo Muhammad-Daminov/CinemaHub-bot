@@ -106,6 +106,10 @@ Database-backed tests skip silently without `TEST_DATABASE_URL`, so a green run 
 - **Identification and permission to act are different questions.** `get_current_user` identifies; `get_active_user` also refuses a banned account and is what every route that *does* something depends on. `/api/auth/me` deliberately keeps using the former — it is how the Mini App learns it is blocked instead of merely appearing empty. The Super Admin is exempt from bans; a platform whose owner can be locked out of it is a platform that can be taken hostage.
 - The bot's equivalent is `AccessMiddleware`. `/start` and the membership-recheck callback pass through it by design; everything else does not.
 
+### Entitlements
+- **What a subscription *includes* is decided in exactly one place:** `app.services.plan_features.features_for_user`, the entitlement counterpart to `has_permission`. Never re-derive a benefit from `is_user_premium` — that is the hardcoded rule this replaced, and a second path would eventually refuse a paying user something they bought.
+- A feature absent from a plan falls back to the previous behaviour rather than to "denied". A grant with no value means "no cap"; an unparseable value falls back rather than guessing a number, because a typo in the admin panel must not cut off paying users.
+
 ### Money
 - Balance credits, subscription activation, and user notification happen in **one place**: `app/services/payment_review.py`. The bot's inline approve/reject buttons and the admin REST API both call it. Do not add a second crediting path.
 - **A credit that must happen once is guarded by the database, never by a read.** `if already_paid: return` is a race, and this project has already lost money to that exact shape. Insert the `chp_balance_history` row with `ON CONFLICT DO NOTHING` against `uq_balance_history_event` and move the balance only if a row was actually created — see `app/services/referral.py`.
@@ -128,9 +132,17 @@ Database-backed tests skip silently without `TEST_DATABASE_URL`, so a green run 
 
 ---
 
+### Operations
+- **`requirements.txt` is what production installs.** `requirements-dev.txt` is a superset, so a runtime import missing from the former passes every local gate and crashes only on Render — which then keeps serving the *previous* build, silently. `tests/test_runtime_dependencies.py` and the `runtime-deps` CI job both guard this; do not import a package (`starlette`, say) that arrives only transitively.
+- **The API limiter fails open.** If Redis is unreachable the request is served. Never "fix" that to deny — it converts a cache blip into a total outage.
+- **`/health`'s `status` field is a contract** read by Render's health check and an uptime monitor. Add fields freely; do not change that one.
+- **Scheduled maintenance reports itself.** `app/tasks/cron.py` stamps `last_maintenance_run` on completion and startup warns when it is stale. If you see `SCHEDULED MAINTENANCE OVERDUE` in the logs, **no scheduler is running the job** — receipt images are not being purged. Expect that warning until the VPS migration lands; the scheduler is being configured there rather than on Render (TASKS.md P0-5).
+
+---
+
 ## 5. Known traps
 
-- `app/tasks/cron.py` is a standalone script, intentionally not bolted onto the web lifespan. It only runs if a Render Cron Job is configured — that config is **not in this repo**, so verify externally before assuming maintenance tasks run.
+- `app/tasks/cron.py` is a standalone script, intentionally not bolted onto the web lifespan. It only runs if something external schedules it, and that scheduler config is **not in this repo** — so verify externally before assuming maintenance tasks run. It is deliberately scheduler-agnostic: `cron`, a `systemd` timer or a hosted cron all work, since it takes its config from the environment and reports success through its exit code.
 - The webhook is set on startup and deliberately **never deleted on shutdown** — it is global bot state, not one process's to release.
 - `pyflakes` reports `date` in `app/api/admin.py` as unused. It is **not** — `ActivityPointOut.date: date` shadows it, and removing it breaks OpenAPI generation while leaving `import app.main` green. It was deleted once on that advice and shipped broken; `tests/test_api_schema.py` now catches it.
 - **An index that exists only in a migration does not exist under test.** The suite builds its schema with `metadata.create_all` from the models, so `uq_balance_history_event` — declared in migration `a3f1c92d7e04` alone — was absent from every test database, and the tests asserting "this credit cannot happen twice" were passing against a schema that could not enforce it. It is now on the model too. Any constraint carrying a correctness guarantee must be declared in both places.

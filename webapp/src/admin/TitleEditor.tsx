@@ -768,13 +768,15 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
   const reloadTitle = useCallback(
     async (id: number) => {
       try {
-        const page = await adminApi.listTitles({ page_size: 100 });
-        const found = page.items.find((item) => item.id === id);
-        if (found) {
-          setForm(toForm(found));
-          syncPoster(found);
-          setHasTmdbId(found.tmdb_id != null);
-        }
+        // Fetched by id. This used to scan the first page of the paginated
+        // list, so once the catalog passed 100 titles every older one was
+        // invisible to the refresh: an uploaded poster was stored, the
+        // editor never saw the new poster_image_id, and the picker fell
+        // back to showing TMDB's — looking exactly like a failed upload.
+        const title = await adminApi.getTitle(id);
+        setForm(toForm(title));
+        syncPoster(title);
+        setHasTmdbId(title.tmdb_id != null);
       } catch {
         /* the editor stays usable on a failed refresh */
       }
@@ -908,8 +910,20 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
               }
               fallbackUrl={poster.url}
               hasCustom={Boolean(poster.imageId)}
-              onUpload={(file) => adminApi.uploadTitlePoster(savedId, file)}
-              onClear={() => adminApi.clearTitlePoster(savedId)}
+              // The upload's own response carries the stored image id, so the
+              // picker switches to the new poster immediately rather than
+              // waiting on a refresh that might fail — a failed refresh must
+              // never look like a failed upload.
+              onUpload={async (file) => {
+                const result = await adminApi.uploadTitlePoster(savedId, file);
+                setPoster((current) => ({ ...current, imageId: result.image_id }));
+                return result;
+              }}
+              onClear={async () => {
+                const result = await adminApi.clearTitlePoster(savedId);
+                setPoster((current) => ({ ...current, imageId: null }));
+                return result;
+              }}
               onChanged={() => void reloadTitle(savedId)}
             />
           </Field>

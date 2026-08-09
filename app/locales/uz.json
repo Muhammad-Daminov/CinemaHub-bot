@@ -17,7 +17,6 @@
   "start.quick_access": "Tezkor kirish:",
   "help.text": "ℹ️ <b>CinemaHub Pro — Yordam</b>\n\n🎬 Kinolar — katalogni ko'rish\n🤖 AI Yordamchi — shaxsiy tavsiyalar olish\n📱 Ilovani ochish — to'liq Mini App tajribasi\n👤 Profil — balans, obuna, referal kod\n⭐ Premium — cheksiz AI va imtiyozlar\n🧾 Buyurtmalarim — to'lov va buyurtmalar tarixi\n⚙️ Sozlamalar — tilni o'zgartirish",
   "profile.text": "👤 <b>Profil</b>\nBalans: {balance}\nReferal kod: <code>{code}</code>\nPremium: {premium}",
-  "orders.coming_soon": "🧾 Buyurtmalar tarixi keyingi bosqichda qo'shiladi.",
   "catalog.menu_prompt": "🎬 Katalog — qanday izlaymiz?",
   "catalog.btn_search": "🔍 Qidirish",
   "catalog.btn_genres": "🎭 Janrlar",
@@ -238,5 +237,16 @@
   "app.add_favorite": "Saqlash",
   "app.remove_favorite": "Saqlanganlardan olib tashlash",
   "app.blocked_title": "Hisob bloklangan",
-  "app.blocked_text": "Hisobingiz bloklangani uchun xizmatdan foydalana olmaysiz."
+  "app.blocked_text": "Hisobingiz bloklangani uchun xizmatdan foydalana olmaysiz.",
+  "orders.header": "🧾 <b>To'lovlar tarixi</b>",
+  "orders.empty": "🧾 Hali to'lov qilinmagan.",
+  "orders.line": "{date} · {amount} · {kind}",
+  "orders.line_pending": "{date} · {amount} · ko'rib chiqilmoqda",
+  "orders.kind_topup": "Hisob to'ldirildi",
+  "orders.kind_deduction": "Xarid",
+  "orders.kind_refund": "Qaytarildi",
+  "orders.kind_admin_adjustment": "Admin o'zgartirdi",
+  "orders.kind_promo_credit": "Promokod",
+  "orders.kind_referral_bonus": "Referal bonusi",
+  "app.rate_limited": "Juda ko'p so'rov yuborildi. Biroz kutib, qayta urinib ko'ring."
 }

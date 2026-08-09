@@ -23,6 +23,7 @@ from app.api import billing as billing_api
 from app.api import i18n as i18n_api
 from app.api import auth as auth_api
 from app.api import movies as movies_api
+from app.api.rate_limit import RateLimitMiddleware
 from app.bot.handlers import base as base_handlers
 from app.bot.handlers import catalog as catalog_handlers
 from app.bot.handlers import streaming as streaming_handlers
@@ -41,6 +42,7 @@ from app.core.config import settings
 from app.db.session import check_db_connection, db_session_ctx
 from app.services.ai import ai_service
 from app.services.permissions import ensure_super_admin
+from app.services.settings_store import maintenance_is_stale
 from app.services.tmdb import tmdb_service
 
 dispatcher = Dispatcher(
@@ -88,6 +90,29 @@ async def lifespan(app: FastAPI):
     except Exception:
         logger.exception("Could not reconcile the super admin on startup")
 
+    # Scheduled maintenance is a separate process this repository does not
+    # own (app/tasks/cron.py, run by a Render Cron Job configured in the
+    # dashboard). Whether it runs at all was previously unknowable from
+    # here, while the 30-day receipt-image retention promise depended on
+    # it. Each run now stamps chp_system_settings, and this shouts when
+    # that stamp is missing or stale. Warn-only: a maintenance job that is
+    # not running is a serious problem, but not a reason to refuse to
+    # serve traffic.
+    try:
+        async with db_session_ctx() as session:
+            stale, last_run = await maintenance_is_stale(session)
+        if stale:
+            logger.warning(
+                "SCHEDULED MAINTENANCE OVERDUE — last run %s. Receipt images are not "
+                "being purged and stale receipts are not being expired. Verify the "
+                "Render Cron Job for `python -m app.tasks.cron` exists.",
+                last_run.isoformat() if last_run else "never",
+            )
+        else:
+            logger.info("Scheduled maintenance last ran at %s", last_run.isoformat())
+    except Exception:
+        logger.exception("Could not check the scheduled-maintenance heartbeat")
+
     if settings.WEBHOOK_BASE_URL:
         await bot.set_webhook(
             url=f"{settings.WEBHOOK_BASE_URL}{WEBHOOK_PATH}",
@@ -111,6 +136,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+
+# Registered before CORS so it runs *after* it: Starlette applies
+# middleware in reverse order of registration, and a preflight OPTIONS
+# must be answered by CORS rather than counted against a rate limit.
+app.add_middleware(RateLimitMiddleware)
 
 app.add_middleware(
     CORSMiddleware,
@@ -139,9 +169,25 @@ if WEBAPP_DIST_DIR.exists():
 
 @app.api_route("/health", methods=["GET", "HEAD"])
 async def health_check() -> dict[str, str]:
-    """Render's health check target. HEAD too — UptimeRobot probes with it."""
+    """
+    Render's health check target. HEAD too — UptimeRobot probes with it.
+
+    Reports the running commit so a deploy can be confirmed from outside
+    the dashboard. `status` keeps its exact previous shape and value: the
+    Render health check and the uptime monitor both read it, and this is
+    not the place to change a contract two external systems depend on.
+
+    "unknown" locally, where RENDER_GIT_COMMIT is not injected — a
+    developer machine has no commit to report, and inventing one (from
+    git, say) would report the checkout rather than what is deployed.
+    """
     await check_db_connection()
-    return {"status": "ok"}
+    commit = settings.RENDER_GIT_COMMIT or "unknown"
+    return {
+        "status": "ok",
+        "commit": commit,
+        "version": commit[:7] if commit != "unknown" else "development",
+    }
 
 
 @app.post(WEBHOOK_PATH)

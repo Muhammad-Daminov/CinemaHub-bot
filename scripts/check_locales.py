@@ -37,7 +37,7 @@ SEARCH_SUFFIXES = (".py", ".ts", ".tsx")
 
 # Keys built at runtime from a variable suffix, e.g. t(f"genre.{g}").
 # Everything under these prefixes is considered reachable.
-DYNAMIC_PREFIXES = ("genre.", "audio.", "rank.", "common.lang_")
+DYNAMIC_PREFIXES = ("genre.", "audio.", "rank.", "common.lang_", "orders.kind_")
 
 # The codebase reaches the catalogs through several call shapes, all of
 # which have to be recognised or the "unused key" report is nonsense:

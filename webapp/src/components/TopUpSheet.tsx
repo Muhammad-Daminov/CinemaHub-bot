@@ -63,7 +63,13 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
       onSubmitted(response.message);
       onClose();
     } catch (err) {
-      setError(err instanceof ApiError ? err.message : t("app.generic_error"));
+      setError(
+        err instanceof ApiError && err.isRateLimited
+          ? t("app.rate_limited")
+          : err instanceof ApiError
+            ? err.message
+            : t("app.generic_error"),
+      );
     } finally {
       setBusy(false);
     }

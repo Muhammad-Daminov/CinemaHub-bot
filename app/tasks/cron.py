@@ -17,6 +17,12 @@ the web service's lifespan. Reasons:
     depends on this script actually being scheduled — if no Render Cron
     Job exists, images are kept indefinitely and nobody is told.
 
+  - Each completed run stamps `last_maintenance_run` in
+    chp_system_settings, and the web service warns on startup when that
+    stamp is older than 48 hours. That is the only way this repository
+    can tell whether the job is scheduled at all — the Render Cron Job
+    config lives in the dashboard, not here.
+
   - It's naturally safe to run more than once (every operation here
     is idempotent — resetting an already-reset counter or expiring an
     already-expired receipt is a no-op), so overlapping Render cron
@@ -33,6 +39,7 @@ from app.db.models.promo import PromoCode
 from app.db.models.user import User
 from app.db.session import db_session_ctx, engine
 from app.services.images import purge_expired_receipt_images
+from app.services.settings_store import record_maintenance_run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 logger = logging.getLogger("cron")
@@ -84,10 +91,16 @@ async def run_all() -> None:
         deactivated_promos = await deactivate_expired_promos(session)
         purged_images = await purge_expired_receipt_images(session)
 
+        # Written last, inside the same transaction: the stamp means "all of
+        # the above completed", so a run that fails partway leaves the
+        # previous timestamp standing and the staleness warning fires. A
+        # stamp written first would report health this run never delivered.
+        ran_at = await record_maintenance_run(session)
+
     logger.info(
-        "cron done: monthly_limits_reset=%d stale_receipts_expired=%d "
+        "cron done at %s: monthly_limits_reset=%d stale_receipts_expired=%d "
         "promos_deactivated=%d receipt_images_purged=%d",
-        reset_count, expired_receipts, deactivated_promos, purged_images,
+        ran_at.isoformat(), reset_count, expired_receipts, deactivated_promos, purged_images,
     )
     await engine.dispose()  # short-lived process — release the pool explicitly before exit
 

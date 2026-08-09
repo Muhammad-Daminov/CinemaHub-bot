@@ -34,8 +34,41 @@ Enforced by `get_active_user` on every REST route that does something (the catal
 `/api/auth/me` deliberately still answers for a banned user — it is what tells the Mini App to render the blocked notice instead of an empty catalog. The Super Admin is exempt, and a banned administrator keeps their role so the action is reversible.
 
 ### P0-5 · Verify scheduled maintenance actually runs
-`TODO` · ops
-`app/tasks/cron.py` is correct and idempotent but is invoked by nothing in this repo. If no Render Cron Job exists, stale receipts are never expired and expired promos stay active. Confirm in the Render dashboard; document the result in `PROJECT_CONTEXT.md`.
+`PARTIALLY DONE` (Phase 8) · **detection built and verified; scheduling deliberately deferred to the VPS migration**
+Every completed run now stamps `last_maintenance_run` in `chp_system_settings`, and the web service logs `SCHEDULED MAINTENANCE OVERDUE` on startup when that stamp is missing or older than 48 hours. The application can therefore *tell* you the job is not running — which it could not before.
+
+**Deferred to the VPS migration (owner's decision, 2026-08-09).** The platform is moving off Render to a self-managed server within days, so the scheduler will be configured **there**, not on Render. No Render Cron Job is to be created, and **no `render.yaml` is to be added** — committing a blueprint for infrastructure about to be retired would be work thrown away, and Render treats a blueprint as authoritative, so a wrong one would stand up a second service rather than adopt the existing one.
+
+Nothing in the application is waiting on that migration: the maintenance code is scheduler-agnostic and was verified against a plain `cron`-style invocation (see below). The only outstanding step is a scheduler entry on the new host.
+
+**What the repository *can* state, verified rather than assumed:**
+
+| | |
+|---|---|
+| Command | `python -m app.tasks.cron` |
+| Suggested schedule | daily; the staleness window is 48h, so anything up to once a day is safely inside it |
+| Required environment | `DATABASE_URL`, **`BOT_TOKEN`, `TMDB_API_KEY`, `GEMINI_API_KEY`** |
+| Optional | `REDIS_URL` (unused by this job, but harmless) |
+
+The three API keys surprise people: the job never calls Telegram, TMDB or Gemini, but `app.core.config.Settings` declares them required, so the process exits on a `ValidationError` without them. Verified by running the module outside the repo so the local `.env` could not mask it. **A scheduler entry carrying only `DATABASE_URL` will crash on every run.**
+
+**Verified ready for a plain scheduler** (2026-08-09, against the throwaway test database, invoked exactly as `cron` would — outside the repo, no `.env` on disk, a minimal environment):
+
+- runs standalone as `python -m app.tasks.cron` and exits **0** on success;
+- exits **non-zero** when the database is unreachable, so a failed run is visible to `cron`'s MAILTO or `systemd`'s `OnFailure`;
+- **idempotent** — an immediate second run repeats cleanly, so an overlapping or double-fired schedule is not a correctness risk;
+- logs one summary line to stdout for the scheduler to capture;
+- disposes the connection pool explicitly, so the process exits rather than lingering.
+
+**To configure after the VPS migration** — a crontab entry or a `systemd` timer, whichever the new host standardises on:
+
+```
+0 3 * * *  cd /srv/cinemahub && /srv/cinemahub/venv/bin/python -m app.tasks.cron >> /var/log/cinemahub-cron.log 2>&1
+```
+
+The environment must carry the four variables above; a `systemd` unit with `EnvironmentFile=` is the tidier route, since `cron` runs with an almost-empty environment and will otherwise fail the config validation described above.
+
+**Interim check, available now:** read the startup log. `SCHEDULED MAINTENANCE OVERDUE` means no scheduler is running the job; its absence is proof it ran within 48 hours. Expect the warning until the VPS scheduler exists — that is the detection half doing its job, not a fault.
 
 ---
 
@@ -74,7 +107,7 @@ No Sentry or equivalent. Production failures are invisible outside Render logs.
 
 ### P1-7 · Deployment config into version control
 `TODO`
-Add `render.yaml` (web service + cron job) so infrastructure is reviewable and reproducible.
+Put deployment configuration in version control so infrastructure is reviewable and reproducible. **Retarget to the VPS** (owner's decision, 2026-08-09): Render is being retired, so this becomes the service unit / reverse-proxy / scheduler config for the new host rather than a `render.yaml`.
 
 ### P1-8 · Stop committing `tsconfig.tsbuildinfo`
 `TODO` · `.gitignore`
@@ -89,8 +122,9 @@ Build artifact; churns on every build and pollutes diffs.
 Users can top up but cannot spend. `DEDUCTION`/`REFUND` tx types are unused. Decide what balance buys — most naturally, premium itself (removing the second receipt round trip). Until then, top-up is a dead end that takes money and returns a number.
 
 ### P2-2 · Give premium real benefits
-`TODO`
-Premium's only current benefit is unlimited AI recommendations. Options: higher-quality files, early access, ad-free, larger favorites cap. (The "skip auto-delete" option is gone — auto-delete was removed entirely in Phase 3.) **Product decision needed before implementation.**
+`IN PROGRESS` (Phase 8) · the *mechanism* exists; **which** benefits to sell is still a product decision
+Features are now enforced, not merely displayed: `app/services/plan_features.py` is the single entitlement decision point, and `ai_daily_limit` is the first feature that actually changes behaviour. Adding a second benefit is now a data change in the admin panel plus one call to the resolver — no parallel entitlement system to build.
+**Still needed from you:** what premium should actually include. Candidates unchanged: higher-quality files, early access, larger favourites cap.
 
 ### P2-3 · Pay out referral rewards
 `DONE` (Phase 6) · rule from IDEAS.md I-2; amount is configuration
@@ -104,8 +138,8 @@ Favorites shipped in Phase 6 — `GET /movies/favorites`, `POST`/`DELETE /movies
 Still missing vs the bot: **AI recommendations** and **watch stats / ranks**.
 
 ### P2-5 · Order history
-`TODO` · `app/bot/handlers/base.py:147`
-Currently a "coming in a later phase" stub. Data already exists in `chp_payment_receipts` + `chp_balance_history`.
+`DONE` (Phase 8)
+The bot's Orders button renders real history through `app/services/payment_history.py`, the same service `GET /api/billing/history` uses — so the bot and the Mini App cannot show different money for the same user.
 
 ### P2-6 · Apply percentage-discount promos at checkout
 `TODO` · `app/services/promo.py:104` · depends on P2-1
@@ -132,6 +166,15 @@ Deliberately not done in Phase 1: FR-3 rewrites this markup in Phase 6, so extra
 The bot's admin strings were localized in Phase 1 — those were only nine, and they are bot messages.
 
 ---
+
+### P2-16 · Custom posters do not appear on bot cards
+`TODO` · surfaced while fixing the gallery-upload bug
+`app/bot/handlers/catalog.py` sends `title.poster_url` to Telegram, so a title whose poster is an *upload* shows TMDB's image or no image at all in the bot. Telegram fetches the URL itself, and `/api/movies/images/{id}` sits behind `initData` auth, which Telegram cannot satisfy. The Mini App is unaffected — it authenticates normally.
+Two ways forward, both product/security decisions rather than bugs: serve poster images from an unauthenticated route (they are public artwork, unlike receipts), or upload the bytes to Telegram once and cache the resulting `file_id` on the title. **Not fixed here** — opening an unauthenticated endpoint is not a change to make unasked.
+
+### P2-15 · Adopt the limiter for authenticated bursts
+`TODO` · follow-up to Phase 8
+The API limiter keys on the verified Telegram id where one is present and on client IP otherwise. Behind a NAT — a shared office or mobile carrier — many users collapse into one IP bucket. That is acceptable for unauthenticated paths (which are few and cheap), but if abuse is ever seen from a shared address, the fix is to require identity earlier rather than to loosen the limit.
 
 ### P2-11 · Broadcast scheduling and rich content
 `TODO` · follow-up to Phase 6
@@ -162,6 +205,15 @@ Titles are now per-language; **collection names, plan names and plan benefits ar
 ---
 
 ## Done
+
+### Phase 8 (2026-08-08)
+- **Maintenance heartbeat** (P0-5, detection half) — `record_maintenance_run` / `maintenance_is_stale`, stamped by cron and checked at startup.
+- **Subscription feature enforcement** (P1-a) — [app/services/plan_features.py](app/services/plan_features.py); the AI limit moved from a hardcoded premium check onto the plan.
+- **Runtime visibility** (P0-6) — `/health` reports the running commit.
+- **Clean-install CI gate** (P0-7) — a job installing only `requirements.txt`, plus [tests/test_runtime_dependencies.py](tests/test_runtime_dependencies.py), which caught an undeclared `starlette` import in this phase's own code.
+- **REST API rate limiting** (P0-8) — [app/api/rate_limit.py](app/api/rate_limit.py), fail-open, per-verified-user, stricter on upload and delivery.
+- **Order history in the bot** (P2-5) — shared with the Mini App through [app/services/payment_history.py](app/services/payment_history.py).
+- **No migration.** Nothing in this phase touched the schema or production data.
 
 ### Phase 7 (2026-08-08)
 - **Per-language movie titles** (FR-6 req. 3) — `chp_title_translations`, server-side resolution on every catalog read path in both surfaces, cross-language search, TMDB auto-fill for ru/en, and a translation editor in [TitleEditor.tsx](webapp/src/admin/TitleEditor.tsx).

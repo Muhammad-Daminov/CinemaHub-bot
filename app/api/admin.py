@@ -810,6 +810,32 @@ async def similar_titles_route(
     ]
 
 
+# Declared *after* /titles/similar: FastAPI matches in definition order, so
+# a bare {title_id} above it would swallow "similar" and 422.
+@router.get(
+    "/titles/{title_id}",
+    response_model=TitleOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))],
+)
+async def get_title_route(
+    title_id: int, session: AsyncSession = Depends(get_db_session)
+) -> Title:
+    """
+    One title by id.
+
+    Added because the editor had no way to re-read the row it is editing:
+    it scanned the first page of the paginated list instead, and once the
+    catalog passed 100 titles every older one became invisible to that
+    refresh. A poster uploaded against such a title was stored correctly
+    and then appeared to revert, because the editor never saw the new
+    `poster_image_id` and carried on rendering the TMDB fallback.
+    """
+    title = await session.get(Title, title_id)
+    if title is None:
+        raise HTTPException(status_code=404, detail="Title not found")
+    return title
+
+
 # ---------- Episodes ----------
 
 class EpisodeOut(BaseModel):
