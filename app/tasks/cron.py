@@ -2,8 +2,9 @@
 Scheduled maintenance tasks.
 
 Deliberately a standalone script (`python -m app.tasks.cron`), meant to
-run as a Render Cron Job, NOT another asyncio.sleep loop bolted onto
-the web service's lifespan. Reasons:
+be invoked by whatever schedules jobs on the host — `cron`, a `systemd`
+timer, a hosted scheduler — and NOT an asyncio.sleep loop bolted onto the
+web service's lifespan. Reasons:
 
   - Most state in this system already self-cleans via Redis TTLs
     (throttling keys, AI quota counters) — no cron
@@ -14,22 +15,28 @@ the web service's lifespan. Reasons:
     and it keeps this maintenance work decoupled from the web
     service's own uptime/scaling.
   - Receipt images are purged 30 days after upload here. That promise
-    depends on this script actually being scheduled — if no Render Cron
-    Job exists, images are kept indefinitely and nobody is told.
+    depends on this script actually being scheduled — with no scheduler
+    entry, images are kept indefinitely and nobody is told.
 
   - Each completed run stamps `last_maintenance_run` in
     chp_system_settings, and the web service warns on startup when that
     stamp is older than 48 hours. That is the only way this repository
-    can tell whether the job is scheduled at all — the Render Cron Job
-    config lives in the dashboard, not here.
+    can tell whether the job is scheduled at all — the scheduler entry
+    lives on the host, not in this repo. See TASKS.md P0-5.
 
   - It's naturally safe to run more than once (every operation here
     is idempotent — resetting an already-reset counter or expiring an
-    already-expired receipt is a no-op), so overlapping Render cron
-    runs are never a correctness risk.
+    already-expired receipt is a no-op), so overlapping cron runs are
+    never a correctness risk.
+
+  - Steps are isolated from one another: one failing step is logged and
+    the rest still run, but the heartbeat is stamped only when every step
+    succeeded. See `run_all`.
 """
 import asyncio
 import logging
+import sys
+import time
 from datetime import datetime, timedelta, timezone
 
 from sqlalchemy import update
@@ -87,37 +94,95 @@ async def deactivate_expired_promos(session) -> int:
     return result.rowcount or 0
 
 
-async def run_all() -> None:
+async def _in_session(step):
+    """Runs one database step in a transaction of its own."""
     async with db_session_ctx() as session:
-        reset_count = await reset_monthly_order_limits(session)
-        expired_receipts = await expire_stale_payment_receipts(session)
-        deactivated_promos = await deactivate_expired_promos(session)
-        purged_images = await purge_expired_receipt_images(session)
-        # Keeps personalized feeds current without making a feed render pay
-        # for the aggregation. Bounded per run; whatever is missed here is
-        # picked up lazily by get_profile the next time it is read.
-        refreshed_profiles = await recalculate_stale_profiles(session)
+        return await step(session)
 
-        # Written last, inside the same transaction: the stamp means "all of
-        # the above completed", so a run that fails partway leaves the
-        # previous timestamp standing and the staleness warning fires. A
-        # stamp written first would report health this run never delivered.
-        ran_at = await record_maintenance_run(session)
 
-    # Outside the session block above: resuming sends its own messages and
-    # owns its own sessions, and it must not run inside the maintenance
-    # transaction that stamps the heartbeat.
-    resumed = await resume_stale_broadcasts(AsyncSessionFactory, bot)
+# Every independent unit of maintenance, in execution order. A list rather
+# than a straight-line function so one broken step cannot decide whether
+# the others get to run: they share nothing, and losing the monthly limit
+# reset because image purging is failing would be a second outage caused
+# by the first.
+MAINTENANCE_STEPS: tuple[tuple[str, object], ...] = (
+    ("monthly_limits_reset", lambda: _in_session(reset_monthly_order_limits)),
+    ("stale_receipts_expired", lambda: _in_session(expire_stale_payment_receipts)),
+    ("promos_deactivated", lambda: _in_session(deactivate_expired_promos)),
+    ("receipt_images_purged", lambda: _in_session(purge_expired_receipt_images)),
+    # Keeps personalized feeds current without making a feed render pay for
+    # the aggregation. Bounded per run; whatever is missed here is picked up
+    # lazily by get_profile the next time it is read.
+    ("interest_profiles_refreshed", lambda: _in_session(recalculate_stale_profiles)),
+    # Owns its own sessions and sends its own messages, so it must not run
+    # inside a maintenance transaction.
+    ("broadcasts_resumed", lambda: resume_stale_broadcasts(AsyncSessionFactory, bot)),
+)
 
-    logger.info(
-        "cron done at %s: monthly_limits_reset=%d stale_receipts_expired=%d "
-        "promos_deactivated=%d receipt_images_purged=%d interest_profiles_refreshed=%d "
-        "broadcasts_resumed=%d",
-        ran_at.isoformat(), reset_count, expired_receipts, deactivated_promos, purged_images,
-        refreshed_profiles, resumed,
-    )
-    await engine.dispose()  # short-lived process — release the pool explicitly before exit
+
+async def run_all() -> int:
+    """
+    Runs every maintenance step and returns how many failed.
+
+    **Each step is isolated.** Previously they shared one transaction, so
+    the first failure rolled back the work that had already succeeded and
+    skipped everything after it — meaning one persistently broken step
+    silently suspended *all* maintenance for as long as the bug lived.
+    Now a step that raises is logged and the rest still run, which is the
+    difference between one thing being broken and everything being broken.
+
+    **The heartbeat still means "all of it completed."** It is stamped only
+    when every step succeeded, in a transaction of its own after the fact,
+    so a partial run leaves the previous timestamp standing and the startup
+    staleness warning fires. That contract is what `maintenance_is_stale`
+    and the operator reading the log both depend on; isolating failures
+    must not turn the stamp into "something ran".
+
+    Returns a count rather than raising so the caller decides the exit
+    status — non-zero is how `cron`'s MAILTO and `systemd`'s `OnFailure`
+    learn that a scheduled run needs attention.
+    """
+    started = time.monotonic()
+    logger.info("maintenance starting: %d steps", len(MAINTENANCE_STEPS))
+
+    outcomes: dict[str, int] = {}
+    failed: list[str] = []
+
+    try:
+        for name, step in MAINTENANCE_STEPS:
+            try:
+                outcomes[name] = await step()
+                logger.info("  %s: ok (%s)", name, outcomes[name])
+            except Exception:
+                # Logged with a traceback and carried on. Never swallowed:
+                # the name lands in `failed`, which suppresses the heartbeat
+                # and sets a non-zero exit status.
+                failed.append(name)
+                logger.exception("  %s: FAILED", name)
+
+        if failed:
+            logger.error(
+                "maintenance INCOMPLETE in %.1fs — %d/%d steps failed (%s); "
+                "heartbeat NOT stamped, staleness warning will fire",
+                time.monotonic() - started, len(failed), len(MAINTENANCE_STEPS),
+                ", ".join(failed),
+            )
+        else:
+            async with db_session_ctx() as session:
+                ran_at = await record_maintenance_run(session)
+            logger.info(
+                "maintenance complete at %s in %.1fs: %s",
+                ran_at.isoformat(),
+                time.monotonic() - started,
+                " ".join(f"{name}={count}" for name, count in outcomes.items()),
+            )
+    finally:
+        # Always — a short-lived process must release the pool and exit even
+        # when a step blew up, or the scheduler is left with a hung job.
+        await engine.dispose()
+
+    return len(failed)
 
 
 if __name__ == "__main__":
-    asyncio.run(run_all())
+    sys.exit(1 if asyncio.run(run_all()) else 0)
