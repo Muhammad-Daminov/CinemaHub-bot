@@ -9,6 +9,7 @@ import { MovieCard } from "./components/MovieCard";
 import { MovieDetailSheet } from "./components/MovieDetailSheet";
 import { MovieRow } from "./components/MovieRow";
 import { PlansSheet } from "./components/PlansSheet";
+import { TopUpSheet } from "./components/TopUpSheet";
 import { Navbar } from "./components/Navbar";
 import { SettingsPage } from "./components/SettingsPage";
 import { DecorationLayer } from "./components/DecorationLayer";
@@ -141,6 +142,9 @@ function Shell({
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
   const [plansOpen, setPlansOpen] = useState(false);
+  // The same TopUpSheet the plans sheet opens on a shortfall. One canonical
+  // top-up flow, reachable directly as well as from a failed purchase.
+  const [topUpOpen, setTopUpOpen] = useState(false);
   // One set for the whole app. Rows share titles, so per-row state would
   // let the same film show a filled heart in one row and an empty one in
   // the next.
@@ -380,7 +384,18 @@ function Shell({
           seen.add(movie.id);
           pool.push(movie);
         }
-        return pool.slice(0, 5);
+
+        // Prefer slides that actually show something. A title with no
+        // poster renders as a gradient with text, so a carousel rotating
+        // through them looks broken even when it is working perfectly —
+        // which matters here because most of the catalog has no poster.
+        //
+        // Only when at least two have posters, though: dropping to a
+        // single slide would disable rotation altogether (the timer needs
+        // two), trading a cosmetic problem for a functional one. Below
+        // that threshold the mixed pool is the better outcome.
+        const withPosters = pool.filter((movie) => movie.poster_url);
+        return (withPosters.length >= 2 ? withPosters : pool).slice(0, 5);
       })();
 
   const homeRows = [
@@ -410,6 +425,7 @@ function Shell({
           profile={profile}
           onChangeLanguage={handleChangeLanguage}
           onOpenPlans={() => setPlansOpen(true)}
+          onOpenTopUp={() => setTopUpOpen(true)}
         />
       ) : (
         <>
@@ -491,6 +507,18 @@ function Shell({
             void api.me().then(setProfile).catch(() => undefined);
           }}
           onToast={(message, tone) => setToast({ message, tone })}
+        />
+      )}
+      {topUpOpen && (
+        <TopUpSheet
+          onClose={() => setTopUpOpen(false)}
+          onSubmitted={(message) => {
+            setToast({ message, tone: "success" });
+            // Nothing has moved yet — the receipt is only submitted, and
+            // the balance changes when an administrator approves it. The
+            // refetch is so the payment history below shows it pending.
+            void api.me().then(setProfile).catch(() => undefined);
+          }}
         />
       )}
       {toast && <Toast message={toast.message} tone={toast.tone} />}

@@ -18,6 +18,27 @@ interface Props {
 const ROTATE_MS = 6000;
 
 /**
+ * Autoplay is derived, never latched.
+ *
+ * The previous implementation held a `paused` boolean that was set to
+ * true by `onPointerDown` on the whole banner and **never set back to
+ * false anywhere**. Since the banner is the first element in the feed and
+ * `pointerdown` fires when a *scroll* begins, the user's first swipe down
+ * the page silently ended rotation for the rest of the session.
+ *
+ * The fix is structural rather than a corrected boolean: there is no
+ * pause flag at all. Whether the carousel advances is computed from
+ * conditions that can only be true temporarily — reduced motion (an OS
+ * setting), document visibility (a browser event), and how many slides
+ * exist. Nothing a finger does can put the carousel into a state that
+ * only another finger could undo, so this class of bug cannot return by
+ * someone forgetting a release path.
+ *
+ * A deliberate dot tap restarts the countdown rather than stopping it, so
+ * the slide the user chose gets a full interval before moving on.
+ */
+
+/**
  * Someone who has asked not to be shown motion should not get a banner
  * that reshuffles itself under their thumb. Tracked live rather than read
  * once, since Telegram's in-app browser inherits the OS setting and the
@@ -38,11 +59,39 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
+/**
+ * Whether the document is currently hidden.
+ *
+ * Advancing slides for a backgrounded Mini App burns cycles nobody sees,
+ * and on return the user would land mid-sequence. The release path is the
+ * browser's own `visibilitychange`, not a gesture, so this can never
+ * strand the carousel: if the event never fires (some WebViews are quiet
+ * about it) the value simply stays false and rotation continues, which is
+ * the safe direction to fail.
+ */
+function useDocumentHidden(): boolean {
+  const [hidden, setHidden] = useState(
+    () => typeof document !== "undefined" && document.hidden,
+  );
+
+  useEffect(() => {
+    const sync = () => setHidden(document.hidden);
+    document.addEventListener("visibilitychange", sync);
+    return () => document.removeEventListener("visibilitychange", sync);
+  }, []);
+
+  return hidden;
+}
+
 export function HeroBanner({ movies, onWatch, onDetails, slides }: Props) {
   const t = useT();
   const [index, setIndex] = useState(0);
-  const [paused, setPaused] = useState(false);
+  // Bumped by a deliberate interaction to restart the countdown. A number
+  // rather than a flag: it can only ever cause the timer to be recreated,
+  // never to stop existing.
+  const [restartToken, setRestartToken] = useState(0);
   const reducedMotion = usePrefersReducedMotion();
+  const hidden = useDocumentHidden();
 
   // Rows arrive progressively, so the slide list grows after first paint.
   // Clamping beats resetting to 0 — it keeps the current slide if it's
@@ -51,25 +100,29 @@ export function HeroBanner({ movies, onWatch, onDetails, slides }: Props) {
     setIndex((current) => (current < movies.length ? current : 0));
   }, [movies.length]);
 
+  // Exactly one interval can exist: the effect creates a single timer and
+  // its cleanup clears that same timer, so any dependency change tears the
+  // old one down before building the next. `setIndex` takes the updater
+  // form, so the callback never closes over a stale index and the timer
+  // does not need recreating as the slide advances.
   useEffect(() => {
-    if (paused || reducedMotion || movies.length < 2) return;
-    const timer = setInterval(
+    if (reducedMotion || hidden || movies.length < 2) return;
+    const timer = window.setInterval(
       () => setIndex((current) => (current + 1) % movies.length),
       ROTATE_MS,
     );
-    return () => clearInterval(timer);
-  }, [paused, reducedMotion, movies.length]);
+    return () => window.clearInterval(timer);
+  }, [reducedMotion, hidden, movies.length, restartToken]);
 
   const active = movies[index];
   const campaign = slides?.[index];
   if (!active) return null;
 
   return (
-    <div
-      className="relative aspect-[3/4] w-full overflow-hidden sm:aspect-[16/9]"
-      // Any touch means they're engaging with this slide; stop moving it.
-      onPointerDown={() => setPaused(true)}
-    >
+    // Deliberately no pointer handler. `pointerdown` fires at the start of
+    // a scroll as readily as a tap, and treating it as engagement is what
+    // used to kill autoplay on the first swipe.
+    <div className="relative aspect-[3/4] w-full overflow-hidden sm:aspect-[16/9]">
       {movies.map((movie, slide) =>
         movie.poster_url ? (
           <img
@@ -134,7 +187,11 @@ export function HeroBanner({ movies, onWatch, onDetails, slides }: Props) {
                 key={movie.id}
                 onClick={() => {
                   setIndex(slide);
-                  setPaused(true);
+                  // Restart the countdown so the chosen slide gets a full
+                  // interval. It does not stop autoplay — a carousel the
+                  // user can permanently freeze by tapping a dot is the
+                  // bug this component is being fixed for.
+                  setRestartToken((token) => token + 1);
                 }}
                 aria-label={`${slide + 1}-banner`}
                 aria-current={slide === index}
