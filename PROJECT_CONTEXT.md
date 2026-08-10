@@ -81,7 +81,9 @@ Mini App ──REST─────┘         │                 └─> Redis
 - `chp_watch_history`, `chp_favorites`, `chp_pending_uploads`
 
 **Platform operations**
-- `chp_broadcasts` — one row per admin broadcast with its audience, status and delivery counts. The status column, claimed under a row lock, is what makes a duplicate send impossible. Stores no recipient list.
+- `chp_broadcasts` — one row per admin broadcast with its audience, target, media reference, status and delivery counts. The status column, claimed under a row lock, is what makes a duplicate send impossible. `target_value` records what an `INTEREST`/`BADGE` send was addressed at; it is audit, not authority — after materialisation the recipient rows are the truth.
+- `chp_broadcast_messages` — one row per broadcast per recipient, unique on `(broadcast_id, user_id)`. The frozen recipient set: delivery, retry and resume all read these rows and never re-evaluate the audience. Deliberately internal — no endpoint exposes them.
+- `chp_broadcast_translations` — a broadcast's body per interface language, unique on `(broadcast_id, language)`. The recipient's own language chooses; the broadcast's `message` is the fallback.
 - `chp_system_settings` — key/value settings edited from the admin panel; today the required-membership channel and flag. Read only through `app.services.settings_store`.
 
 **Payments & promo**
@@ -120,7 +122,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 - First-open language picker; settings page (name, Telegram ID, balance, premium, referral code with copy, language switcher)
 - Light/dark theme
 
-**Admin panel** — 52 REST endpoints, each gated on a named permission; dashboard, stats, content + title editor, TMDB search/enrich, collections, promos, receipts (photo proxy, status filter, server-side search), pending uploads, users (with the ban toggle), cards, broadcasts, platform settings, and administrator management (Super Admin only)
+**Admin panel** — 71 REST endpoint paths, each gated on a named permission; dashboard, stats, content + title editor, TMDB search/enrich, collections, promos, receipts (photo proxy, status filter, server-side search), pending uploads, users (with the ban toggle), cards, appearance (themes, assignments, banners), the broadcast control centre (compose with UZ/RU/EN bodies and media, interest/badge targeting, server-side recipient estimate, live progress, operator resume), platform settings, and administrator management (Super Admin only)
 
 **Platform**
 - i18n: 3 languages, 240 keys, one catalog shared by bot and Mini App — **plus catalog data**: movie titles and descriptions resolve per language from `chp_title_translations`

@@ -11,12 +11,15 @@ import { MovieRow } from "./components/MovieRow";
 import { PlansSheet } from "./components/PlansSheet";
 import { Navbar } from "./components/Navbar";
 import { SettingsPage } from "./components/SettingsPage";
+import { DecorationLayer } from "./components/DecorationLayer";
+import { ThemeProvider } from "./components/ThemeProvider";
 import { Toast } from "./components/Toast";
 import { api, ApiError } from "./lib/api";
 import { useT, type Language, type Translator } from "./lib/i18n";
 import { getColorScheme, initTelegramApp, onThemeChange } from "./lib/telegram";
 import type {
   AudioLanguageFilter,
+  BannerSlide,
   Episode,
   Movie,
   MovieContentType,
@@ -110,7 +113,12 @@ export default function App() {
 
   return (
     <I18nProvider lang={profile?.language ?? "uz"}>
-      <Shell profile={profile} setProfile={setProfile} />
+      <ThemeProvider>
+        {/* Behind everything and inert; renders nothing when the theme
+            asks for no decoration, which is the default. */}
+        <DecorationLayer />
+        <Shell profile={profile} setProfile={setProfile} />
+      </ThemeProvider>
     </I18nProvider>
   );
 }
@@ -138,6 +146,9 @@ function Shell({
   // the next.
   const [favorites, setFavorites] = useState<Set<number>>(new Set());
   const [savedMovies, setSavedMovies] = useState<Movie[]>([]);
+  // Admin campaigns resolved for *this* viewer by the backend. Empty means
+  // none are configured, and the banner falls back to the derived rows.
+  const [slides, setSlides] = useState<BannerSlide[]>([]);
 
   /**
    * Reconciles the set against a freshly loaded list.
@@ -170,6 +181,15 @@ function Shell({
   useEffect(() => {
     loadSaved();
   }, [loadSaved]);
+
+  useEffect(() => {
+    api
+      .banners()
+      .then(setSlides)
+      // A campaign failure must never cost the home screen its banner —
+      // the derived fallback below covers it.
+      .catch(() => setSlides([]));
+  }, []);
 
 
   // Comes straight from /api/auth/me. This used to be discovered by calling
@@ -331,16 +351,37 @@ function Shell({
     );
   }
 
-  const bannerMovies = (() => {
-    const pool: Movie[] = [];
-    const seen = new Set<number>();
-    for (const movie of [...(rowMovies.newest ?? []), ...(rowMovies.top ?? [])]) {
-      if (seen.has(movie.id)) continue;
-      seen.add(movie.id);
-      pool.push(movie);
-    }
-    return pool.slice(0, 5);
-  })();
+  // Campaigns win when an admin has configured any; otherwise the banner
+  // keeps deriving itself from the newest and top rows exactly as before.
+  // A campaign with no title (an upcoming promotion) still needs a slide,
+  // so it borrows a placeholder Movie shape for the carousel's contract.
+  const campaignSlides = slides.filter((slide) => slide.movie || slide.poster_url);
+  const bannerMovies: Movie[] = campaignSlides.length
+    ? campaignSlides.map(
+        (slide, position) =>
+          slide.movie ?? {
+            id: -1 - position,
+            title: slide.headline ?? "",
+            year: null,
+            genres: null,
+            poster_url: slide.poster_url,
+            description: slide.subtitle,
+            rating: null,
+            view_count: 0,
+            episode_count: 1,
+            is_favorite: false,
+          },
+      )
+    : (() => {
+        const pool: Movie[] = [];
+        const seen = new Set<number>();
+        for (const movie of [...(rowMovies.newest ?? []), ...(rowMovies.top ?? [])]) {
+          if (seen.has(movie.id)) continue;
+          seen.add(movie.id);
+          pool.push(movie);
+        }
+        return pool.slice(0, 5);
+      })();
 
   const homeRows = [
     ...baseRows,
@@ -396,7 +437,15 @@ function Shell({
             </>
           ) : (
             <>
-              <HeroBanner movies={bannerMovies} onWatch={handleWatch} onDetails={setSelectedMovie} />
+              <HeroBanner
+                movies={bannerMovies}
+                slides={campaignSlides.length ? campaignSlides : undefined}
+                onWatch={handleWatch}
+                // An upcoming promotion has no real title behind it, so
+                // tapping it must not try to open a detail sheet for a
+                // placeholder id.
+                onDetails={(movie) => movie.id > 0 && setSelectedMovie(movie)}
+              />
               <AudioFilter value={audioLanguage} onChange={setAudioLanguage} />
               {/* First row when it has anything: what the viewer saved is
                   what they came back for. MovieRow hides itself when empty,

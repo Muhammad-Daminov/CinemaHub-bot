@@ -21,8 +21,11 @@ import aiohttp
 from aiogram.exceptions import TelegramAPIError
 from fastapi import APIRouter, BackgroundTasks, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
-from pydantic import BaseModel, ConfigDict
+from decimal import Decimal
+
+from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
+from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_current_admin, get_super_admin, require_permission
@@ -40,24 +43,56 @@ from app.db.models.content import (
     TranslationSource,
     VideoQuality,
 )
-from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt, PaymentStatus
+from app.db.models.payment import (
+    AdminCard,
+    PaymentPurpose,
+    PaymentReceipt,
+    PaymentStatus,
+    RejectionReason,
+)
 from app.db.models.promo import PromoCode, PromoDiscountType
-from app.db.models.system import Broadcast, BroadcastAudience, BroadcastStatus
+from app.db.models.banner import Banner, BannerAudience
+from app.db.models.theme import Theme, ThemeAssignment, ThemeScope
+from app.db.models.system import (
+    Broadcast,
+    BroadcastAudience,
+    BroadcastMedia,
+    BroadcastStatus,
+    BroadcastTranslation,
+)
 from app.db.models.user import SubscriptionPlan, UILanguage, User, UserRole
 from app.db.session import AsyncSessionFactory, get_db_session
 from app.services.admin_content import admin_content_service
+from app.services.banners import (
+    ALLOWED_LABEL_KEYS,
+    BannerError,
+    create_banner,
+    list_banners,
+    update_banner,
+)
 from app.services.broadcast import (
     BroadcastError,
     audience_size,
+    claim_for_resume,
     create_broadcast,
+    estimate_recipients,
     list_broadcasts,
+    resumability,
+    resume_broadcast,
     run_broadcast,
+    set_translations,
+)
+from app.services.personalization import (
+    KNOWN_INTERESTS,
+    known_badge_keys,
+    known_badge_prefixes,
 )
 from app.services.images import ImageError, get_image, store_image
 from app.services.payment_review import (
     ReceiptNotFoundError,
     ReceiptReviewError,
     approve_receipt,
+    flag_amount_mismatch,
     reject_receipt,
 )
 from app.services.permissions import (
@@ -71,6 +106,23 @@ from app.services.permissions import (
 )
 from app.services.promo import promo_service
 from app.services.settings_store import get_membership_config, set_membership_config
+from app.services.themes import (
+    CARD_SHAPES,
+    DECORATIONS,
+    DEFAULT_TOKENS,
+    contrast_warnings,
+    ThemeError,
+    assign_theme,
+    create_theme,
+    delete_assignment,
+    delete_theme,
+    duplicate_theme,
+    list_assignments,
+    list_themes,
+    set_default_theme,
+    set_theme_active,
+    set_tokens,
+)
 from app.services.subscription_plans import (
     PlanError,
     PlanNotFoundError,
@@ -152,6 +204,8 @@ async def get_top_users(
 # ---------- Payment receipts ----------
 
 class ReceiptOut(BaseModel):
+    """Everything a reviewer needs to decide, and to audit the decision later."""
+
     id: int
     telegram_id: int
     username: str | None
@@ -163,10 +217,39 @@ class ReceiptOut(BaseModel):
     status: PaymentStatus
     admin_notes: str | None
     created_at: datetime
+    # Which card the user says they paid into — a payment to the wrong
+    # destination is one of the built-in rejection reasons, and the
+    # reviewer cannot check it without seeing the card.
+    card_id: int | None = None
+    card_label: str | None = None
+    verified_amount: float | None = None
+    rejection_reason_id: int | None = None
+    reviewed_at: datetime | None = None
+    reviewer_telegram_id: int | None = None
 
 
 class RejectIn(BaseModel):
-    notes: str
+    notes: str | None = None
+    reason_id: int | None = None
+
+
+class MismatchIn(BaseModel):
+    """The figure the reviewer actually read on the receipt."""
+
+    verified_amount: Decimal = Field(gt=0)
+    notes: str | None = None
+
+
+class RejectionReasonOut(BaseModel):
+    id: int
+    code: str | None
+    label: str | None
+    sort_order: int
+
+
+class RejectionReasonIn(BaseModel):
+    label: str = Field(min_length=2, max_length=200)
+    sort_order: int = 100
 
 
 @router.get("/receipts", response_model=list[ReceiptOut], dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
@@ -194,9 +277,15 @@ async def list_receipts(
             conditions.append(User.telegram_id == int(needle))
         filters.append(or_(*conditions))
 
+    reviewer = aliased(User)
     result = await session.execute(
-        select(PaymentReceipt, User)
+        select(PaymentReceipt, User, AdminCard, reviewer)
         .join(User, User.id == PaymentReceipt.user_id)
+        # Outer joins: a receipt predating the card picker has no card, and
+        # an unreviewed one has no reviewer. Inner joins would silently
+        # drop exactly the rows the queue exists to show.
+        .outerjoin(AdminCard, AdminCard.id == PaymentReceipt.admin_card_id)
+        .outerjoin(reviewer, reviewer.id == PaymentReceipt.reviewed_by_id)
         .where(*filters)
         .order_by(PaymentReceipt.created_at.desc())
         .limit(limit)
@@ -214,8 +303,14 @@ async def list_receipts(
             status=receipt.status,
             admin_notes=receipt.admin_notes,
             created_at=receipt.created_at,
+            card_id=card.id if card else None,
+            card_label=f"{card.bank_name or card.holder_name} {card.card_number}" if card else None,
+            verified_amount=float(receipt.verified_amount) if receipt.verified_amount is not None else None,
+            rejection_reason_id=receipt.rejection_reason_id,
+            reviewed_at=receipt.reviewed_at,
+            reviewer_telegram_id=reviewed_by.telegram_id if reviewed_by else None,
         )
-        for receipt, user in result.all()
+        for receipt, user, card, reviewed_by in result.all()
     ]
 
 
@@ -274,13 +369,101 @@ async def reject_receipt_route(
     admin: User = Depends(get_current_admin),
     session: AsyncSession = Depends(get_db_session),
 ) -> dict[str, str]:
+    if body.reason_id is not None and await session.get(RejectionReason, body.reason_id) is None:
+        raise HTTPException(status_code=422, detail="Unknown rejection reason")
     try:
-        await reject_receipt(session, receipt_id, admin.id, body.notes)
+        await reject_receipt(session, receipt_id, admin.id, body.notes, body.reason_id)
     except ReceiptNotFoundError as exc:
         raise HTTPException(status_code=404, detail="Receipt not found") from exc
     except ReceiptReviewError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     return {"status": "rejected"}
+
+
+@router.post("/receipts/{receipt_id}/mismatch", dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))])
+async def flag_mismatch_route(
+    receipt_id: int,
+    body: MismatchIn,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> dict[str, str]:
+    """
+    Records that the declared amount disagrees with the receipt.
+
+    Credits nothing — neither figure. Deciding how much someone paid is
+    exactly what manual review exists to avoid guessing at. The user is
+    told both numbers and can resubmit.
+    """
+    try:
+        await flag_amount_mismatch(session, receipt_id, admin.id, body.verified_amount, body.notes)
+    except ReceiptNotFoundError as exc:
+        raise HTTPException(status_code=404, detail="Receipt not found") from exc
+    except ReceiptReviewError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"status": "mismatch"}
+
+
+# ---------- Rejection reasons ----------
+
+
+@router.get(
+    "/rejection-reasons",
+    response_model=list[RejectionReasonOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))],
+)
+async def list_rejection_reasons(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[RejectionReason]:
+    result = await session.execute(
+        select(RejectionReason)
+        .where(RejectionReason.is_active.is_(True))
+        .order_by(RejectionReason.sort_order, RejectionReason.id)
+    )
+    return list(result.scalars())
+
+
+@router.post(
+    "/rejection-reasons",
+    response_model=RejectionReasonOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))],
+)
+async def create_rejection_reason(
+    body: RejectionReasonIn, session: AsyncSession = Depends(get_db_session)
+) -> RejectionReason:
+    """
+    Adds a reason.
+
+    No `code`, deliberately: a code implies a locale key, and one an
+    administrator invents would resolve to nothing. Admin-authored reasons
+    carry their label verbatim and are shown as typed.
+    """
+    reason = RejectionReason(label=body.label.strip(), sort_order=body.sort_order)
+    session.add(reason)
+    await session.flush()
+    return reason
+
+
+@router.delete(
+    "/rejection-reasons/{reason_id}",
+    dependencies=[Depends(require_permission(Permission.MANAGE_PAYMENTS))],
+)
+async def delete_rejection_reason(
+    reason_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    """
+    Retires a reason.
+
+    Deactivated, never deleted: receipts point at it, and removing the row
+    would erase why a past payment was refused.
+    """
+    reason = await session.get(RejectionReason, reason_id)
+    if reason is None:
+        raise HTTPException(status_code=404, detail="Reason not found")
+    if reason.code is not None:
+        raise HTTPException(status_code=422, detail="Built-in reasons cannot be removed")
+    reason.is_active = False
+    await session.flush()
+    return {"status": "retired"}
 
 
 # ---------- Admin cards ----------
@@ -1726,14 +1909,38 @@ async def clear_collection_poster(
 
 
 class BroadcastIn(BaseModel):
+    # `extra="forbid"` is the security control here, not tidiness. The
+    # audience is derived server-side from an enum and an allowlisted
+    # target; a request carrying `user_id`, `user_ids` or `recipient_ids`
+    # is rejected outright rather than silently ignored, so an attempt to
+    # address a broadcast at chosen people fails loudly and visibly.
+    model_config = ConfigDict(extra="forbid")
+
     message: str
+    # Per-language bodies, keyed by interface language. The recipient's own
+    # language chooses between them at send time — the composing admin's is
+    # never consulted — and `message` remains the fallback for anything
+    # left blank, so a broadcast is never undeliverable for want of a
+    # translation.
+    translations: dict[UILanguage, str] | None = None
     audience: BroadcastAudience = BroadcastAudience.ALL
+    # What INTEREST/BADGE targets. Validated against the allowlist derived
+    # from the badge tables — never interpolated into SQL, never used as a
+    # filter expression.
+    target_value: str | None = None
+    # An allowlisted media kind plus a Telegram file_id captured through
+    # the trusted admin forward flow. The pairing is validated server-side;
+    # a client-supplied combination is never taken on trust.
+    media_type: BroadcastMedia = BroadcastMedia.NONE
+    media_file_id: str | None = None
 
 
 class BroadcastOut(BaseModel):
     id: int
     message: str
+    media_type: BroadcastMedia
     audience: BroadcastAudience
+    target_value: str | None
     status: BroadcastStatus
     total_recipients: int
     sent_count: int
@@ -1753,7 +1960,11 @@ def _broadcast_out(row: Broadcast) -> BroadcastOut:
     return BroadcastOut(
         id=row.id,
         message=row.message,
+        # The file_id itself is deliberately absent: an admin screen needs
+        # to know a broadcast carries a photo, not which one.
+        media_type=row.media_type,
         audience=row.audience,
+        target_value=row.target_value,
         status=row.status,
         total_recipients=row.total_recipients,
         sent_count=row.sent_count,
@@ -1786,11 +1997,80 @@ async def list_broadcasts_route(
 async def broadcast_audience_sizes(
     session: AsyncSession = Depends(get_db_session),
 ) -> list[AudienceOut]:
-    """How many people each segment would reach — shown before the send, not after."""
+    """
+    How many people each untargeted segment would reach — shown before the
+    send, not after.
+
+    INTEREST and BADGE are absent by construction: their size depends on a
+    target, so they are quoted through `/broadcasts/estimate` instead.
+    Returning a number for "INTEREST" with no target would have to mean
+    something, and every available meaning is misleading.
+    """
     return [
         AudienceOut(audience=audience, size=await audience_size(session, audience))
         for audience in BroadcastAudience
+        if not audience.needs_target
     ]
+
+
+class TargetOptionsOut(BaseModel):
+    """The complete vocabulary of targets. Nothing outside it is accepted."""
+
+    interests: list[str]
+    badges: list[str]
+    badge_families: list[str]
+
+
+@router.get(
+    "/broadcasts/targets",
+    response_model=TargetOptionsOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def broadcast_target_options() -> TargetOptionsOut:
+    """
+    What an admin may target, served from the same allowlists that validate
+    a create request — so the panel cannot offer a choice the API refuses.
+    """
+    return TargetOptionsOut(
+        interests=sorted(KNOWN_INTERESTS),
+        badges=sorted(known_badge_keys()),
+        badge_families=sorted(known_badge_prefixes()),
+    )
+
+
+class EstimateOut(BaseModel):
+    audience: BroadcastAudience
+    target_value: str | None
+    estimated_recipients: int
+
+
+@router.get(
+    "/broadcasts/estimate",
+    response_model=EstimateOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def broadcast_estimate(
+    audience: BroadcastAudience,
+    target_value: str | None = Query(default=None, max_length=64),
+    session: AsyncSession = Depends(get_db_session),
+) -> EstimateOut:
+    """
+    How many people a targeted send would reach, before committing to it.
+
+    Aggregate only. The response model has no field capable of carrying a
+    user id, and the count comes from the identical eligibility builder
+    materialisation uses — the estimate and the send cannot disagree.
+    """
+    try:
+        count = await estimate_recipients(session, audience, target_value)
+    except BroadcastError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    await session.commit()  # the freshness pass wrote profiles
+    return EstimateOut(
+        audience=audience,
+        target_value=(target_value or "").strip() or None,
+        estimated_recipients=count,
+    )
 
 
 @router.post(
@@ -1814,13 +2094,117 @@ async def create_broadcast_route(
     request cannot produce a second send.
     """
     try:
-        broadcast = await create_broadcast(session, admin, body.message, body.audience)
+        broadcast = await create_broadcast(
+            session,
+            admin,
+            body.message,
+            body.audience,
+            media_type=body.media_type,
+            media_file_id=body.media_file_id,
+            target_value=body.target_value,
+        )
+        if body.translations:
+            await set_translations(
+                session,
+                broadcast.id,
+                body.translations,
+                with_media=body.media_type.needs_file,
+            )
     except BroadcastError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     await session.commit()  # the task runs in its own session and must see this row
     background.add_task(run_broadcast, AsyncSessionFactory, bot, broadcast.id)
     return _broadcast_out(broadcast)
+
+
+class BroadcastDetailOut(BroadcastOut):
+    """
+    One broadcast plus its live delivery breakdown.
+
+    Counted from the recipient rows, never from the pre-send estimate:
+    progress has to describe what is happening, not what was predicted.
+    `can_resume` is the server's decision — the panel renders the button,
+    it does not decide whether one is warranted.
+    """
+
+    pending: int
+    sending: int
+    sent: int
+    failed: int
+    skipped: int
+    can_resume: bool
+    languages: list[UILanguage]
+
+
+@router.get(
+    "/broadcasts/{broadcast_id}",
+    response_model=BroadcastDetailOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def broadcast_detail(
+    broadcast_id: int,
+    session: AsyncSession = Depends(get_db_session),
+) -> BroadcastDetailOut:
+    """Authoritative state for the progress screen. Still no recipient identities."""
+    broadcast = await session.get(Broadcast, broadcast_id)
+    if broadcast is None:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    can_resume, breakdown = await resumability(session, broadcast)
+    languages = (
+        await session.execute(
+            select(BroadcastTranslation.language).where(
+                BroadcastTranslation.broadcast_id == broadcast_id
+            )
+        )
+    ).scalars().all()
+
+    return BroadcastDetailOut(
+        **_broadcast_out(broadcast).model_dump(),
+        pending=breakdown["pending"],
+        sending=breakdown["sending"],
+        sent=breakdown["sent"],
+        failed=breakdown["failed"],
+        skipped=breakdown["skipped"],
+        can_resume=can_resume,
+        languages=sorted(set(languages), key=lambda item: item.value),
+    )
+
+
+@router.post(
+    "/broadcasts/{broadcast_id}/resume",
+    response_model=BroadcastOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def resume_broadcast_route(
+    broadcast_id: int,
+    background: BackgroundTasks,
+    session: AsyncSession = Depends(get_db_session),
+) -> BroadcastOut:
+    """
+    Restarts a recoverable broadcast against its **existing** recipient rows.
+
+    Resumability is re-checked here under a row lock rather than trusted
+    from the panel that offered the button — the screen may have been open
+    for an hour. A broadcast that is not recoverable returns 409, which is
+    the panel's cue to refresh rather than retry: the state changed under
+    it, and repeating the request would not help.
+
+    Nothing is re-materialised, so the audience, the target and the frozen
+    recipient set are all untouched.
+    """
+    broadcast = await session.get(Broadcast, broadcast_id)
+    if broadcast is None:
+        raise HTTPException(status_code=404, detail="Broadcast not found")
+
+    claimed = await claim_for_resume(session, broadcast_id)
+    if claimed is None:
+        raise HTTPException(status_code=409, detail="This broadcast cannot be resumed")
+
+    await session.commit()  # the task opens its own session and must see the claim
+    background.add_task(resume_broadcast, AsyncSessionFactory, bot, broadcast_id)
+    return _broadcast_out(claimed)
 
 
 # ---------- System settings ----------
@@ -1883,3 +2267,361 @@ async def update_membership_settings(
         )
     config = await set_membership_config(session, body.require_membership, channel, admin.id)
     return _membership_out(config)
+
+
+# ---------- Promotional banners ----------
+#
+# Gated on MANAGE_NOTIFICATIONS: a banner is promotional messaging, the
+# same capability that governs broadcasts. Deliberately not a new
+# permission — one nobody holds would leave the feature reachable only by
+# the Super Admin until every administrator was re-permissioned.
+
+
+class BannerIn(BaseModel):
+    title_id: int | None = None
+    headline: str | None = None
+    subtitle: str | None = None
+    label_key: str | None = None
+    image_url: str | None = None
+    audience: BannerAudience = BannerAudience.GLOBAL
+    target_value: str | None = None
+    priority: int = 0
+    is_active: bool = True
+    starts_at: datetime | None = None
+    ends_at: datetime | None = None
+
+
+class BannerAdminOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    title_id: int | None
+    headline: str | None
+    subtitle: str | None
+    label_key: str | None
+    image_url: str | None
+    audience: BannerAudience
+    target_value: str | None
+    priority: int
+    is_active: bool
+    starts_at: datetime | None
+    ends_at: datetime | None
+
+
+@router.get(
+    "/banners",
+    response_model=list[BannerAdminOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def list_banners_admin(session: AsyncSession = Depends(get_db_session)) -> list[Banner]:
+    """Every campaign, live or not — this screen manages them all."""
+    return await list_banners(session)
+
+
+@router.get(
+    "/banners/labels",
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def list_banner_labels() -> dict[str, list[str]]:
+    """
+    The locale keys a campaign may use.
+
+    Served from the backend so the panel offers exactly what the resolver
+    accepts — a free-text field here would either miss the catalog or
+    become an injection surface.
+    """
+    return {"labels": sorted(ALLOWED_LABEL_KEYS)}
+
+
+@router.post(
+    "/banners",
+    response_model=BannerAdminOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def create_banner_route(
+    body: BannerIn, session: AsyncSession = Depends(get_db_session)
+) -> Banner:
+    try:
+        return await create_banner(session, **body.model_dump())
+    except BannerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.patch(
+    "/banners/{banner_id}",
+    response_model=BannerAdminOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def update_banner_route(
+    banner_id: int, body: BannerIn, session: AsyncSession = Depends(get_db_session)
+) -> Banner:
+    try:
+        banner = await update_banner(session, banner_id, **body.model_dump())
+    except BannerError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if banner is None:
+        raise HTTPException(status_code=404, detail="Banner not found")
+    return banner
+
+
+@router.delete(
+    "/banners/{banner_id}",
+    dependencies=[Depends(require_permission(Permission.MANAGE_NOTIFICATIONS))],
+)
+async def delete_banner_route(
+    banner_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    banner = await session.get(Banner, banner_id)
+    if banner is None:
+        raise HTTPException(status_code=404, detail="Banner not found")
+    await session.delete(banner)
+    await session.flush()
+    return {"status": "deleted"}
+
+
+# ---------- Themes ----------
+#
+# Gated on MANAGE_SYSTEM_SETTINGS: a theme changes the whole platform's
+# appearance, which is a system-wide setting rather than content.
+
+
+class ThemeIn(BaseModel):
+    key: str
+    name: str
+    description: str | None = None
+    tokens: dict[str, str] = {}
+    card_shape: str | None = None
+    decoration: str | None = None
+
+
+class ThemeTokensIn(BaseModel):
+    tokens: dict[str, str]
+
+
+class ThemeAdminOut(BaseModel):
+    id: int
+    key: str
+    name: str
+    description: str | None
+    is_default: bool
+    is_active: bool
+    tokens: dict[str, str]
+    card_shape: str
+    decoration: str
+    # Advisory readability problems. Never blocking — the admin's colours
+    # are not silently changed — but named precisely so the panel can say
+    # which pair is unreadable.
+    contrast_warnings: list[dict] = []
+
+
+class ThemeAssignmentIn(BaseModel):
+    theme_id: int
+    scope: ThemeScope
+    user_id: int | None = None
+    target_value: str | None = None
+    priority: int = 0
+
+
+class ThemeAssignmentOut(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    theme_id: int
+    scope: ThemeScope
+    user_id: int | None
+    target_value: str | None
+    priority: int
+    is_active: bool
+
+
+def _theme_out(theme: Theme) -> ThemeAdminOut:
+    return ThemeAdminOut(
+        id=theme.id,
+        key=theme.key,
+        name=theme.name,
+        description=theme.description,
+        is_default=theme.is_default,
+        is_active=theme.is_active,
+        tokens={token.token: token.value for token in theme.tokens},
+        card_shape=theme.card_shape,
+        decoration=theme.decoration,
+        contrast_warnings=contrast_warnings({t.token: t.value for t in theme.tokens}),
+    )
+
+
+@router.get(
+    "/themes",
+    response_model=list[ThemeAdminOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def list_themes_route(session: AsyncSession = Depends(get_db_session)) -> list[ThemeAdminOut]:
+    return [_theme_out(theme) for theme in await list_themes(session)]
+
+
+@router.get(
+    "/themes/tokens",
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def list_theme_tokens() -> dict[str, object]:
+    """
+    The token vocabulary and its default values.
+
+    Served from the backend so the builder can only offer what the
+    validator accepts — a free-text token name would be refused on save
+    and confuse whoever typed it.
+    """
+    return {
+        "defaults": DEFAULT_TOKENS,
+        "card_shapes": CARD_SHAPES,
+        "decorations": sorted(DECORATIONS),
+    }
+
+
+@router.post(
+    "/themes",
+    response_model=ThemeAdminOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def create_theme_route(
+    body: ThemeIn, session: AsyncSession = Depends(get_db_session)
+) -> ThemeAdminOut:
+    try:
+        theme = await create_theme(
+            session,
+            key=body.key,
+            name=body.name,
+            tokens=body.tokens,
+            description=body.description,
+            card_shape=body.card_shape,
+            decoration=body.decoration,
+        )
+    except ThemeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _theme_out(theme)
+
+
+@router.put(
+    "/themes/{theme_id}/tokens",
+    response_model=ThemeAdminOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def set_theme_tokens_route(
+    theme_id: int, body: ThemeTokensIn, session: AsyncSession = Depends(get_db_session)
+) -> ThemeAdminOut:
+    try:
+        theme = await set_tokens(session, theme_id, body.tokens)
+    except ThemeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    return _theme_out(theme)
+
+
+@router.post(
+    "/themes/{theme_id}/duplicate",
+    response_model=ThemeAdminOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def duplicate_theme_route(
+    theme_id: int, body: ThemeIn, session: AsyncSession = Depends(get_db_session)
+) -> ThemeAdminOut:
+    try:
+        theme = await duplicate_theme(session, theme_id, key=body.key, name=body.name)
+    except ThemeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    return _theme_out(theme)
+
+
+@router.post(
+    "/themes/{theme_id}/default",
+    response_model=ThemeAdminOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def set_default_theme_route(
+    theme_id: int, session: AsyncSession = Depends(get_db_session)
+) -> ThemeAdminOut:
+    try:
+        theme = await set_default_theme(session, theme_id)
+    except ThemeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    return _theme_out(theme)
+
+
+@router.patch(
+    "/themes/{theme_id}/toggle",
+    response_model=ThemeAdminOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def toggle_theme_route(
+    theme_id: int, session: AsyncSession = Depends(get_db_session)
+) -> ThemeAdminOut:
+    theme = await session.get(Theme, theme_id)
+    if theme is None:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    try:
+        theme = await set_theme_active(session, theme_id, not theme.is_active)
+    except ThemeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _theme_out(theme)
+
+
+@router.delete(
+    "/themes/{theme_id}",
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def delete_theme_route(
+    theme_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    try:
+        removed = await delete_theme(session, theme_id)
+    except ThemeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if not removed:
+        raise HTTPException(status_code=404, detail="Theme not found")
+    return {"status": "deleted"}
+
+
+@router.get(
+    "/theme-assignments",
+    response_model=list[ThemeAssignmentOut],
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def list_theme_assignments_route(
+    session: AsyncSession = Depends(get_db_session),
+) -> list[ThemeAssignment]:
+    return await list_assignments(session)
+
+
+@router.post(
+    "/theme-assignments",
+    response_model=ThemeAssignmentOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def create_theme_assignment_route(
+    body: ThemeAssignmentIn, session: AsyncSession = Depends(get_db_session)
+) -> ThemeAssignment:
+    try:
+        return await assign_theme(
+            session,
+            body.theme_id,
+            body.scope,
+            user_id=body.user_id,
+            target_value=body.target_value,
+            priority=body.priority,
+        )
+    except ThemeError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.delete(
+    "/theme-assignments/{assignment_id}",
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def delete_theme_assignment_route(
+    assignment_id: int, session: AsyncSession = Depends(get_db_session)
+) -> dict[str, str]:
+    if not await delete_assignment(session, assignment_id):
+        raise HTTPException(status_code=404, detail="Assignment not found")
+    return {"status": "deleted"}

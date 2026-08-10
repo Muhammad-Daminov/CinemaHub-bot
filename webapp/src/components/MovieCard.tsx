@@ -24,7 +24,13 @@ export function MovieCard({ movie, onSelect, isFavorite, onToggleFavorite }: Pro
       onClick={() => onSelect(movie)}
       className="group w-32 shrink-0 text-left sm:w-36"
     >
-      <div className="relative aspect-[2/3] overflow-hidden rounded-lg bg-surface-hi shadow-sm transition-transform duration-200 ease-out group-hover:-translate-y-1 group-hover:shadow-marquee">
+      <div
+        // The shape comes from the active theme, looked up by name against
+        // a fixed radius map — the client never accepts a raw CSS value.
+        // Falls back to the compiled-in radius when no theme is set.
+        style={{ borderRadius: "var(--radius-card, 0.5rem)" }}
+        className="relative aspect-[2/3] overflow-hidden bg-surface-hi shadow-sm transition-transform duration-200 ease-out group-hover:-translate-y-1 group-hover:shadow-marquee"
+      >
         {movie.poster_url ? (
           <img
             src={movie.poster_url}

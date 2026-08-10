@@ -14,7 +14,7 @@
  * loading them all to render a list the viewer scrolls a screen of is
  * wasted on both ends of the wire.
  */
-import { Check, Play } from "lucide-react";
+import { Check } from "lucide-react";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n";
@@ -150,41 +150,49 @@ export function EpisodeSelector({ movieId, onPlay }: Props) {
       {episodes.length === 0 && !loading ? (
         <p className="font-body text-sm text-ink-dim">{t("app.no_episodes")}</p>
       ) : (
-        <ul className="space-y-1.5">
+        // A responsive grid, not a stacked list: a 141-episode serial as one
+        // column is unusable, and episode numbers are short enough to tile.
+        // Columns scale with the viewport rather than being fixed.
+        <ul className="grid grid-cols-4 gap-2 sm:grid-cols-6 md:grid-cols-8">
           {episodes.map((episode) => (
             <li key={episode.id}>
               <button
                 onClick={() => onPlay(episode)}
-                className="flex w-full items-center gap-3 rounded-xl border border-surface-hi bg-surface px-3 py-2.5 text-left transition-transform active:scale-[0.99]"
+                title={episode.name ?? t("catalog.episode_button", { number: episode.number })}
+                aria-label={
+                  episode.watched
+                    ? `${t("catalog.episode_button", { number: episode.number })} — ${t("app.episode_watched")}`
+                    : t("catalog.episode_button", { number: episode.number })
+                }
+                // Watched/unwatched colours come from theme tokens, so an
+                // admin restyles them without touching this component.
+                style={{
+                  backgroundColor: episode.watched
+                    ? "var(--color-episode-watched)"
+                    : "var(--color-episode-unwatched)",
+                }}
+                className={`relative flex aspect-square w-full items-center justify-center rounded-xl border transition-transform active:scale-95 ${
+                  episode.watched ? "border-transparent" : "border-surface-hi"
+                }`}
               >
-                <Play size={14} className="shrink-0 text-marquee" fill="currentColor" />
-                <span className="min-w-0 flex-1">
-                  <span className="flex items-center gap-2">
-                    <span className="truncate font-body text-sm text-ink">
-                      {episode.name ?? t("catalog.episode_button", { number: episode.number })}
-                    </span>
-                    {episode.watched && (
-                      <Check
-                        size={13}
-                        className="shrink-0 text-ink-dim"
-                        aria-label={t("app.episode_watched")}
-                      />
-                    )}
-                  </span>
-                  <span className="mt-0.5 flex items-center gap-1.5 font-mono text-[11px] text-ink-dim">
-                    <span>{t("catalog.episode_button", { number: episode.number })}</span>
-                    {episode.duration_minutes != null && <span>· {episode.duration_minutes}m</span>}
-                    {/* Per-episode audio, so a partly-dubbed serial does not
-                        promise a track this episode lacks. */}
-                    {episode.audio_languages.length > 0 ? (
-                      <span className="truncate">
-                        · {episode.audio_languages.map((code) => t(`audio.${code}`)).join(", ")}
-                      </span>
-                    ) : (
-                      <span>· {t("app.audio_none")}</span>
-                    )}
-                  </span>
+                <span
+                  className={`font-mono text-sm ${
+                    episode.watched ? "text-on-marquee" : "text-ink"
+                  }`}
+                >
+                  {episode.number}
                 </span>
+                {episode.watched && (
+                  // The tick stays visible on top of the watched fill — the
+                  // number alone would not distinguish the two states for
+                  // anyone who cannot rely on colour.
+                  <Check
+                    size={11}
+                    strokeWidth={3}
+                    className="absolute right-1 top-1 text-on-marquee"
+                    aria-hidden
+                  />
+                )}
               </button>
             </li>
           ))}

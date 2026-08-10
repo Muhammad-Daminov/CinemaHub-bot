@@ -13,6 +13,7 @@ fetch here means the lock cannot be forgotten at a call site.
 """
 import logging
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -20,7 +21,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.instance import bot
 from app.core.config import settings
 from app.core.i18n import t_for_user
-from app.db.models.payment import PaymentPurpose, PaymentReceipt, PaymentStatus
+from app.db.models.payment import (
+    PaymentPurpose,
+    PaymentReceipt,
+    PaymentStatus,
+    RejectionReason,
+)
 from app.db.models.subscription import SubscriptionPlanModel
 from app.db.models.user import (
     BalanceHistory,
@@ -69,7 +75,9 @@ async def _lock_pending_receipt(session: AsyncSession, receipt_id: int) -> Payme
     receipt = result.scalar_one_or_none()
     if receipt is None:
         raise ReceiptNotFoundError(f"No receipt with id {receipt_id}")
-    if receipt.status != PaymentStatus.PENDING:
+    if not receipt.status.is_reviewable:
+        # The second, third and fifth rapid approval all land here, having
+        # waited on the first one's lock. One credit, one ledger row.
         raise ReceiptReviewError("Receipt has already been reviewed")
     return receipt
 
@@ -185,19 +193,90 @@ async def _announce_referral_bonus(session: AsyncSession, user_ids: list[int]) -
             logger.warning("Could not notify %s about their referral bonus", user_id)
 
 
+async def _reason_text(session: AsyncSession, user_id: int, reason_id: int | None, notes: str | None) -> str:
+    """
+    The reason as the *user* should read it.
+
+    A built-in reason resolves through the locale catalogs, so it arrives
+    in their language; an administrator-authored one is shown verbatim,
+    because a single-language string cannot honestly be translated. Free
+    text the reviewer typed is appended when both are present.
+    """
+    parts: list[str] = []
+    if reason_id is not None:
+        reason = await session.get(RejectionReason, reason_id)
+        if reason is not None:
+            if reason.i18n_key:
+                parts.append(await t_for_user(session, user_id, reason.i18n_key))
+            elif reason.label:
+                parts.append(reason.label)
+    if notes and notes.strip():
+        parts.append(notes.strip())
+    if not parts:
+        parts.append(await t_for_user(session, user_id, "payment.reject.other"))
+    return " — ".join(parts)
+
+
 async def reject_receipt(
-    session: AsyncSession, receipt_id: int, reviewer_user_id: int | None, notes: str
+    session: AsyncSession,
+    receipt_id: int,
+    reviewer_user_id: int | None,
+    notes: str | None = None,
+    reason_id: int | None = None,
 ) -> PaymentReceipt:
     receipt = await _lock_pending_receipt(session, receipt_id)
 
     receipt.status = PaymentStatus.REJECTED
-    receipt.admin_notes = notes
+    receipt.admin_notes = (notes or "").strip() or None
+    receipt.rejection_reason_id = reason_id
+    receipt.reviewed_by_id = reviewer_user_id
+    receipt.reviewed_at = datetime.now(timezone.utc)
+    await session.flush()
+
+    user = await session.get(User, receipt.user_id)
+    reason = await _reason_text(session, user.id, reason_id, notes)
+    await bot.send_message(
+        user.telegram_id, await t_for_user(session, user.id, "payment.rejected", reason=reason)
+    )
+    return receipt
+
+
+async def flag_amount_mismatch(
+    session: AsyncSession,
+    receipt_id: int,
+    reviewer_user_id: int | None,
+    verified_amount: Decimal,
+    notes: str | None = None,
+) -> PaymentReceipt:
+    """
+    Records that the declared amount does not match the receipt.
+
+    Credits nothing — not the declared figure, and not the one the
+    reviewer read. Crediting either would be the platform deciding how
+    much someone paid, and the whole point of manual review is that a
+    human confirms it against evidence.
+
+    Both numbers are kept so the user is told exactly what to correct,
+    and the receipt becomes retryable rather than refused outright.
+    """
+    receipt = await _lock_pending_receipt(session, receipt_id)
+
+    receipt.status = PaymentStatus.MISMATCH
+    receipt.verified_amount = verified_amount
+    receipt.admin_notes = (notes or "").strip() or None
     receipt.reviewed_by_id = reviewer_user_id
     receipt.reviewed_at = datetime.now(timezone.utc)
     await session.flush()
 
     user = await session.get(User, receipt.user_id)
     await bot.send_message(
-        user.telegram_id, await t_for_user(session, user.id, "payment.rejected", reason=notes)
+        user.telegram_id,
+        await t_for_user(
+            session,
+            user.id,
+            "payment.mismatch",
+            declared=f"{receipt.amount:,.0f}",
+            actual=f"{verified_amount:,.0f}",
+        ),
     )
     return receipt

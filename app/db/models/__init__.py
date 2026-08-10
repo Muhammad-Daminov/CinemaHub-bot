@@ -15,3 +15,6 @@ from app.db.models import subscription  # noqa: F401
 from app.db.models import payment  # noqa: F401
 from app.db.models import promo  # noqa: F401
 from app.db.models import system  # noqa: F401
+from app.db.models import personalization  # noqa: F401
+from app.db.models import banner  # noqa: F401
+from app.db.models import theme  # noqa: F401

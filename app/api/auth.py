@@ -16,6 +16,7 @@ telegram_id in a query param, say) is trivially spoofable.
 import hashlib
 import hmac
 import json
+import logging
 import time
 from urllib.parse import parse_qsl
 
@@ -34,8 +35,12 @@ from app.services.permissions import (
     is_super_admin,
     load_permissions,
 )
+from app.services.personalization import get_profile
+from app.services.themes import builtin_theme, resolve_for_user as resolve_theme
 from app.services.subscriptions import is_user_premium
 from app.services.users import get_or_create_user
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -165,6 +170,23 @@ class UserProfileOut(BaseModel):
     is_banned: bool
 
 
+class PersonalizationOut(BaseModel):
+    """
+    The caller's own interest profile.
+
+    Derived from `get_active_user`, never from an id in the request — a
+    `user_id` parameter here would be an invitation to read someone
+    else's profile.
+    """
+
+    dominant_type: str | None
+    dominant_count: int
+    total_titles: int
+    # i18n key, resolved by the client in the viewer's language. Null until
+    # enough has been watched for a badge to mean anything.
+    badge_key: str | None
+
+
 class LanguageIn(BaseModel):
     language: UILanguage
 
@@ -194,6 +216,70 @@ async def get_my_profile(
 ) -> UserProfileOut:
     premium = await is_user_premium(session, user.id)
     return _profile(user, premium, await load_permissions(session, user))
+
+
+class ThemeOut(BaseModel):
+    """
+    The palette this viewer renders with.
+
+    `tokens` maps CSS custom property names to colours. The client writes
+    them with `style.setProperty`, never into markup — and the server has
+    already restricted names to a fixed allowlist and values to hex, so a
+    theme cannot carry anything executable.
+    """
+
+    key: str
+    name: str
+    tokens: dict[str, str]
+    # Presentation choices that are not colours, as allowlisted keys.
+    card_shape: str
+    decoration: str
+    # Which precedence rule won. Useful in the panel and in tests; harmless
+    # to expose, since it describes the caller's own resolution.
+    scope: str | None
+
+
+@router.get("/me/theme", response_model=ThemeOut)
+async def get_my_theme(
+    user: User = Depends(get_active_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> ThemeOut:
+    """
+    Resolved for the authenticated caller. Takes no id, so there is no way
+    to request somebody else's theme.
+
+    Never raises on a broken configuration: resolution falls back through
+    the default theme to the built-in palette, because a theme form must
+    not be able to make the app unusable.
+    """
+    try:
+        resolved = await resolve_theme(session, user)
+    except Exception:  # noqa: BLE001 — a bad theme must never cost the app its UI
+        logger.exception("Theme resolution failed for user %s; serving the built-in palette", user.id)
+        resolved = builtin_theme()
+    return ThemeOut(
+        key=resolved.key,
+        name=resolved.name,
+        tokens=resolved.tokens,
+        card_shape=resolved.card_shape,
+        decoration=resolved.decoration,
+        scope=resolved.scope.value if resolved.scope else None,
+    )
+
+
+@router.get("/me/personalization", response_model=PersonalizationOut)
+async def get_my_personalization(
+    user: User = Depends(get_active_user),
+    session: AsyncSession = Depends(get_db_session),
+) -> PersonalizationOut:
+    """This user's interests and badge. Scoped to the authenticated caller."""
+    profile = await get_profile(session, user.id)
+    return PersonalizationOut(
+        dominant_type=profile.dominant_type,
+        dominant_count=profile.dominant_count,
+        total_titles=profile.total_titles,
+        badge_key=profile.badge_key,
+    )
 
 
 @router.patch("/me", response_model=UserProfileOut)

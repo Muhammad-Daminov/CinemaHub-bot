@@ -36,6 +36,8 @@ from app.services.content import (
     _title_name_matches,
     content_service,
 )
+from app.services.banners import resolve_for_user
+from app.services.personalization import get_profile
 from app.services.images import get_image
 from app.services.membership import check_access
 from app.services.streaming import streaming_service
@@ -221,6 +223,64 @@ async def get_public_image(
     )
 
 
+class BannerOut(BaseModel):
+    """One hero slide, already resolved for the caller."""
+
+    id: int
+    title_id: int | None
+    headline: str | None
+    subtitle: str | None
+    # Locale key from a fixed allowlist; the client renders it in the
+    # viewer's language. Never free text.
+    label_key: str | None
+    poster_url: str | None
+    personalized: bool
+    # Present when the slide points at a real title, so the carousel can
+    # reuse its existing play/details behaviour unchanged.
+    movie: MovieOut | None
+
+
+@router.get("/banners", response_model=list[BannerOut])
+async def list_banners_route(
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_active_user),
+) -> list[BannerOut]:
+    """
+    Hero banners for **this** viewer.
+
+    Resolved per request from the caller's own interest profile — there is
+    no user id in the request and no shared cache, so one user's
+    personalized selection cannot reach another.
+    """
+    resolved = await resolve_for_user(session, user)
+    if not resolved:
+        return []
+
+    title_ids = [item.title_id for item in resolved if item.title_id is not None]
+    titles: dict[int, Title] = {}
+    if title_ids:
+        rows = await session.execute(select(Title).where(Title.id.in_(title_ids)))
+        titles = {title.id: title for title in rows.scalars()}
+
+    movies = await _to_movie_outs(session, list(titles.values()), user)
+    by_id = {movie.id: movie for movie in movies}
+
+    return [
+        BannerOut(
+            id=item.id,
+            title_id=item.title_id,
+            headline=item.headline,
+            subtitle=item.subtitle,
+            label_key=item.label_key,
+            poster_url=item.image_url
+            or (_poster_for(titles[item.title_id]) if item.title_id in titles else None),
+            personalized=item.personalized,
+            movie=by_id.get(item.title_id) if item.title_id else None,
+        )
+        for item in resolved
+    ]
+
+
 @router.get("/collections", response_model=list[CollectionOut])
 async def list_collections(
     q: str | None = Query(default=None, description="Filters collections by name"),
@@ -332,8 +392,14 @@ async def recommended_movies(
     user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
     """Personalised row. Falls back to popularity for a user with no history."""
+    # The caller's own profile decides the ordering — never an id from the
+    # request, and never another user's interests.
+    profile = await get_profile(session, user.id)
+    dominant = (
+        ContentType(profile.dominant_type) if profile.dominant_type else None
+    )
     titles = await content_service.recommended_for_user(
-        session, user.id, limit=limit, audio_language=audio_language
+        session, user.id, limit=limit, audio_language=audio_language, dominant_type=dominant
     )
     return await _to_movie_outs(session, titles, user)
 

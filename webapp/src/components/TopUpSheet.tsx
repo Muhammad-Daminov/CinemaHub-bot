@@ -9,7 +9,7 @@
  * the camera on mobile and hides the gallery, and most people photograph
  * a receipt once and then pick that photo.
  */
-import { Image as ImageIcon, RefreshCw, Trash2, Upload, X } from "lucide-react";
+import { AlertTriangle, Image as ImageIcon, RefreshCw, Trash2, Upload, X } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { useT } from "../lib/i18n";
@@ -31,6 +31,7 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const fileInput = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
@@ -72,8 +73,53 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
       );
     } finally {
       setBusy(false);
+      setConfirming(false);
     }
   };
+
+  // Everything the user must have read before money leaves their account.
+  // A blocking step rather than fine print: the payment cannot be reversed,
+  // and the most common support case is a declared amount that does not
+  // match the receipt.
+  const confirmation = (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-6">
+      <div className="w-full max-w-xs space-y-3 rounded-2xl bg-surface p-4">
+        <h3 className="font-display text-base font-semibold text-ink">
+          {t("payment.warning_title")}
+        </h3>
+        <ul className="space-y-2">
+          {[
+            "payment.warning_nonrefundable",
+            "payment.warning_exact",
+            "payment.warning_receipt",
+            "payment.warning_review",
+          ].map((key) => (
+            <li key={key} className="flex gap-2 font-body text-xs leading-relaxed text-ink-dim">
+              <AlertTriangle size={13} className="mt-0.5 shrink-0 text-marquee" />
+              <span>{t(key)}</span>
+            </li>
+          ))}
+        </ul>
+        <p className="rounded-lg bg-surface-hi px-3 py-2 text-center font-mono text-sm text-ink">
+          {Number(amount).toLocaleString()}
+        </p>
+        <button
+          onClick={() => void submit()}
+          disabled={busy}
+          className="w-full rounded-full bg-marquee py-3 font-semibold text-on-marquee disabled:opacity-50"
+        >
+          {t("payment.confirm_understand")}
+        </button>
+        <button
+          onClick={() => setConfirming(false)}
+          disabled={busy}
+          className="w-full rounded-full border border-surface-hi py-2.5 font-body text-sm text-ink-dim"
+        >
+          {t("app.cancel")}
+        </button>
+      </div>
+    </div>
+  );
 
   return (
     <div className="fixed inset-0 z-40 flex items-end bg-black/60" onClick={onClose}>
@@ -105,6 +151,9 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
         </div>
 
         <div>
+          <p className="mb-1.5 font-body text-xs leading-relaxed text-ink-dim">
+            {t("payment.instructions")}
+          </p>
           <p className="mb-1.5 font-body text-xs text-ink-dim">{t("app.select_card")}</p>
           <div className="space-y-1.5">
             {cards.map((card) => (
@@ -183,13 +232,14 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
         </div>
 
         <button
-          onClick={submit}
+          onClick={() => setConfirming(true)}
           disabled={busy || !file || !cardId || !Number(amount)}
           className="flex w-full items-center justify-center gap-1.5 rounded-full bg-marquee py-3 font-semibold text-on-marquee shadow-marquee transition-transform active:scale-95 disabled:opacity-50"
         >
           <Upload size={16} /> {t("app.submit")}
         </button>
       </div>
+      {confirming && confirmation}
     </div>
   );
 }

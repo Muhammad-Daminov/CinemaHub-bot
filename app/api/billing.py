@@ -20,7 +20,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.auth import get_active_user
 from app.core.i18n import t
-from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt, PaymentStatus
+from app.db.models.payment import (
+    AdminCard,
+    PaymentPurpose,
+    PaymentReceipt,
+    PaymentStatus,
+    RejectionReason,
+)
 from app.db.models.subscription import SubscriptionPlanModel
 from app.db.models.user import User
 from app.db.session import get_db_session
@@ -264,6 +270,80 @@ async def submit_topup(
     )
     await session.flush()
     return {"status": "submitted", "message": t("payment.received", user.language)}
+
+
+class ReceiptStatusOut(BaseModel):
+    """One of the caller's own payments, as they should see it."""
+
+    id: int
+    amount: float
+    status: PaymentStatus
+    created_at: datetime
+    reviewed_at: datetime | None
+    card_id: int | None
+    # Present only on a mismatch: the figure the reviewer read, so the
+    # retry can be prefilled with the right number instead of the user
+    # guessing which of the two was wrong.
+    verified_amount: float | None
+    reason: str | None
+    can_retry: bool
+
+
+@router.get("/receipts/{receipt_id}", response_model=ReceiptStatusOut)
+async def get_receipt_status(
+    receipt_id: int,
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_active_user),
+) -> ReceiptStatusOut:
+    """
+    A single payment of the caller's.
+
+    Scoped to the authenticated user, and a receipt belonging to someone
+    else is reported as **404, not 403** — confirming that id exists would
+    leak that another user made a payment. The id in the path is never
+    trusted on its own.
+    """
+    receipt = await session.get(PaymentReceipt, receipt_id)
+    if receipt is None or receipt.user_id != user.id:
+        raise HTTPException(status_code=404, detail="Not found")
+
+    reason = None
+    if receipt.status == PaymentStatus.MISMATCH:
+        reason = t(
+            "payment.mismatch",
+            user.language,
+            declared=f"{receipt.amount:,.0f}",
+            actual=f"{receipt.verified_amount or 0:,.0f}",
+        )
+    elif receipt.status == PaymentStatus.REJECTED:
+        reason = await _rejection_text(session, user, receipt)
+
+    return ReceiptStatusOut(
+        id=receipt.id,
+        amount=float(receipt.amount),
+        status=receipt.status,
+        created_at=receipt.created_at,
+        reviewed_at=receipt.reviewed_at,
+        card_id=receipt.admin_card_id,
+        verified_amount=float(receipt.verified_amount) if receipt.verified_amount is not None else None,
+        reason=reason,
+        can_retry=receipt.status.is_retryable,
+    )
+
+
+async def _rejection_text(session: AsyncSession, user: User, receipt: PaymentReceipt) -> str | None:
+    """The stored reason rendered in the caller's language, notes appended."""
+    parts: list[str] = []
+    if receipt.rejection_reason_id is not None:
+        reason = await session.get(RejectionReason, receipt.rejection_reason_id)
+        if reason is not None:
+            if reason.i18n_key:
+                parts.append(t(reason.i18n_key, user.language))
+            elif reason.label:
+                parts.append(reason.label)
+    if receipt.admin_notes:
+        parts.append(receipt.admin_notes)
+    return " — ".join(parts) or None
 
 
 @router.get("/receipts/{receipt_id}/image")

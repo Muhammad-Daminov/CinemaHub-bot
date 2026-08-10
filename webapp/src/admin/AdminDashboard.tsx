@@ -16,6 +16,7 @@ import { ReceiptsPanel } from "./ReceiptsPanel";
 import { StatsPanel } from "./StatsPanel";
 import { UploadsPanel } from "./UploadsPanel";
 import { AdminsPanel } from "./AdminsPanel";
+import { AppearancePanel } from "./AppearancePanel";
 import { BroadcastPanel } from "./BroadcastPanel";
 import { SettingsPanel } from "./SettingsPanel";
 import { UsersPanel } from "./UsersPanel";
@@ -31,6 +32,7 @@ type TabId =
   | "users"
   | "plans"
   | "broadcast"
+  | "appearance"
   | "settings"
   | "admins";
 
@@ -53,6 +55,11 @@ const TABS: { id: TabId; label: string; permission?: string; superAdminOnly?: bo
   { id: "users", label: "👥 Foydalanuvchilar", permission: "manage_users" },
   { id: "plans", label: "💎 Tariflar", permission: "manage_subscriptions" },
   { id: "broadcast", label: "📣 Xabarlar", permission: "manage_notifications" },
+  // Themes, assignments and banners in one section rather than scattered
+  // across the panel. Gated on manage_system_settings, the same capability
+  // the theme API requires — the banner tab's own calls are additionally
+  // gated on manage_notifications by the backend.
+  { id: "appearance", label: "🎨 Ko'rinish", permission: "manage_system_settings" },
   { id: "settings", label: "⚙️ Sozlamalar", permission: "manage_system_settings" },
   { id: "admins", label: "🛡️ Adminlar", superAdminOnly: true },
 ];
@@ -104,6 +111,7 @@ export function AdminDashboard({ permissions, isSuperAdmin }: Props) {
         {tab === "users" && <UsersPanel />}
         {tab === "plans" && <PlansPanel />}
         {tab === "broadcast" && <BroadcastPanel />}
+        {tab === "appearance" && <AppearancePanel />}
         {tab === "settings" && <SettingsPanel />}
         {tab === "admins" && <AdminsPanel />}
       </div>

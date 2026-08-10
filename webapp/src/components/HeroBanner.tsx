@@ -1,12 +1,18 @@
 import { Info, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
-import type { Movie } from "../types/movie";
+import type { BannerSlide, Movie } from "../types/movie";
 
 interface Props {
   movies: Movie[];
   onWatch: (movie: Movie) => void;
   onDetails: (movie: Movie) => void;
+  /**
+   * Admin campaigns, already resolved for this viewer by the backend.
+   * Optional: with none configured the carousel behaves exactly as it did
+   * before, deriving slides from the newest and top rows.
+   */
+  slides?: BannerSlide[];
 }
 
 const ROTATE_MS = 6000;
@@ -32,7 +38,7 @@ function usePrefersReducedMotion(): boolean {
   return reduced;
 }
 
-export function HeroBanner({ movies, onWatch, onDetails }: Props) {
+export function HeroBanner({ movies, onWatch, onDetails, slides }: Props) {
   const t = useT();
   const [index, setIndex] = useState(0);
   const [paused, setPaused] = useState(false);
@@ -55,6 +61,7 @@ export function HeroBanner({ movies, onWatch, onDetails }: Props) {
   }, [paused, reducedMotion, movies.length]);
 
   const active = movies[index];
+  const campaign = slides?.[index];
   if (!active) return null;
 
   return (
@@ -79,14 +86,28 @@ export function HeroBanner({ movies, onWatch, onDetails }: Props) {
       <div className="absolute inset-0 bg-gradient-to-t from-bg via-bg/40 to-transparent" />
 
       <div className="absolute inset-x-0 bottom-0 p-4 pb-6">
-        {active.genres && active.genres.length > 0 && (
-          <p className="mb-1 font-mono text-xs uppercase tracking-wider text-marquee">
-            {active.genres.slice(0, 3).map((g) => t(`genre.${g}`)).join(" · ")}
+        {campaign?.label_key ? (
+          // A campaign label ("Coming soon") replaces the genre line and is
+          // rendered from a locale key, so it reads in the viewer's language.
+          <p className="mb-1 inline-block rounded-full bg-marquee px-2 py-0.5 font-mono text-[11px] uppercase tracking-wider text-on-marquee">
+            {t(campaign.label_key)}
           </p>
+        ) : (
+          active.genres &&
+          active.genres.length > 0 && (
+            <p className="mb-1 font-mono text-xs uppercase tracking-wider text-marquee">
+              {active.genres.slice(0, 3).map((g) => t(`genre.${g}`)).join(" · ")}
+            </p>
+          )
         )}
-        <h1 className="mb-3 font-display text-3xl font-semibold leading-tight text-ink drop-shadow-lg sm:text-4xl">
-          {active.title}
+        {/* Headline and subtitle are plain text — rendered as text, never
+            as markup, and the backend refuses angle brackets outright. */}
+        <h1 className="mb-1 font-display text-3xl font-semibold leading-tight text-ink drop-shadow-lg sm:text-4xl">
+          {campaign?.headline || active.title}
         </h1>
+        {campaign?.subtitle && (
+          <p className="mb-2 font-body text-sm text-ink-dim drop-shadow">{campaign.subtitle}</p>
+        )}
         <div className="flex gap-2">
           <button
             // A serial has no single 'play' — open the sheet so the

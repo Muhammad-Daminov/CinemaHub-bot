@@ -141,3 +141,54 @@ export interface PaymentHistoryEntry {
   created_at: string;
   status: string | null;
 }
+
+/** Mirrors PaymentStatus in app/db/models/payment.py. */
+export type PaymentStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "mismatch"
+  | "cancelled";
+
+/** Mirrors ReceiptStatusOut in app/api/billing.py — the caller's own payment. */
+export interface ReceiptStatus {
+  id: number;
+  amount: number;
+  status: PaymentStatus;
+  created_at: string;
+  reviewed_at: string | null;
+  card_id: number | null;
+  /** Present on a mismatch: what the reviewer read, so a retry prefills correctly. */
+  verified_amount: number | null;
+  reason: string | null;
+  can_retry: boolean;
+}
+
+/** Mirrors BannerOut in app/api/movies.py — one hero slide, already
+ *  resolved for the calling user by the backend. */
+export interface BannerSlide {
+  id: number;
+  title_id: number | null;
+  headline: string | null;
+  subtitle: string | null;
+  /** Locale key from a fixed allowlist, rendered in the viewer's language. */
+  label_key: string | null;
+  poster_url: string | null;
+  personalized: boolean;
+  /** Present when the slide points at a real title, so the carousel keeps
+   *  its existing play/details behaviour. Null for upcoming promotions. */
+  movie: Movie | null;
+}
+
+/** Mirrors ThemeOut in app/api/auth.py — the caller's resolved palette. */
+export interface ResolvedTheme {
+  key: string;
+  name: string;
+  /** CSS custom property name -> hex colour. */
+  tokens: Record<string, string>;
+  /** Allowlisted preset names, never raw CSS. */
+  card_shape: string;
+  decoration: string;
+  /** Which precedence rule won, or null for the built-in default. */
+  scope: string | null;
+}

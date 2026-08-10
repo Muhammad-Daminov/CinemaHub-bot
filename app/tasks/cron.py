@@ -37,8 +37,11 @@ from sqlalchemy import update
 from app.db.models.payment import PaymentReceipt, PaymentStatus
 from app.db.models.promo import PromoCode
 from app.db.models.user import User
-from app.db.session import db_session_ctx, engine
+from app.bot.instance import bot
+from app.db.session import AsyncSessionFactory, db_session_ctx, engine
 from app.services.images import purge_expired_receipt_images
+from app.services.broadcast import resume_stale_broadcasts
+from app.services.personalization import recalculate_stale_profiles
 from app.services.settings_store import record_maintenance_run
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
@@ -90,6 +93,10 @@ async def run_all() -> None:
         expired_receipts = await expire_stale_payment_receipts(session)
         deactivated_promos = await deactivate_expired_promos(session)
         purged_images = await purge_expired_receipt_images(session)
+        # Keeps personalized feeds current without making a feed render pay
+        # for the aggregation. Bounded per run; whatever is missed here is
+        # picked up lazily by get_profile the next time it is read.
+        refreshed_profiles = await recalculate_stale_profiles(session)
 
         # Written last, inside the same transaction: the stamp means "all of
         # the above completed", so a run that fails partway leaves the
@@ -97,10 +104,17 @@ async def run_all() -> None:
         # stamp written first would report health this run never delivered.
         ran_at = await record_maintenance_run(session)
 
+    # Outside the session block above: resuming sends its own messages and
+    # owns its own sessions, and it must not run inside the maintenance
+    # transaction that stamps the heartbeat.
+    resumed = await resume_stale_broadcasts(AsyncSessionFactory, bot)
+
     logger.info(
         "cron done at %s: monthly_limits_reset=%d stale_receipts_expired=%d "
-        "promos_deactivated=%d receipt_images_purged=%d",
+        "promos_deactivated=%d receipt_images_purged=%d interest_profiles_refreshed=%d "
+        "broadcasts_resumed=%d",
         ran_at.isoformat(), reset_count, expired_receipts, deactivated_promos, purged_images,
+        refreshed_profiles, resumed,
     )
     await engine.dispose()  # short-lived process — release the pool explicitly before exit
 

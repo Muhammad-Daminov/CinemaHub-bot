@@ -4,7 +4,12 @@
 export type ContentType = "film" | "serial" | "multfilm" | "anime" | "drama";
 export type AudioLanguage = "uz_dub" | "uz_sub" | "ru" | "en" | "original";
 export type VideoQuality = "480p" | "720p" | "1080p" | "4k";
-export type PaymentStatus = "pending" | "approved" | "rejected";
+export type PaymentStatus =
+  | "pending"
+  | "approved"
+  | "rejected"
+  | "mismatch"
+  | "cancelled";
 export type PaymentPurpose = "topup" | "subscription";
 export type PromoDiscountType = "fixed_amount_balance" | "premium_days" | "percentage_discount";
 
@@ -156,6 +161,12 @@ export interface AdminReceipt {
   amount: number;
   receipt_photo_file_id: string;
   status: PaymentStatus;
+  card_id?: number | null;
+  card_label?: string | null;
+  verified_amount?: number | null;
+  rejection_reason_id?: number | null;
+  reviewed_at?: string | null;
+  reviewer_telegram_id?: number | null;
   admin_notes: string | null;
   created_at: string;
 }
@@ -346,14 +357,65 @@ export interface PlanUpdateInput {
 }
 
 /** Mirrors the broadcast API in app/api/admin.py. */
-export type BroadcastAudience = "all" | "premium" | "free";
+/**
+ * Every audience the API can report. `interest` and `badge` are targeted:
+ * they carry a `target_value` and are sized through the estimate route
+ * rather than the audience-sizes list, so they are not composable from
+ * this panel yet — but a broadcast created through the API can be one,
+ * and the history has to render it honestly.
+ */
+export type BroadcastAudience = "all" | "premium" | "free" | "interest" | "badge";
+
+/** The audiences this panel can currently compose. */
+export type UntargetedAudience = Extract<BroadcastAudience, "all" | "premium" | "free">;
 
 export type BroadcastStatus = "pending" | "sending" | "completed" | "failed";
+
+/** Mirrors `BroadcastMedia`. Every value has a matching send path server-side. */
+export type BroadcastMedia = "none" | "photo" | "video";
+
+/** Interface languages a broadcast can carry a body in. */
+export type BroadcastLanguage = "uz" | "ru" | "en";
+
+/**
+ * The target vocabulary, served by the backend from the same allowlists
+ * that validate a create. Never hardcoded here — the panel must not be
+ * able to offer a choice the API refuses.
+ */
+export interface BroadcastTargets {
+  interests: string[];
+  badges: string[];
+  badge_families: string[];
+}
+
+export interface BroadcastEstimate {
+  audience: BroadcastAudience;
+  target_value: string | null;
+  estimated_recipients: number;
+}
+
+/** The create payload. Deliberately has no field capable of naming a user. */
+export interface BroadcastInput {
+  message: string;
+  translations?: Partial<Record<BroadcastLanguage, string>>;
+  audience: BroadcastAudience;
+  target_value?: string | null;
+  media_type: BroadcastMedia;
+  media_file_id?: string | null;
+}
 
 export interface AdminBroadcast {
   id: number;
   message: string;
   audience: BroadcastAudience;
+  /** What a targeted send was addressed at; null for the untargeted ones. */
+  target_value: string | null;
+  /**
+   * Which kind of media this carries. The `file_id` itself is deliberately
+   * absent from every response — the panel needs to know a broadcast has a
+   * photo, not which one.
+   */
+  media_type: BroadcastMedia;
   status: BroadcastStatus;
   total_recipients: number;
   sent_count: number;
@@ -363,6 +425,21 @@ export interface AdminBroadcast {
   error: string | null;
   created_at: string;
   completed_at: string | null;
+}
+
+/**
+ * One broadcast plus its live delivery breakdown, counted server-side from
+ * the recipient rows. `can_resume` is the server's decision; the panel
+ * renders the button but never decides whether one is warranted.
+ */
+export interface AdminBroadcastDetail extends AdminBroadcast {
+  pending: number;
+  sending: number;
+  sent: number;
+  failed: number;
+  skipped: number;
+  can_resume: boolean;
+  languages: BroadcastLanguage[];
 }
 
 export interface BroadcastAudienceSize {
@@ -397,3 +474,87 @@ export interface TitleTranslationInput {
   name: string;
   description: string | null;
 }
+
+/** Mirrors RejectionReasonOut. Built-ins have a `code` and are localized
+ *  server-side; admin-authored ones carry `label` verbatim. */
+export interface AdminRejectionReason {
+  id: number;
+  code: string | null;
+  label: string | null;
+  sort_order: number;
+}
+
+/** Mirrors ThemeAdminOut in app/api/admin.py. */
+export interface AdminTheme {
+  id: number;
+  key: string;
+  name: string;
+  description: string | null;
+  is_default: boolean;
+  is_active: boolean;
+  tokens: Record<string, string>;
+  card_shape: string;
+  decoration: string;
+  /** Advisory readability problems — never blocking. */
+  contrast_warnings: {
+    foreground: string;
+    background: string;
+    label: string;
+    ratio: number;
+    required: number;
+  }[];
+}
+
+export interface ThemeVocabulary {
+  defaults: Record<string, string>;
+  card_shapes: Record<string, string>;
+  decorations: string[];
+}
+
+export interface ThemeInput {
+  key: string;
+  name: string;
+  description?: string | null;
+  tokens?: Record<string, string>;
+  card_shape?: string | null;
+  decoration?: string | null;
+}
+
+export type ThemeScope = "user" | "badge" | "interest" | "subscription" | "global";
+
+export interface AdminThemeAssignment {
+  id: number;
+  theme_id: number;
+  scope: ThemeScope;
+  user_id: number | null;
+  target_value: string | null;
+  priority: number;
+  is_active: boolean;
+}
+
+export interface ThemeAssignmentInput {
+  theme_id: number;
+  scope: ThemeScope;
+  user_id?: number | null;
+  target_value?: string | null;
+  priority?: number;
+}
+
+/** Mirrors BannerAdminOut. `title_id` is nullable so a "coming soon"
+ *  announcement needs no catalog entry. */
+export interface AdminBanner {
+  id: number;
+  title_id: number | null;
+  headline: string | null;
+  subtitle: string | null;
+  label_key: string | null;
+  image_url: string | null;
+  audience: "global" | "content_type" | "badge" | "premium" | "free";
+  target_value: string | null;
+  priority: number;
+  is_active: boolean;
+  starts_at: string | null;
+  ends_at: string | null;
+}
+
+export type BannerInput = Partial<Omit<AdminBanner, "id">>;

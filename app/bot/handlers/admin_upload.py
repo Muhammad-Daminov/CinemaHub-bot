@@ -23,6 +23,37 @@ from app.db.models.user import User
 router = Router(name="admin_upload")
 
 
+@router.message(F.photo)
+async def handle_broadcast_photo(message: Message, session: AsyncSession, _) -> None:
+    """
+    Captures a forwarded photo's file_id for use in a broadcast.
+
+    Nothing is stored: a photo is not catalog content, so there is no row
+    to create. The id is handed straight back for the admin to paste into
+    a broadcast, which keeps the bytes on Telegram's servers where they
+    already are.
+
+    Telegram sends several sizes ascending; the last is the largest.
+    Deliberately the largest — a broadcast image is displayed full width,
+    and Telegram downscales for the recipient far better than picking a
+    thumbnail here would.
+
+    Gated on MANAGE_NOTIFICATIONS, the capability that governs
+    broadcasts — not MANAGE_MOVIES, which governs the catalog below.
+    """
+    if await actor_with_permission(
+        session, message.from_user.id, Permission.MANAGE_NOTIFICATIONS
+    ) is None:
+        return  # silently ignore — don't reveal this flow to non-admins
+
+    if not message.photo:
+        return
+
+    await message.answer(
+        _("admin.broadcast_media_captured", file_id=message.photo[-1].file_id)
+    )
+
+
 @router.message(F.video | F.document)
 async def handle_admin_upload(message: Message, session: AsyncSession, _) -> None:
     if await actor_with_permission(
@@ -58,3 +89,13 @@ async def handle_admin_upload(message: Message, session: AsyncSession, _) -> Non
     await session.flush()
 
     await message.answer(_("admin.upload_received"))
+
+    # The same forward can also be a broadcast video. Offering the id here
+    # avoids a second upload flow for the same file — the admin pastes it
+    # into a broadcast if that is what they wanted.
+    if message.video is not None and await actor_with_permission(
+        session, message.from_user.id, Permission.MANAGE_NOTIFICATIONS
+    ) is not None:
+        await message.answer(
+            _("admin.broadcast_media_captured", file_id=message.video.file_id)
+        )

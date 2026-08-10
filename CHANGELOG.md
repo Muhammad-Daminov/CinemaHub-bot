@@ -7,6 +7,53 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pro
 
 ## [Unreleased]
 
+### Phase 9E-D — Broadcast control centre (2026-08-10)
+
+The operator layer over 9E-A/B/C. **No migration** — everything it needed
+was already in the schema.
+
+#### Added
+- **A three-screen broadcast panel**: composer, live progress, history. A broadcast is a job that runs for minutes and can die halfway, not a form submission, and the panel now shows it doing that.
+- **Audience and targeting UI.** Interests and badges come from `GET /admin/broadcasts/targets`, so the panel cannot offer a choice the API would refuse. Badge names are read from the locale catalog rather than a second hardcoded table — the vocabulary already exists there. Switching audience clears any target, because a stray one from a previous selection is refused server-side and carrying it silently reads as a broken form.
+- **A backend recipient estimate**, debounced and cancellation-guarded so a fast switch between audiences cannot leave a stale number on screen. Nothing is counted client-side.
+- **UZ/RU/EN tabs** with per-language character counters against the right limit (4096, or 1024 once media is attached). The Uzbek body is the default and the fallback; the composing admin's own language decides nothing.
+- **An isolated preview.** A pure function of its props: it reads nothing global and writes nothing global — no `document.documentElement`, no `setProperty`, no `localStorage`, no timers, no real banner. Text is rendered as text with `pre-wrap`; there is no `dangerouslySetInnerHTML` anywhere in the panel.
+- **A confirmation step** listing audience, target, estimate, media kind and languages before anything is sent, with the dangerous button visually distinct.
+- **Per-language bodies on the create endpoint**, wired to the existing `set_translations` — the service existed since 9E-A and had never been reachable over HTTP.
+- **`GET /admin/broadcasts/{id}`** — live delivery breakdown counted from the recipient rows, plus a server-decided `can_resume`. Progress is never derived from the pre-send estimate.
+- **`POST /admin/broadcasts/{id}/resume`** — operator-triggered recovery running the *same* body as the scheduled sweep, which was refactored to call it. Re-checks resumability under a row lock rather than trusting the panel that offered the button, and returns 409 when the state moved underneath. Never re-materialises: the frozen recipient set is what gets delivered.
+
+#### Fixed
+- **A double-tapped Send created two broadcasts.** The row lock protected one broadcast from two workers; nothing protected the platform from two identical broadcasts, so every recipient would have received the message twice. `create_broadcast` now refuses an identical still-unsent broadcast from the same admin. Deliberately a duplicate *suppressor*, not a client-generated idempotency token — the browser cannot be the one making that guarantee.
+- The old panel called `sendBroadcast(message, audience)` and typed the audience as the three untargeted segments, so a targeted broadcast in the history rendered its label as `undefined`.
+
+#### Notes
+- The panel stays Uzbek-only, matching every other admin screen (`TASKS.md` P2-12). Badge labels are the one exception and follow the viewer's language, because they come from the shared catalog.
+
+### Phase 9E-C — Interest and badge broadcast targeting (2026-08-10)
+
+Two new broadcast audiences, built on the existing delivery machinery
+rather than beside it. No second worker, no second targeting engine, no
+second definition of a badge.
+
+#### Added
+- **`INTEREST` and `BADGE` audiences.** An admin names a segment (`INTEREST=anime`, `BADGE=badge.anime.2`, or a family `badge.anime.`) and the server derives the people from Phase 9B's materialised interest profiles. Both are *alternative* segments, not extra conditions on PREMIUM/FREE: an anime send reaches paying and free viewers alike, because a hidden AND is an audience nobody can predict.
+- **A target allowlist derived from `BADGE_TABLES`**, not written out a second time. An exact badge key is a half-open window (someone on 30 anime titles holds tier 3, so tier 2 must not also match them) and a family prefix runs from its lowest threshold up. `tests/test_broadcast_targeting.py` pins the SQL predicate against `InterestProfile.badge_key` across the whole threshold matrix, so the database and the feed can never disagree about who holds a badge.
+- **`GET /api/admin/broadcasts/estimate`** — how many people a targeted send would reach, counted through the *same* eligibility builder materialisation uses. A preview computed by a second query would eventually disagree with the send, and an operator shown "137" who reaches 400 has been actively misled. Aggregate only; the response model has no field capable of carrying a user id.
+- **`GET /api/admin/broadcasts/targets`** — the complete target vocabulary, served from the allowlists that validate a create request, so the panel cannot offer a choice the API refuses.
+- **A bounded, bulk freshness pass.** Phase 9B computes profiles on read, so "no row" means "not looked at yet", not "no interests" — but a broadcast cannot call `get_profile` once per user. `refresh_profiles_for_targeting` brings missing and stale profiles up to date **once, before** the audience is resolved, capped at 2000 users. Semantics are now explicit and tested: missing → computed; stale → recomputed; fresh → used as stored; empty (`dominant_type` NULL) → matches no target, because nothing dominates. Untargeted audiences skip it entirely and cost exactly what they did before.
+
+#### Fixed
+- **The recipient set was not actually frozen.** `materialise_recipients` relied on `ON CONFLICT DO NOTHING`, which stops a *duplicate* row but not a *new* one — so a second call after the audience changed would quietly enlarge a send in progress, contradicting the docstring's claim. It now checks for existing rows under the broadcast's own row lock and returns 0 if any exist. Pre-existing since 9E-A; unreachable in the normal path (the single call sits inside `_claim`'s lock) but load-bearing the moment resume or cron touches it, and exactly the guarantee interest targeting depends on.
+- **`total_recipients` is counted from the rows that were created**, not from a second query over the audience. The two could differ — one signup between them was enough — and the number an operator watches must be the number being delivered to.
+- **`BroadcastIn` now forbids unknown fields.** A request carrying `user_id`, `user_ids` or `recipient_ids` is rejected with a 422 rather than silently ignored, so an attempt to address a broadcast at chosen people fails loudly instead of appearing to work.
+
+#### Changed
+- `GET /api/admin/broadcasts/audience` returns sizes for the untargeted segments only. A size for "INTEREST" with no target would have to mean something, and every available meaning misleads.
+
+#### Database
+- Migration `e1a7d2c94f63`: two labels on the `broadcastaudience` enum and a nullable `chp_broadcasts.target_value`. Additive; every existing broadcast keeps its audience and reads correctly with `target_value` NULL. No backfill, no rewrite. `ALTER TYPE … ADD VALUE` is irreversible, so the downgrade drops the column and leaves the two labels — an unused label is inert, a botched type swap on a live table is not. **Not applied to production.**
+
 ### Phase 8 — Operational Trust (2026-08-08)
 
 Every item here is something the platform already promised, sold, or

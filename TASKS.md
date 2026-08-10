@@ -177,8 +177,16 @@ Two ways forward, both product/security decisions rather than bugs: serve poster
 The API limiter keys on the verified Telegram id where one is present and on client IP otherwise. Behind a NAT — a shared office or mobile carrier — many users collapse into one IP bucket. That is acceptable for unauthenticated paths (which are few and cheap), but if abuse is ever seen from a shared address, the fix is to require identity earlier rather than to loosen the limit.
 
 ### P2-11 · Broadcast scheduling and rich content
-`TODO` · follow-up to Phase 6
-Broadcasts are plain text, sent immediately, to one of three audience segments. Natural extensions once there is demand: schedule for later, attach an image, target by language or by last-seen date, and cancel a send in flight. None are required by any current request — recorded so the omission is deliberate rather than forgotten.
+`Partially done` · follow-up to Phase 6 · **image/video attachment done in Phase 9E-B; interest and badge targeting done in Phase 9E-C**
+Originally: broadcasts are plain text, sent immediately, to one of three audience segments. Still open: schedule for later, target by language or by last-seen date, and cancel a send in flight. None are required by any current request — recorded so the omission is deliberate rather than forgotten.
+
+### P2-16 · A broadcast admin UI for media, translations and targeting
+`Done` · Phase 9E-D
+Composer, targeting, UZ/RU/EN tabs, media by `file_id`, isolated preview, backend estimate, confirmation, live progress and operator resume all shipped. Media is attached by forwarding the file to the bot and pasting the id it returns — the flow 9E-B established.
+
+### P2-17 · Render broadcast media in the composer preview
+`TODO` · follow-up to Phase 9E-D
+The preview shows a labelled placeholder where the photo or video will sit, not the file itself. Telegram serves media from behind a bot token, so displaying it would mean proxying media through our backend for the sake of a thumbnail — a new authenticated route, a new cache, and a new way to leak a `file_id`. Deferred until an operator actually reports picking the wrong image; the id is captured seconds earlier in the same chat, where they can already see it.
 
 ### P2-13 · Localize collection and plan text
 `TODO` · follow-up to Phase 7

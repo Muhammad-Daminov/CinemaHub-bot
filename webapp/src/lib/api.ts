@@ -1,6 +1,7 @@
 import { getInitData } from "./telegram";
 import type {
   AudioLanguageFilter,
+  BannerSlide,
   BillingOverview,
   EpisodePage,
   HeldSubscription,
@@ -10,6 +11,8 @@ import type {
   PaymentCard,
   PaymentHistoryEntry,
   PurchasePreview,
+  ReceiptStatus,
+  ResolvedTheme,
   UserProfile,
   WatchResponse,
 } from "../types/movie";
@@ -24,7 +27,19 @@ import type {
   AdminMediaFile,
   AdminPromoCode,
   AdminReceipt,
+  AdminBanner,
+  AdminRejectionReason,
+  AdminTheme,
+  AdminThemeAssignment,
+  BannerInput,
+  ThemeAssignmentInput,
+  ThemeInput,
+  ThemeVocabulary,
   AdminBroadcast,
+  AdminBroadcastDetail,
+  BroadcastEstimate,
+  BroadcastInput,
+  BroadcastTargets,
   AdminStats,
   AdminTitle,
   AdminTitleTranslation,
@@ -95,6 +110,8 @@ async function request<T>(path: string, options: RequestInit = {}): Promise<T> {
 
 export const api = {
   me: () => request<UserProfile>("/auth/me"),
+  /** The caller's resolved theme. Takes no id — the server derives it. */
+  theme: () => request<ResolvedTheme>("/auth/me/theme"),
   setLanguage: (language: string) =>
     request<UserProfile>("/auth/me", { method: "PATCH", body: JSON.stringify({ language }) }),
   listMovies: (
@@ -118,6 +135,9 @@ export const api = {
   similar: (movieId: number, limit = 10, audio_language?: AudioLanguageFilter) =>
     request<Movie[]>(`/movies/${movieId}/similar${toQuery({ limit, audio_language })}`),
   collections: () => request<MovieCollection[]>("/movies/collections"),
+  /** Hero slides for the calling user. Empty means "no campaigns" and the
+   *  app falls back to deriving a banner from the newest/top rows. */
+  banners: () => request<BannerSlide[]>("/movies/banners"),
   seasons: (movieId: number) => request<number[]>(`/movies/${movieId}/seasons`),
   episodes: (movieId: number, season?: number, page = 0) =>
     request<EpisodePage>(`/movies/${movieId}/episodes${toQuery({ season, page })}`),
@@ -143,6 +163,9 @@ export const api = {
     request<HeldSubscription>(`/billing/plans/${planId}/purchase`, { method: "POST" }),
   paymentCards: () => request<PaymentCard[]>("/billing/cards"),
   paymentHistory: () => request<PaymentHistoryEntry[]>("/billing/history"),
+  /** One of the caller's own payments. The backend 404s anyone else's. */
+  receiptStatus: (receiptId: number) =>
+    request<ReceiptStatus>(`/billing/receipts/${receiptId}`),
   /** Multipart: the receipt is already bytes, and base64 would inflate it by a third. */
   submitTopup: async (amount: number, cardId: number, file: File) => {
     const body = new FormData();
@@ -283,8 +306,12 @@ export const adminApi = {
   listReceipts: (params: { status?: PaymentStatus; q?: string } = {}) =>
     request<AdminReceipt[]>(`/admin/receipts${toQuery(params)}`),
   approveReceipt: (id: number) => send<StatusResponse>(`/admin/receipts/${id}/approve`, "POST"),
-  rejectReceipt: (id: number, notes: string) =>
-    send<StatusResponse>(`/admin/receipts/${id}/reject`, "POST", { notes }),
+  rejectReceipt: (id: number, notes: string | null, reason_id: number | null) =>
+    send<StatusResponse>(`/admin/receipts/${id}/reject`, "POST", { notes, reason_id }),
+  /** Neither figure is credited — the user is told both and can resubmit. */
+  flagMismatch: (id: number, verified_amount: number, notes?: string) =>
+    send<StatusResponse>(`/admin/receipts/${id}/mismatch`, "POST", { verified_amount, notes }),
+  rejectionReasons: () => request<AdminRejectionReason[]>("/admin/rejection-reasons"),
 
   // ---------- cards ----------
   listCards: () => request<AdminCard[]>("/admin/cards"),
@@ -336,8 +363,24 @@ export const adminApi = {
   // ---------- broadcasts ----------
   listBroadcasts: () => request<AdminBroadcast[]>("/admin/broadcasts"),
   broadcastAudiences: () => request<BroadcastAudienceSize[]>("/admin/broadcasts/audience"),
-  sendBroadcast: (message: string, audience: BroadcastAudience) =>
-    send<AdminBroadcast>("/admin/broadcasts", "POST", { message, audience }),
+  /** The allowlists the backend validates against — never hardcoded client-side. */
+  broadcastTargets: () => request<BroadcastTargets>("/admin/broadcasts/targets"),
+  /**
+   * The recipient count, computed by the backend through the same
+   * eligibility query materialisation uses. Never approximated here.
+   */
+  broadcastEstimate: (audience: BroadcastAudience, targetValue: string | null) => {
+    const params = new URLSearchParams({ audience });
+    if (targetValue) params.set("target_value", targetValue);
+    return request<BroadcastEstimate>(`/admin/broadcasts/estimate?${params}`);
+  },
+  /** Live delivery state. The progress screen's only source of truth. */
+  broadcastDetail: (id: number) => request<AdminBroadcastDetail>(`/admin/broadcasts/${id}`),
+  /** Restarts a recoverable broadcast against its existing recipient rows. */
+  resumeBroadcast: (id: number) =>
+    send<AdminBroadcast>(`/admin/broadcasts/${id}/resume`, "POST"),
+  sendBroadcast: (input: BroadcastInput) =>
+    send<AdminBroadcast>("/admin/broadcasts", "POST", input),
 
   // ---------- system settings ----------
   membershipSettings: () => request<MembershipSettings>("/admin/settings/membership"),
@@ -346,6 +389,34 @@ export const adminApi = {
       require_membership,
       required_channel,
     }),
+
+  // ---------- appearance: themes ----------
+  themes: () => request<AdminTheme[]>("/admin/themes"),
+  /** Token vocabulary, shape presets and decoration names, from the backend
+   *  so the builder can only offer what the validator accepts. */
+  themeVocabulary: () => request<ThemeVocabulary>("/admin/themes/tokens"),
+  createTheme: (body: ThemeInput) => send<AdminTheme>("/admin/themes", "POST", body),
+  setThemeTokens: (id: number, tokens: Record<string, string>) =>
+    send<AdminTheme>(`/admin/themes/${id}/tokens`, "PUT", { tokens }),
+  duplicateTheme: (id: number, key: string, name: string) =>
+    send<AdminTheme>(`/admin/themes/${id}/duplicate`, "POST", { key, name, tokens: {} }),
+  setDefaultTheme: (id: number) => send<AdminTheme>(`/admin/themes/${id}/default`, "POST"),
+  toggleTheme: (id: number) => send<AdminTheme>(`/admin/themes/${id}/toggle`, "PATCH"),
+  deleteTheme: (id: number) => send<StatusResponse>(`/admin/themes/${id}`, "DELETE"),
+
+  themeAssignments: () => request<AdminThemeAssignment[]>("/admin/theme-assignments"),
+  createThemeAssignment: (body: ThemeAssignmentInput) =>
+    send<AdminThemeAssignment>("/admin/theme-assignments", "POST", body),
+  deleteThemeAssignment: (id: number) =>
+    send<StatusResponse>(`/admin/theme-assignments/${id}`, "DELETE"),
+
+  // ---------- appearance: banners ----------
+  banners: () => request<AdminBanner[]>("/admin/banners"),
+  bannerLabels: () => request<{ labels: string[] }>("/admin/banners/labels"),
+  createBanner: (body: BannerInput) => send<AdminBanner>("/admin/banners", "POST", body),
+  updateBanner: (id: number, body: BannerInput) =>
+    send<AdminBanner>(`/admin/banners/${id}`, "PATCH", body),
+  deleteBanner: (id: number) => send<StatusResponse>(`/admin/banners/${id}`, "DELETE"),
 
   // ---------- promo ----------
   listPromo: () => request<AdminPromoCode[]>("/admin/promo"),

@@ -432,6 +432,7 @@ class ContentService:
         user_id: int,
         limit: int = 10,
         audio_language: AudioLanguage | None = None,
+        dominant_type: ContentType | None = None,
     ) -> list[Title]:
         """
         Unwatched titles matching what this user actually watches.
@@ -444,6 +445,11 @@ class ContentService:
 
         No history -> popularity. A brand-new user seeing an empty
         "Siz uchun" row would be worse than seeing the obvious picks.
+
+        `dominant_type` comes from the caller's Phase 9B interest profile
+        and only reorders: it lifts that kind of content to the front
+        without removing anything else, so a mostly-anime viewer still
+        sees films.
         """
         history = await session.execute(
             select(Title.content_type, Title.genres)
@@ -459,22 +465,42 @@ class ContentService:
             Title.is_active.is_(True), _has_playable_file(audio_language)
         )
 
+        # Preferences *rank*, they no longer exclude. The previous version
+        # required a title to match a watched type or genre, which meant a
+        # viewer could never discover a kind of content they had not
+        # already seen — the feed narrowed the more you used it. Watched
+        # titles are still excluded; that is a different question.
+        signal_rank = None
         if preferred_types or preferred_genres:
             signals = []
             if preferred_types:
                 signals.append(Title.content_type.in_(preferred_types))
             if preferred_genres:
                 signals.append(Title.genres.overlap(list(preferred_genres)))
+            signal_rank = case((or_(*signals), 0), else_=1)
+
+        if rows:
             stmt = stmt.where(
-                or_(*signals),
                 Title.id.not_in(
                     select(WatchHistory.title_id).where(WatchHistory.user_id == user_id)
-                ),
+                )
             )
 
-        result = await session.execute(
-            stmt.order_by(Title.view_count.desc(), Title.name).limit(limit)
-        )
+        # Prioritisation, not filtering: the dominant type floats to the top
+        # while everything else stays in the list. Phase 9B's profile is the
+        # source of truth for what "dominant" means — this does not re-derive
+        # it, and a user with no clear interest simply orders by popularity
+        # exactly as before.
+        # Ordering, strongest signal first: the dominant interest, then
+        # anything matching what they watch at all, then popularity.
+        order: list = []
+        if dominant_type is not None:
+            order.append(case((Title.content_type == dominant_type, 0), else_=1))
+        if signal_rank is not None:
+            order.append(signal_rank)
+        order.extend([Title.view_count.desc(), Title.name])
+
+        result = await session.execute(stmt.order_by(*order).limit(limit))
         return list(result.scalars())
 
     # ---------- catalog localization ----------
