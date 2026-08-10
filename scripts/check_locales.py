@@ -43,6 +43,8 @@ SEARCH_SUFFIXES = (".py", ".ts", ".tsx")
 DYNAMIC_PREFIXES = (
     "genre.", "audio.", "rank.", "common.lang_", "orders.kind_",
     "payment.reject.", "payment.status_", "badge.", "banner.label.",
+    # Decoration names, resolved from the allowlist key the server stores.
+    "theme.decoration.",
 )
 
 # The codebase reaches the catalogs through several call shapes, all of

@@ -298,5 +298,12 @@
   "banner.label.trending": "Trending",
   "banner.label.exclusive": "Exclusive",
   "banner.label.last_chance": "Last chance",
-  "admin.broadcast_media_captured": "📎 Broadcast media id:\n<code>{file_id}</code>"
+  "admin.broadcast_media_captured": "📎 Broadcast media id:\n<code>{file_id}</code>",
+  "theme.decoration.none": "None",
+  "theme.decoration.stars": "Stars",
+  "theme.decoration.cinema": "Film strip",
+  "theme.decoration.anime": "Anime lines",
+  "theme.decoration.horror": "Dark streaks",
+  "theme.decoration.abstract": "Abstract",
+  "theme.decoration.seasonal": "Seasonal"
 }

@@ -400,11 +400,36 @@ async def create_theme(
     return theme
 
 
-async def set_tokens(session: AsyncSession, theme_id: int, tokens: dict[str, str]) -> Theme | None:
-    """Replaces the named tokens. Tokens not mentioned keep their value."""
+async def set_tokens(
+    session: AsyncSession,
+    theme_id: int,
+    tokens: dict[str, str],
+    *,
+    card_shape: str | None = None,
+    decoration: str | None = None,
+) -> Theme | None:
+    """
+    Replaces the named tokens. Tokens not mentioned keep their value.
+
+    Shape and decoration ride along because they are the same edit from
+    the operator's side — one screen, one save. Both are optional and
+    `None` means "leave alone", so a caller changing only colours cannot
+    accidentally reset them.
+
+    Both go through the same allowlist validators `create_theme` uses.
+    A decoration is a *key*, never markup or a URL: the frontend maps it
+    to a component it already compiled, so an unknown key is refused here
+    rather than reaching a renderer that would have to decide what to do
+    with it.
+    """
     theme = await session.get(Theme, theme_id)
     if theme is None:
         return None
+
+    if card_shape is not None:
+        theme.card_shape = validate_card_shape(card_shape)
+    if decoration is not None:
+        theme.decoration = validate_decoration(decoration)
 
     cleaned = validate_tokens(tokens)
     current = {token.token: token for token in theme.tokens}

@@ -2395,6 +2395,13 @@ class ThemeIn(BaseModel):
 
 class ThemeTokensIn(BaseModel):
     tokens: dict[str, str]
+    # The non-colour half of a theme, saved by the same editor screen.
+    # Omitted means "leave as it is", so changing colours alone cannot
+    # silently reset the shape or wipe a decoration. Both are validated
+    # against the server's allowlists — a decoration is a key naming a
+    # compiled component, never markup, a URL or a CSS value.
+    card_shape: str | None = None
+    decoration: str | None = None
 
 
 class ThemeAdminOut(BaseModel):
@@ -2416,6 +2423,13 @@ class ThemeAdminOut(BaseModel):
 class ThemeAssignmentIn(BaseModel):
     theme_id: int
     scope: ThemeScope
+    # For a USER assignment, omitting this means "the administrator making
+    # the request". That is how the panel's "apply to my own panel" action
+    # works: the id never leaves the server, so the easy path involves no
+    # id being typed, transmitted or trusted at all. Supplying one is still
+    # allowed — assigning a theme to another user is a legitimate admin
+    # action, already gated on MANAGE_SYSTEM_SETTINGS — so this widens
+    # nothing; it only removes the need to know your own id.
     user_id: int | None = None
     target_value: str | None = None
     priority: int = 0
@@ -2507,7 +2521,13 @@ async def set_theme_tokens_route(
     theme_id: int, body: ThemeTokensIn, session: AsyncSession = Depends(get_db_session)
 ) -> ThemeAdminOut:
     try:
-        theme = await set_tokens(session, theme_id, body.tokens)
+        theme = await set_tokens(
+            session,
+            theme_id,
+            body.tokens,
+            card_shape=body.card_shape,
+            decoration=body.decoration,
+        )
     except ThemeError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if theme is None:
@@ -2600,14 +2620,28 @@ async def list_theme_assignments_route(
     dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
 )
 async def create_theme_assignment_route(
-    body: ThemeAssignmentIn, session: AsyncSession = Depends(get_db_session)
+    body: ThemeAssignmentIn,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db_session),
 ) -> ThemeAssignment:
+    """
+    Creates one theme rule.
+
+    A USER assignment with no `user_id` targets the authenticated
+    administrator. Resolved from the verified session rather than from the
+    payload, so the panel's own shortcut needs no id and cannot be pointed
+    somewhere else by editing the request.
+    """
+    user_id = body.user_id
+    if body.scope == ThemeScope.USER and user_id is None:
+        user_id = admin.id
+
     try:
         return await assign_theme(
             session,
             body.theme_id,
             body.scope,
-            user_id=body.user_id,
+            user_id=user_id,
             target_value=body.target_value,
             priority=body.priority,
         )

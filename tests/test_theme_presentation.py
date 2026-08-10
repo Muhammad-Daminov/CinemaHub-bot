@@ -230,3 +230,170 @@ async def test_b_to_c_to_b_stays_stable(db_session):
     assert (await resolve_for_user(db_session, b)).key == "s-drama"
     assert (await resolve_for_user(db_session, c)).key == "s-base"
     assert (await resolve_for_user(db_session, b)).key == "s-drama"
+
+
+# ---------- editing shape and decoration ----------
+#
+# Until now `set_tokens` saved colours only, so the editor's shape
+# dropdown changed local state and silently discarded it, and a
+# decoration could be set at creation and never afterwards. These pin the
+# write path the admin picker depends on.
+
+
+async def test_saving_a_theme_persists_its_decoration_and_shape(db_session):
+    from app.services.themes import set_tokens
+
+    theme = await create_theme(
+        db_session, key="deco", name="Deco", tokens={"--color-bg": "#101010"}
+    )
+    assert theme.decoration == DEFAULT_DECORATION
+
+    saved = await set_tokens(
+        db_session, theme.id, {"--color-bg": "#202020"}, card_shape="square", decoration="cinema"
+    )
+
+    assert saved.decoration == "cinema"
+    assert saved.card_shape == "square"
+    assert {token.token: token.value for token in saved.tokens}["--color-bg"] == "#202020"
+
+
+async def test_saving_only_colours_leaves_shape_and_decoration_alone(db_session):
+    """
+    Omitted means "leave as it is". Defaulting to the fallback instead
+    would let an admin editing one colour silently wipe a decoration they
+    set earlier.
+    """
+    from app.services.themes import set_tokens
+
+    theme = await create_theme(
+        db_session,
+        key="keepdeco",
+        name="Keep",
+        tokens={"--color-bg": "#101010"},
+        card_shape="soft",
+        decoration="stars",
+    )
+
+    saved = await set_tokens(db_session, theme.id, {"--color-bg": "#303030"})
+
+    assert saved.decoration == "stars"
+    assert saved.card_shape == "soft"
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "<svg onload=alert(1)>",
+        "https://evil.example.com/x.svg",
+        "url(evil.svg)",
+        "stars; drop table chp_themes",
+        "STARS",
+        "../../etc/passwd",
+    ],
+)
+async def test_an_unsafe_decoration_cannot_be_saved(db_session, value):
+    """
+    The stored value is a key naming a compiled component. Markup, a URL
+    or anything outside the allowlist is refused at the write, so nothing
+    a renderer would have to interpret can ever reach the database.
+    """
+    from app.services.themes import set_tokens
+
+    theme = await create_theme(
+        db_session, key=f"unsafe{abs(hash(value)) % 10000}", name="Unsafe", tokens={}
+    )
+    with pytest.raises(ThemeError):
+        await set_tokens(db_session, theme.id, {}, decoration=value)
+
+
+# ---------- the frontend contract ----------
+
+
+def _frontend_source(name: str) -> str:
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    return (root / "webapp" / "src" / name).read_text(encoding="utf-8")
+
+
+def test_the_frontend_compiles_exactly_the_decorations_the_server_allows():
+    """
+    Two halves of one allowlist. A key the server accepts but the frontend
+    cannot draw renders nothing; a key the frontend offers but the server
+    rejects fails on save. Either way the admin picker would be lying, so
+    the two lists are pinned together here.
+    """
+    import re
+
+    source = _frontend_source("components/DecorationLayer.tsx")
+    block = source.split("const DECORATIONS: Record<string, () => JSX.Element> = {", 1)[1]
+    block = block.split("};", 1)[0]
+    compiled = set(re.findall(r"^\s*(\w+):", block, re.M))
+
+    # "none" is real but draws nothing, so it has no entry in the map.
+    assert compiled | {"none"} == set(DECORATIONS)
+
+
+def test_every_decoration_has_a_name_in_every_language():
+    """The picker labels itself from the catalog, so a missing name would
+    render a raw key like `theme.decoration.cinema` as a button label."""
+    import json
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    for language in ("uz", "ru", "en"):
+        catalog = json.loads((root / "app" / "locales" / f"{language}.json").read_text("utf-8"))
+        for name in DECORATIONS:
+            key = f"theme.decoration.{name}"
+            assert key in catalog, f"{key} missing from {language}"
+            assert catalog[key].strip(), f"{key} is blank in {language}"
+
+
+async def test_an_empty_decoration_means_none(db_session):
+    """Blank normalises to the default rather than erroring — clearing the
+    field is a legitimate way to say "no decoration"."""
+    from app.services.themes import set_tokens
+
+    theme = await create_theme(
+        db_session, key="blankdeco", name="Blank", tokens={}, decoration="stars"
+    )
+    saved = await set_tokens(db_session, theme.id, {}, decoration="")
+    assert saved.decoration == DEFAULT_DECORATION
+
+
+def test_the_decoration_picker_cannot_touch_the_document_root():
+    """
+    Preview isolation, asserted against the source. The picker and the
+    preview render the real component inside their own containers; if
+    either ever reaches for the document root, an admin trying decorations
+    would restyle the panel they are working in.
+
+    Comment lines are stripped first: this file *documents* that it never
+    uses these APIs, and a naive substring search would match the promise
+    instead of a violation.
+    """
+    panel = _frontend_source("admin/AppearancePanel.tsx")
+    code = "\n".join(
+        line
+        for line in panel.splitlines()
+        if not line.lstrip().startswith(("//", "*", "/*"))
+    )
+
+    for forbidden in (
+        "document.documentElement",
+        "setProperty",
+        "dangerouslySetInnerHTML",
+        "innerHTML",
+        "new Function",
+    ):
+        assert forbidden not in code, f"AppearancePanel must not use {forbidden}"
+
+
+def test_the_live_decoration_layer_is_inert_and_behind_the_app():
+    """A decoration must never intercept a tap or cover content."""
+    layer = _frontend_source("components/DecorationLayer.tsx")
+
+    assert "pointer-events-none" in layer
+    assert "-z-10" in layer
+    # An unknown key draws nothing rather than throwing.
+    assert "if (!DECORATIONS[name]) return null;" in layer

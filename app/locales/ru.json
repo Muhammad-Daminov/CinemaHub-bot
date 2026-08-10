@@ -298,5 +298,12 @@
   "banner.label.trending": "В тренде",
   "banner.label.exclusive": "Эксклюзив",
   "banner.label.last_chance": "Последний шанс",
-  "admin.broadcast_media_captured": "📎 ID медиа для рассылки:\n<code>{file_id}</code>"
+  "admin.broadcast_media_captured": "📎 ID медиа для рассылки:\n<code>{file_id}</code>",
+  "theme.decoration.none": "Нет",
+  "theme.decoration.stars": "Звёзды",
+  "theme.decoration.cinema": "Киноплёнка",
+  "theme.decoration.anime": "Аниме-линии",
+  "theme.decoration.horror": "Тёмные полосы",
+  "theme.decoration.abstract": "Абстракция",
+  "theme.decoration.seasonal": "Сезонное"
 }

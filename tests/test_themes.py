@@ -35,6 +35,7 @@ from app.db.session import get_db_session
 from app.main import app
 from app.services.themes import (
     ALLOWED_TOKENS,
+    DEFAULT_THEME_KEY,
     DEFAULT_TOKENS,
     SCOPE_PRECEDENCE,
     ThemeError,
@@ -563,3 +564,71 @@ async def test_the_admin_api_refuses_an_unsafe_colour(db_session, as_user):
             },
         )
         assert response.status_code == 422
+
+
+# ---------- the "no theme configured" contract ----------
+#
+# The frontend applies theme tokens as *inline* custom properties on
+# <html>, and an inline declaration outranks every rule in the
+# stylesheet — including the `.dark` class that carries the dark palette.
+# So `scope` is not decoration: it is the signal that tells the client
+# whether a decision was actually made. A built-in fallback reported as
+# though it were a decision is what forced every light-mode viewer dark.
+
+
+async def test_no_configured_theme_reports_no_scope(db_session):
+    """
+    With nothing configured the resolver must say so, so the client can
+    leave the compiled stylesheet alone and let light/dark keep working.
+    """
+    user = await make_user(db_session, 9910)
+    resolved = await resolve_for_user(db_session, user)
+
+    assert resolved.scope is None
+    assert resolved.key == DEFAULT_THEME_KEY
+
+
+async def test_the_builtin_fallback_carries_the_dark_palette(db_session):
+    """
+    Pins *why* scope matters. DEFAULT_TOKENS is the dark palette, so
+    applying it unconditionally is not neutral — it is a decision to make
+    everyone dark. If this ever becomes the light palette the reasoning in
+    ThemeProvider needs revisiting, not silently inheriting.
+    """
+    user = await make_user(db_session, 9911)
+    resolved = await resolve_for_user(db_session, user)
+
+    assert resolved.scope is None
+    assert resolved.tokens["--color-bg"] == "#0a0a0d"
+
+
+async def test_an_assigned_theme_reports_a_real_scope(db_session):
+    """The override path still works: a real scope means "apply this"."""
+    user = await make_user(db_session, 9912)
+    theme = await create_theme(
+        db_session, key="custom", name="Custom", tokens={"--color-bg": "#123456"}
+    )
+    await assign_theme(db_session, theme.id, ThemeScope.USER, user_id=user.id)
+
+    resolved = await resolve_for_user(db_session, user)
+
+    assert resolved.scope == ThemeScope.USER
+    assert resolved.tokens["--color-bg"] == "#123456"
+
+
+async def test_a_global_default_theme_reports_global_not_none(db_session):
+    """
+    A configured platform default is a deliberate choice and must apply —
+    the guard keys on scope, so reporting None here would silently stop
+    every configured default from ever being used.
+    """
+    user = await make_user(db_session, 9913)
+    theme = await create_theme(
+        db_session, key="house", name="House", tokens={"--color-bg": "#abcdef"}
+    )
+    await set_default_theme(db_session, theme.id)
+
+    resolved = await resolve_for_user(db_session, user)
+
+    assert resolved.scope == ThemeScope.GLOBAL
+    assert resolved.tokens["--color-bg"] == "#abcdef"

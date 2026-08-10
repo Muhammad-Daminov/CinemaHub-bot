@@ -127,11 +127,32 @@ const DECORATIONS: Record<string, () => JSX.Element> = {
   seasonal: Seasonal,
 };
 
+/**
+ * Every selectable key, "none" first — the same vocabulary the server
+ * validates against. Exported so the admin picker offers exactly what the
+ * API accepts and cannot drift into showing an option that would be
+ * rejected on save.
+ */
+export const DECORATION_KEYS = ["none", ...Object.keys(DECORATIONS)] as const;
+
+/**
+ * Just the artwork, with no positioning of its own.
+ *
+ * Split out so a thumbnail and the real background layer are the *same*
+ * compiled component rendered at two sizes — what an admin previews is
+ * therefore what a viewer gets, rather than a hand-drawn approximation
+ * that could quietly diverge from it.
+ */
+export function DecorationArt({ name }: { name: string }) {
+  const Decoration = DECORATIONS[name];
+  if (!Decoration) return null;
+  return <Decoration />;
+}
+
 export function DecorationLayer({ decoration }: { decoration?: string }) {
   const appearance = useAppearance();
   const name = decoration ?? appearance.decoration;
-  const Decoration = DECORATIONS[name];
-  if (!Decoration) return null;
+  if (!DECORATIONS[name]) return null;
 
   return (
     <div
@@ -140,7 +161,7 @@ export function DecorationLayer({ decoration }: { decoration?: string }) {
       // competing with content — legibility is not negotiable.
       className="pointer-events-none fixed inset-0 -z-10 opacity-[0.07]"
     >
-      <Decoration />
+      <DecorationArt name={name} />
     </div>
   );
 }

@@ -257,3 +257,134 @@ async def test_an_ordinary_user_cannot_reach_any_appearance_admin_route(db_sessi
             "/api/admin/banners/labels",
         ):
             assert (await client.get(path)).status_code == 403, path
+
+
+# ---------- "apply to my own panel" ----------
+
+
+async def test_a_user_assignment_without_an_id_targets_the_caller(db_session, as_user):
+    """
+    The panel's shortcut sends no user id at all — the server resolves it
+    from the verified session. That is what makes the easy path also the
+    safe one: there is no id in the request to tamper with.
+    """
+    from app.db.models.theme import ThemeAssignment, ThemeScope
+    from app.db.models.user import AdminPermission, UserRole
+    from app.services.themes import create_theme
+
+    admin = await make_user(db_session, 9930)
+    admin.role = UserRole.ADMIN
+    db_session.add(AdminPermission(user_id=admin.id, permission="manage_system_settings"))
+    theme = await create_theme(
+        db_session, key="mine", name="Mine", tokens={"--color-bg": "#101010"}
+    )
+    await db_session.commit()
+
+    async with as_user(admin) as client:
+        response = await client.post(
+            "/api/admin/theme-assignments",
+            json={"theme_id": theme.id, "scope": "user"},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == admin.id
+
+    row = await db_session.get(ThemeAssignment, response.json()["id"])
+    assert row.scope == ThemeScope.USER and row.user_id == admin.id
+
+
+async def test_the_caller_now_resolves_to_that_theme(db_session, as_user):
+    """End to end: the shortcut actually changes what the admin renders."""
+    from app.db.models.user import AdminPermission, UserRole
+    from app.services.themes import create_theme
+
+    admin = await make_user(db_session, 9931)
+    admin.role = UserRole.ADMIN
+    db_session.add(AdminPermission(user_id=admin.id, permission="manage_system_settings"))
+    theme = await create_theme(
+        db_session, key="panel", name="Panel", tokens={"--color-bg": "#202020"}
+    )
+    await db_session.commit()
+
+    async with as_user(admin) as client:
+        assert (
+            await client.post(
+                "/api/admin/theme-assignments", json={"theme_id": theme.id, "scope": "user"}
+            )
+        ).status_code == 200
+        resolved = (await client.get("/api/auth/me/theme")).json()
+
+    # A real scope, so the client applies it — unlike the built-in default.
+    assert resolved["scope"] == "user"
+    assert resolved["tokens"]["--color-bg"] == "#202020"
+
+
+async def test_the_shortcut_does_not_touch_anybody_else(db_session, as_user):
+    """The other user keeps resolving to the built-in default, scope null."""
+    from app.db.models.user import AdminPermission, UserRole
+    from app.services.themes import create_theme
+
+    admin = await make_user(db_session, 9932)
+    admin.role = UserRole.ADMIN
+    db_session.add(AdminPermission(user_id=admin.id, permission="manage_system_settings"))
+    bystander = await make_user(db_session, 9933)
+    theme = await create_theme(
+        db_session, key="onlymine", name="Only Mine", tokens={"--color-bg": "#303030"}
+    )
+    await db_session.commit()
+
+    async with as_user(admin) as client:
+        await client.post(
+            "/api/admin/theme-assignments", json={"theme_id": theme.id, "scope": "user"}
+        )
+
+    async with as_user(bystander) as client:
+        resolved = (await client.get("/api/auth/me/theme")).json()
+
+    assert resolved["scope"] is None
+    assert resolved["tokens"]["--color-bg"] != "#303030"
+
+
+async def test_an_explicit_user_id_is_still_honoured(db_session, as_user):
+    """
+    Assigning a theme to someone else remains a legitimate admin action —
+    the shortcut adds a default, it does not remove a capability.
+    """
+    from app.db.models.user import AdminPermission, UserRole
+    from app.services.themes import create_theme
+
+    admin = await make_user(db_session, 9934)
+    admin.role = UserRole.ADMIN
+    db_session.add(AdminPermission(user_id=admin.id, permission="manage_system_settings"))
+    other = await make_user(db_session, 9935)
+    theme = await create_theme(
+        db_session, key="forthem", name="For Them", tokens={"--color-bg": "#404040"}
+    )
+    await db_session.commit()
+
+    async with as_user(admin) as client:
+        response = await client.post(
+            "/api/admin/theme-assignments",
+            json={"theme_id": theme.id, "scope": "user", "user_id": other.id},
+        )
+
+    assert response.status_code == 200
+    assert response.json()["user_id"] == other.id
+
+
+async def test_an_ordinary_user_cannot_assign_a_theme_to_themselves(db_session, as_user):
+    """The shortcut is convenience for an admin, not a new capability."""
+    from app.services.themes import create_theme
+
+    plain = await make_user(db_session, 9936)
+    theme = await create_theme(
+        db_session, key="nope", name="Nope", tokens={"--color-bg": "#505050"}
+    )
+    await db_session.commit()
+
+    async with as_user(plain) as client:
+        assert (
+            await client.post(
+                "/api/admin/theme-assignments", json={"theme_id": theme.id, "scope": "user"}
+            )
+        ).status_code == 403

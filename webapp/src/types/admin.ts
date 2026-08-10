@@ -535,6 +535,11 @@ export interface AdminThemeAssignment {
 export interface ThemeAssignmentInput {
   theme_id: number;
   scope: ThemeScope;
+  /**
+   * For a `user` assignment, omitting this targets the authenticated
+   * administrator — the server resolves it from the verified session, so
+   * the "apply to my own panel" action sends no id at all.
+   */
   user_id?: number | null;
   target_value?: string | null;
   priority?: number;

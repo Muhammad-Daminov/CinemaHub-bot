@@ -298,5 +298,12 @@
   "banner.label.trending": "Trendda",
   "banner.label.exclusive": "Eksklyuziv",
   "banner.label.last_chance": "Oxirgi imkoniyat",
-  "admin.broadcast_media_captured": "📎 Broadcast uchun media ID:\n<code>{file_id}</code>"
+  "admin.broadcast_media_captured": "📎 Broadcast uchun media ID:\n<code>{file_id}</code>",
+  "theme.decoration.none": "Yo'q",
+  "theme.decoration.stars": "Yulduzlar",
+  "theme.decoration.cinema": "Kinolenta",
+  "theme.decoration.anime": "Anime chiziqlar",
+  "theme.decoration.horror": "Qorong'i chiziqlar",
+  "theme.decoration.abstract": "Abstrakt",
+  "theme.decoration.seasonal": "Mavsumiy"
 }

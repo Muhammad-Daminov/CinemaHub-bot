@@ -7,6 +7,19 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pro
 
 ## [Unreleased]
 
+### Post-deploy hardening and appearance completion (2026-08-10)
+
+#### Fixed
+- **A theme's card shape and decoration could not be changed after creation.** `set_tokens` saved colours only, so the editor's shape dropdown updated local state and silently discarded it on save, and a decoration could be set at creation and never again. Both now ride along on the same save; omitting either means "leave as it is", so editing one colour cannot wipe a decoration set earlier. **No migration** — `chp_themes.card_shape` and `.decoration` have existed since `b8f1e2c74d05`; only the write path was missing.
+- **A configured-theme fallback was forcing every user into dark mode.** `ThemeProvider` applied the resolved palette unconditionally, and it writes CSS custom properties as *inline* styles on `<html>` — which outrank both `:root` and `.dark` in `index.css`. Since the built-in `DEFAULT_TOKENS` is the **dark** palette, a platform with no themes configured (which is every platform today) pinned every viewer to dark and made Telegram's colour-scheme toggle do nothing. The resolver already reported `scope: null` for "no rule matched"; the client now honours it and applies nothing, so an unconfigured platform looks exactly as compiled. Any real scope — USER, BADGE, INTEREST, SUBSCRIPTION, GLOBAL — still applies, precedence untouched. Four tests pin the contract, including one asserting the built-in fallback really is the dark palette, so the reasoning cannot rot silently.
+- **Public API documentation** (`/docs`, `/redoc`, `/openapi.json`, `/docs/oauth2-redirect`) is disabled in production — shipped in `9e5e3ef` and recorded here retroactively, since that commit added no changelog entry. Keyed on the existing `ENVIRONMENT` switch; development keeps them. `app.openapi()` still builds in-process, which is now the only guard against a broken response model.
+
+#### Added
+- **A visual decoration picker.** Seven options — None, Stars, Film strip, Anime lines, Dark streaks, Abstract, Seasonal — each swatch rendering the **real compiled component** at thumbnail size against the theme's own colours, so what an admin picks is literally what a viewer gets rather than a mock that could drift. Nothing is uploaded and no markup, URL or CSS is accepted anywhere in the flow: the options come from `DECORATION_KEYS` compiled into the frontend, only the key is stored, and the server revalidates it against `DECORATIONS`. A test parses `DecorationLayer.tsx` and asserts the compiled map matches the server allowlist exactly, so the two halves cannot drift apart.
+- **Decoration names in UZ/RU/EN**, read from the shared catalog rather than hardcoded, so a new decoration needs one translation and no panel edit.
+- **"Standart ranglarga qaytarish"** in the theme editor — resets the editing draft to the server's default tokens and card shape. Saves nothing; the operator still presses Saqlash. Deliberately distinct from the per-theme "Standart" button, which makes a theme the *platform* default: conflating the two would let "reset my colours" silently repoint every user.
+- **"Admin panelimga qo'llash"** — applies the theme being edited to the administrator's own user scope. A USER assignment with no `user_id` now resolves to the authenticated admin server-side, so the request carries no id to tamper with, and the operator no longer has to look up and type their own numeric id. Assigning to another user still works and still requires `MANAGE_SYSTEM_SETTINGS` — the shortcut adds a default, it removes no capability.
+
 ### Phase 9E-D — Broadcast control centre (2026-08-10)
 
 The operator layer over 9E-A/B/C. **No migration** — everything it needed

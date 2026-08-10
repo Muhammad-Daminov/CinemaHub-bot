@@ -16,6 +16,12 @@
  * malformed, the app keeps the palette from its own stylesheet and looks
  * exactly as it does today — a broken theme must never cost the user
  * their UI.
+ *
+ * **Nothing is applied unless a theme was actually configured.** These
+ * are inline custom properties, which outrank every rule in the
+ * stylesheet including `.dark`, so writing them unconditionally would
+ * freeze one palette and disable light/dark for good. See the `scope`
+ * check below.
  */
 import { createContext, useContext, useEffect, useState } from "react";
 import { api } from "../lib/api";
@@ -104,6 +110,21 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       .theme()
       .then((theme) => {
         if (cancelled) return;
+        // `scope: null` means no rule matched — the backend is reporting
+        // the built-in palette as a floor, not making a decision. Applying
+        // it anyway is what broke light mode: `applyTheme` writes custom
+        // properties as *inline* styles on <html>, and an inline
+        // declaration outranks both `:root` and `.dark` in index.css. Since
+        // DEFAULT_TOKENS is the dark palette, every light-mode viewer was
+        // forced dark and the Telegram colour-scheme toggle stopped having
+        // any effect at all.
+        //
+        // So a platform with nothing configured now looks exactly as
+        // compiled, and light/dark works the way it did before themes
+        // existed. Anything with a real scope — USER, BADGE, INTEREST,
+        // SUBSCRIPTION or GLOBAL — is a deliberate override and still
+        // applies, precedence untouched.
+        if (theme.scope === null) return;
         applyTheme(theme.tokens);
         // Both are validated against local allowlists before use: an
         // unrecognised value is discarded rather than rendered.

@@ -396,8 +396,19 @@ export const adminApi = {
    *  so the builder can only offer what the validator accepts. */
   themeVocabulary: () => request<ThemeVocabulary>("/admin/themes/tokens"),
   createTheme: (body: ThemeInput) => send<AdminTheme>("/admin/themes", "POST", body),
-  setThemeTokens: (id: number, tokens: Record<string, string>) =>
-    send<AdminTheme>(`/admin/themes/${id}/tokens`, "PUT", { tokens }),
+  /**
+   * Saves the whole editable theme in one call: colours, card shape and
+   * decoration. `decoration` is an allowlisted key naming a compiled
+   * component — never markup, a URL or a CSS value — and the server
+   * revalidates it against the same allowlist.
+   */
+  setThemeTokens: (
+    id: number,
+    tokens: Record<string, string>,
+    card_shape?: string,
+    decoration?: string,
+  ) =>
+    send<AdminTheme>(`/admin/themes/${id}/tokens`, "PUT", { tokens, card_shape, decoration }),
   duplicateTheme: (id: number, key: string, name: string) =>
     send<AdminTheme>(`/admin/themes/${id}/duplicate`, "POST", { key, name, tokens: {} }),
   setDefaultTheme: (id: number) => send<AdminTheme>(`/admin/themes/${id}/default`, "POST"),

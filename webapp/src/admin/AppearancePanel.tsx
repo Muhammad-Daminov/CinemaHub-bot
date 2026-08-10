@@ -13,6 +13,8 @@
  */
 import { useCallback, useEffect, useState } from "react";
 import { adminApi, ApiError } from "../lib/api";
+import { DECORATION_KEYS, DecorationArt } from "../components/DecorationLayer";
+import { useT } from "../lib/i18n";
 import type {
   AdminBanner,
   AdminTheme,
@@ -32,6 +34,10 @@ const TABS: { id: Tab; label: string }[] = [
 
 /** Mirrors the server's grammar so a typo is caught before the request. */
 const HEX = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/;
+
+/** Mirror the server's defaults — what "reset" restores. */
+const DEFAULT_CARD_SHAPE = "rounded";
+const DEFAULT_DECORATION = "none";
 
 /** Scopes in the backend's precedence order, strongest first. */
 const SCOPES: { value: ThemeScope; label: string; hint: string }[] = [
@@ -59,7 +65,15 @@ const AUDIENCES = [
  * real theme is only applied globally after a successful save, by the
  * ThemeProvider on the next load.
  */
-function ThemePreview({ tokens, shape }: { tokens: Record<string, string>; shape: string }) {
+function ThemePreview({
+  tokens,
+  shape,
+  decoration,
+}: {
+  tokens: Record<string, string>;
+  shape: string;
+  decoration: string;
+}) {
   const radius = { square: "0px", soft: "4px", rounded: "12px", "extra-rounded": "20px" }[shape] ?? "12px";
   const safe = Object.fromEntries(
     Object.entries(tokens).filter(([, value]) => HEX.test(value)),
@@ -70,70 +84,156 @@ function ThemePreview({ tokens, shape }: { tokens: Record<string, string>; shape
       // A plain style object of validated hex values — never a CSS string,
       // and never dangerouslySetInnerHTML.
       style={{ ...safe, backgroundColor: "var(--color-bg)" } as React.CSSProperties}
-      className="space-y-3 rounded-xl border border-surface-hi p-3"
+      className="relative overflow-hidden space-y-3 rounded-xl border border-surface-hi p-3"
     >
-      <p className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--color-ink-dim)" }}>
-        Ko'rinish
-      </p>
-
-      <div className="flex gap-2">
-        {[0, 1, 2].map((index) => (
-          <div key={index} className="flex-1">
-            <div
-              className="aspect-[2/3] w-full"
-              style={{ backgroundColor: "var(--color-surface-hi)", borderRadius: radius }}
-            />
-            <p className="mt-1 truncate text-[10px]" style={{ color: "var(--color-ink)" }}>
-              Kino {index + 1}
-            </p>
-          </div>
-        ))}
+      {/*
+        The decoration exactly as the Mini App renders it — same compiled
+        component, same opacity — but `absolute` inside this box rather
+        than `fixed` to the viewport, so it decorates the preview and
+        cannot reach the panel around it. Inert and behind the content.
+      */}
+      <div aria-hidden className="pointer-events-none absolute inset-0 z-0 opacity-[0.07]">
+        <DecorationArt name={decoration} />
       </div>
+      <div className="relative z-10 space-y-3">
+        <p className="font-mono text-[10px] uppercase tracking-wider" style={{ color: "var(--color-ink-dim)" }}>
+          Ko'rinish
+        </p>
 
-      <div style={{ backgroundColor: "var(--color-surface)", borderRadius: radius }} className="p-2">
-        <p className="text-xs" style={{ color: "var(--color-ink)" }}>Asosiy matn</p>
-        <p className="text-[11px]" style={{ color: "var(--color-ink-dim)" }}>Ikkilamchi matn</p>
-      </div>
-
-      <div className="flex flex-wrap gap-1.5">
-        <span
-          className="rounded-full px-3 py-1 text-[11px] font-semibold"
-          style={{ backgroundColor: "var(--color-marquee)", color: "#0A0A0D" }}
-        >
-          Tugma
-        </span>
-        {["--color-success", "--color-warning", "--color-danger"].map((token) => (
-          <span
-            key={token}
-            className="rounded-full px-2 py-1 text-[10px]"
-            style={{ backgroundColor: `var(${token})`, color: "#0A0A0D" }}
-          >
-            {token.replace("--color-", "")}
-          </span>
-        ))}
-      </div>
-
-      <div className="flex gap-1.5">
-        {[1, 2, 3, 4].map((number) => {
-          const watched = number === 3;
-          return (
-            <div
-              key={number}
-              className="flex h-8 w-8 items-center justify-center text-[11px]"
-              style={{
-                backgroundColor: watched
-                  ? "var(--color-episode-watched)"
-                  : "var(--color-episode-unwatched)",
-                color: "var(--color-ink)",
-                borderRadius: radius,
-              }}
-            >
-              {number}
-              {watched ? "✓" : ""}
+        <div className="flex gap-2">
+          {[0, 1, 2].map((index) => (
+            <div key={index} className="flex-1">
+              <div
+                className="aspect-[2/3] w-full"
+                style={{ backgroundColor: "var(--color-surface-hi)", borderRadius: radius }}
+              />
+              <p className="mt-1 truncate text-[10px]" style={{ color: "var(--color-ink)" }}>
+                Kino {index + 1}
+              </p>
             </div>
-          );
-        })}
+          ))}
+        </div>
+
+        <div style={{ backgroundColor: "var(--color-surface)", borderRadius: radius }} className="p-2">
+          <p className="text-xs" style={{ color: "var(--color-ink)" }}>Asosiy matn</p>
+          <p className="text-[11px]" style={{ color: "var(--color-ink-dim)" }}>Ikkilamchi matn</p>
+        </div>
+
+        <div className="flex flex-wrap gap-1.5">
+          <span
+            className="rounded-full px-3 py-1 text-[11px] font-semibold"
+            style={{ backgroundColor: "var(--color-marquee)", color: "#0A0A0D" }}
+          >
+            Tugma
+          </span>
+          {["--color-success", "--color-warning", "--color-danger"].map((token) => (
+            <span
+              key={token}
+              className="rounded-full px-2 py-1 text-[10px]"
+              style={{ backgroundColor: `var(${token})`, color: "#0A0A0D" }}
+            >
+              {token.replace("--color-", "")}
+            </span>
+          ))}
+        </div>
+
+        <div className="flex gap-1.5">
+          {[1, 2, 3, 4].map((number) => {
+            const watched = number === 3;
+            return (
+              <div
+                key={number}
+                className="flex h-8 w-8 items-center justify-center text-[11px]"
+                style={{
+                  backgroundColor: watched
+                    ? "var(--color-episode-watched)"
+                    : "var(--color-episode-unwatched)",
+                  color: "var(--color-ink)",
+                  borderRadius: radius,
+                }}
+              >
+                {number}
+                {watched ? "✓" : ""}
+              </div>
+            );
+          })}
+        </div>
       </div>
+    </div>
+  );
+}
+
+/**
+ * The decoration picker.
+ *
+ * Each swatch renders the **real compiled component** at thumbnail size,
+ * so what an admin picks is literally what a viewer gets. There is no
+ * upload, no URL and no markup anywhere in this flow: the options come
+ * from `DECORATION_KEYS`, which the frontend compiles in, and the only
+ * thing that travels to the server or into the database is the key.
+ *
+ * Names come from the shared locale catalog rather than a hardcoded list,
+ * so they read in the admin's own language and a new decoration needs one
+ * translation, not an edit here.
+ */
+function DecorationPicker({
+  value,
+  onChange,
+  tokens,
+}: {
+  value: string;
+  onChange: (name: string) => void;
+  tokens: Record<string, string>;
+}) {
+  const t = useT();
+  const safe = Object.fromEntries(
+    Object.entries(tokens).filter(([, hex]) => HEX.test(hex)),
+  ) as Record<string, string>;
+
+  return (
+    <div className="grid grid-cols-3 gap-2">
+      {DECORATION_KEYS.map((name) => {
+        const selected = value === name;
+        const label = t(`theme.decoration.${name}`);
+        return (
+          <button
+            key={name}
+            type="button"
+            aria-pressed={selected}
+            aria-label={label}
+            onClick={() => onChange(name)}
+            className={`rounded-lg border p-1.5 text-left transition-colors ${
+              selected ? "border-marquee bg-surface-hi" : "border-surface-hi bg-surface"
+            }`}
+          >
+            <div
+              // The swatch carries the theme's own colours so a decoration
+              // is judged against the palette it will actually sit on.
+              style={{ ...safe, backgroundColor: "var(--color-bg)" } as React.CSSProperties}
+              className="relative h-12 w-full overflow-hidden rounded"
+            >
+              {name === "none" ? (
+                <span
+                  className="absolute inset-0 flex items-center justify-center font-mono text-[10px]"
+                  style={{ color: "var(--color-ink-dim)" }}
+                >
+                  —
+                </span>
+              ) : (
+                // Higher opacity than the live layer purely so a 48px
+                // swatch is legible; the pattern itself is identical.
+                <div aria-hidden className="pointer-events-none absolute inset-0 opacity-40">
+                  <DecorationArt name={name} />
+                </div>
+              )}
+            </div>
+            <p className="mt-1 truncate text-[10px] text-ink-dim">
+              {selected ? "✓ " : ""}
+              {label}
+            </p>
+          </button>
+        );
+      })}
     </div>
   );
 }
@@ -143,7 +243,8 @@ function ThemesTab() {
   const [vocabulary, setVocabulary] = useState<ThemeVocabulary | null>(null);
   const [editing, setEditing] = useState<AdminTheme | null>(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
-  const [shape, setShape] = useState("rounded");
+  const [shape, setShape] = useState(DEFAULT_CARD_SHAPE);
+  const [decoration, setDecoration] = useState(DEFAULT_DECORATION);
   const [newKey, setNewKey] = useState("");
   const [newName, setNewName] = useState("");
   const [error, setError] = useState<string | null>(null);
@@ -179,6 +280,7 @@ function ThemesTab() {
     setEditing(theme);
     setDraft({ ...(vocabulary?.defaults ?? {}), ...theme.tokens });
     setShape(theme.card_shape);
+    setDecoration(theme.decoration);
   };
 
   const invalid = Object.entries(draft).filter(([, value]) => !HEX.test(value));
@@ -298,7 +400,7 @@ function ThemesTab() {
         <div className="rounded-xl border border-surface-hi bg-surface p-3">
           <SectionTitle>{editing.name} — ranglar</SectionTitle>
 
-          <ThemePreview tokens={draft} shape={shape} />
+          <ThemePreview tokens={draft} shape={shape} decoration={decoration} />
 
           <div className="mt-3">
             <Field label="Karta shakli">
@@ -310,6 +412,12 @@ function ThemesTab() {
                   label: value,
                 }))}
               />
+            </Field>
+          </div>
+
+          <div className="mt-3">
+            <Field label="Bezak">
+              <DecorationPicker value={decoration} onChange={setDecoration} tokens={draft} />
             </Field>
           </div>
 
@@ -350,12 +458,36 @@ function ThemesTab() {
             </div>
           )}
 
+          {/*
+            Resets the *draft* to the server's default palette and saves
+            nothing — the operator still has to press Saqlash, and can
+            close without saving to change their mind. Deliberately not
+            the same thing as the "Standart" button on each theme above,
+            which makes a theme the platform default; conflating the two
+            would let "reset my colours" silently repoint every user.
+          */}
+          <div className="mt-3">
+            <Button
+              tone="ghost"
+              full
+              onClick={() => {
+                setDraft({ ...vocabulary.defaults });
+                setShape(DEFAULT_CARD_SHAPE);
+                setDecoration(DEFAULT_DECORATION);
+                setMessage("Standart ranglar tiklandi — saqlash uchun Saqlash bosing.");
+                setError(null);
+              }}
+            >
+              Standart ranglarga qaytarish
+            </Button>
+          </div>
+
           <div className="mt-3 grid grid-cols-2 gap-2">
             <Button
               disabled={invalid.length > 0}
               onClick={() =>
                 act(async () => {
-                  await adminApi.setThemeTokens(editing.id, draft);
+                  await adminApi.setThemeTokens(editing.id, draft, shape, decoration);
                   setEditing(null);
                 }, "Ranglar saqlandi.")
               }
@@ -365,6 +497,31 @@ function ThemesTab() {
             <Button tone="ghost" onClick={() => setEditing(null)}>
               Yopish
             </Button>
+          </div>
+
+          {/*
+            The shortcut that replaces "switch to the Assignments tab and
+            type your own numeric user id". The id is never sent: a USER
+            assignment with no user_id is resolved server-side from the
+            verified admin session, so this cannot be aimed at anyone else
+            by editing the request.
+          */}
+          <div className="mt-2">
+            <Button
+              tone="ghost"
+              full
+              onClick={() =>
+                act(
+                  () => adminApi.createThemeAssignment({ theme_id: editing.id, scope: "user" }),
+                  "Mavzu sizning panelingizga qo'llandi. Ilovani qayta oching.",
+                )
+              }
+            >
+              Admin panelimga qo'llash
+            </Button>
+            <p className="mt-1 font-body text-[11px] text-ink-dim">
+              Faqat sizga qo'llanadi. Saqlanmagan ranglar avval saqlanishi kerak.
+            </p>
           </div>
         </div>
       )}
