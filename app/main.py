@@ -135,7 +135,41 @@ async def lifespan(app: FastAPI):
     await ai_service.close()
 
 
-app = FastAPI(title=settings.APP_NAME, lifespan=lifespan)
+def docs_urls(production: bool) -> dict[str, str | None]:
+    """
+    Where the interactive API documentation lives, or nowhere.
+
+    Swagger, ReDoc and the raw schema are a development convenience, not a
+    production feature: nothing in the bot or the Mini App reads them, and
+    in production they publish the entire admin surface — every route,
+    parameter and model name — to anyone who asks. That leaks no data and
+    no secret, since every route still requires verified Telegram
+    `initData`, but it is free reconnaissance for someone deciding where
+    to push.
+
+    Turned off rather than put behind a password. A login on a docs page
+    is a second authentication mechanism to build, test and get wrong,
+    guarding something production does not need at all; removing the
+    routes is the smaller change and cannot be misconfigured open.
+
+    Keyed on the existing `ENVIRONMENT` setting — the same switch that
+    already narrows CORS to Telegram's origin — so there is no new
+    deployment concept and no hostname hardcoded anywhere.
+
+    `app.openapi()` is unaffected: the schema is still built in-process,
+    which is what `tests/test_api_schema.py` checks and what would
+    otherwise let a broken response model ship unnoticed.
+    """
+    if production:
+        return {"openapi_url": None, "docs_url": None, "redoc_url": None}
+    return {"openapi_url": "/openapi.json", "docs_url": "/docs", "redoc_url": "/redoc"}
+
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    lifespan=lifespan,
+    **docs_urls(settings.is_production),
+)
 
 # Registered before CORS so it runs *after* it: Starlette applies
 # middleware in reverse order of registration, and a preflight OPTIONS
