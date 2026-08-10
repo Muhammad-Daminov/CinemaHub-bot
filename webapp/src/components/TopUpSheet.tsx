@@ -32,7 +32,19 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [confirming, setConfirming] = useState(false);
+  const [cardsLoading, setCardsLoading] = useState(true);
   const fileInput = useRef<HTMLInputElement | null>(null);
+  /**
+   * Synchronous double-submit latch.
+   *
+   * `disabled={busy}` alone is not a guard: React applies state after a
+   * re-render, so two taps inside one frame both observe `busy === false`
+   * and both fire — two receipts for one real payment, which an admin can
+   * approve twice. A ref is written immediately. The server refuses a
+   * duplicate pending top-up as well; this only stops the request being
+   * made twice in the first place.
+   */
+  const submitting = useRef(false);
 
   useEffect(() => {
     api
@@ -41,7 +53,8 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
         setCards(result);
         setCardId(result[0]?.id ?? null);
       })
-      .catch(() => setCards([]));
+      .catch(() => setCards([]))
+      .finally(() => setCardsLoading(false));
   }, []);
 
   // Object URLs are leaked memory until revoked, and replacing the image
@@ -58,6 +71,8 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
 
   const submit = async () => {
     if (!cardId || !file || !Number(amount)) return;
+    if (submitting.current) return;
+    submitting.current = true;
     setBusy(true);
     try {
       const response = await api.submitTopup(Number(amount), cardId, file);
@@ -72,6 +87,7 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
             : t("app.generic_error"),
       );
     } finally {
+      submitting.current = false;
       setBusy(false);
       setConfirming(false);
     }
@@ -155,6 +171,14 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
             {t("payment.instructions")}
           </p>
           <p className="mb-1.5 font-body text-xs text-ink-dim">{t("app.select_card")}</p>
+          {cardsLoading && (
+            <p className="font-body text-xs text-ink-dim">{t("app.cards_loading")}</p>
+          )}
+          {!cardsLoading && cards.length === 0 && (
+            <p className="rounded-lg border border-surface-hi bg-bg px-3 py-2 font-body text-xs text-ink-dim">
+              {t("app.cards_empty")}
+            </p>
+          )}
           <div className="space-y-1.5">
             {cards.map((card) => (
               <button

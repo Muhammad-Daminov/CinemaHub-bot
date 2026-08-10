@@ -11,8 +11,8 @@
  * with Top Up wired straight to the top-up sheet — the user is never
  * dropped back at the balance screen to work it out themselves.
  */
-import { Check, X } from "lucide-react";
-import { useCallback, useEffect, useState } from "react";
+import { Check, Plus, X } from "lucide-react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { api, ApiError } from "../lib/api";
 import { useT } from "../lib/i18n";
 import type { BillingOverview, BillingPlan, PurchasePreview } from "../types/movie";
@@ -36,8 +36,21 @@ export function PlansSheet({ onClose, onToast }: Props) {
   const [shortfall, setShortfall] = useState<{ balance: number; required: number; missing: number } | null>(null);
   const [topUpFor, setTopUpFor] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  // Distinguishes "still loading" from "the request failed" — both used to
+  // render as a blank sheet, so a network error was indistinguishable from
+  // a slow one and the user had nothing to act on.
+  const [state, setState] = useState<"loading" | "ready" | "error">("loading");
+  /**
+   * Synchronous purchase latch. `disabled={busy}` is applied only after a
+   * re-render, so a fast double tap can charge twice — the server locks
+   * the balance row and would legitimately queue a *second* subscription,
+   * because two deliberate purchases are a real thing. Only the client can
+   * tell the difference between that and one impatient thumb.
+   */
+  const purchasing = useRef(false);
 
   const reload = useCallback(async () => {
+    setState("loading");
     try {
       const data = await api.billingOverview();
       setOverview(data);
@@ -49,8 +62,10 @@ export function PlansSheet({ onClose, onToast }: Props) {
           .map(async (p) => [p.id, await api.previewPurchase(p.id)] as const),
       );
       setPreviews(Object.fromEntries(entries));
+      setState("ready");
     } catch {
       setOverview(null);
+      setState("error");
     }
   }, []);
 
@@ -59,6 +74,8 @@ export function PlansSheet({ onClose, onToast }: Props) {
   }, [reload]);
 
   const buy = async (plan: BillingPlan) => {
+    if (purchasing.current) return;
+    purchasing.current = true;
     setBusy(true);
     try {
       await api.purchasePlan(plan.id);
@@ -87,6 +104,7 @@ export function PlansSheet({ onClose, onToast }: Props) {
         );
       }
     } finally {
+      purchasing.current = false;
       setBusy(false);
     }
   };
@@ -128,7 +146,40 @@ export function PlansSheet({ onClose, onToast }: Props) {
                 {new Date(q.started_at).toLocaleDateString()}
               </p>
             ))}
+
+            {/* Top up without having to fail a purchase first. Opens the
+                same sheet the shortfall dialog does — one top-up flow. */}
+            <button
+              onClick={() => setTopUpFor(0)}
+              className="mt-2 flex w-full items-center justify-center gap-1.5 rounded-full border border-surface-hi py-2 font-body text-xs text-ink transition-transform active:scale-95"
+            >
+              <Plus size={14} /> {t("app.balance_topup_action")}
+            </button>
           </div>
+        )}
+
+        {state === "loading" && (
+          <p className="py-6 text-center font-body text-sm text-ink-dim">
+            {t("app.plans_loading")}
+          </p>
+        )}
+
+        {state === "error" && (
+          <div className="space-y-2 rounded-xl border border-surface-hi bg-bg p-4 text-center">
+            <p className="font-body text-sm text-ink">{t("app.plans_error")}</p>
+            <button
+              onClick={() => void reload()}
+              className="rounded-full bg-marquee px-4 py-2 font-body text-sm font-semibold text-on-marquee"
+            >
+              {t("app.retry")}
+            </button>
+          </div>
+        )}
+
+        {state === "ready" && (overview?.plans ?? []).filter((p) => !p.is_free).length === 0 && (
+          <p className="py-6 text-center font-body text-sm text-ink-dim">
+            {t("app.plans_empty")}
+          </p>
         )}
 
         {(overview?.plans ?? [])
@@ -237,7 +288,7 @@ export function PlansSheet({ onClose, onToast }: Props) {
 
       {topUpFor !== null && (
         <TopUpSheet
-          suggestedAmount={topUpFor}
+          suggestedAmount={topUpFor || undefined}
           onClose={() => setTopUpFor(null)}
           onSubmitted={(message) => {
             onToast(message, "success");

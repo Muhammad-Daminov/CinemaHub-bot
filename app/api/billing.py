@@ -31,6 +31,7 @@ from app.db.models.subscription import SubscriptionPlanModel
 from app.db.models.user import User
 from app.db.session import get_db_session
 from app.services.images import ImageError, get_image, store_image
+from app.services.payment_submission import DuplicateReceiptError, guard_against_duplicate
 from app.services.payment_history import payment_history
 from app.services.subscription_plans import list_plans, plan_features
 from app.services.subscription_purchase import (
@@ -251,6 +252,22 @@ async def submit_topup(
     card = await session.get(AdminCard, card_id)
     if card is None or not card.is_active:
         raise HTTPException(status_code=404, detail=t("payment.card_not_found", user.language))
+
+    # Both surfaces submit receipts; the decision that one is a duplicate
+    # lives in a single service so a guard here cannot be a guard the bot
+    # does not have. See app/services/payment_submission.py.
+    try:
+        await guard_against_duplicate(
+            session,
+            user_id=user.id,
+            purpose=PaymentPurpose.TOPUP,
+            card_id=card.id,
+            amount=amount,
+        )
+    except DuplicateReceiptError as exc:
+        raise HTTPException(
+            status_code=409, detail=t("payment.duplicate_pending", user.language)
+        ) from exc
 
     try:
         image = await store_image(session, await receipt.read(), receipt.content_type)

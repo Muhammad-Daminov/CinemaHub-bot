@@ -24,6 +24,7 @@ from app.bot.keyboards.payment import (
 )
 from app.core.config import settings
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt
+from app.services.payment_submission import DuplicateReceiptError, guard_against_duplicate
 from app.services.subscription_plans import default_paid_plan
 from app.db.models.user import SubscriptionPlan, UILanguage, User
 
@@ -156,6 +157,25 @@ async def handle_receipt_screenshot(
     if user is None:
         await message.answer(_("common.need_start"))
         await state.clear()
+        return
+
+    # The Mini App and this handler are two doors into one room. The
+    # duplicate decision lives in a service used by both, so a photo sent
+    # twice — or sent here after the same top-up was already submitted in
+    # the app — cannot become two PENDING receipts for one payment. The
+    # FSM state is cleared on success, which stops the ordinary repeat;
+    # this covers the concurrent and cross-surface cases it cannot.
+    try:
+        await guard_against_duplicate(
+            session,
+            user_id=user.id,
+            purpose=PaymentPurpose(data["purpose"]),
+            card_id=data["card_id"],
+            amount=data["amount"],
+        )
+    except DuplicateReceiptError:
+        await state.clear()
+        await message.answer(_("payment.duplicate_pending"))
         return
 
     receipt = PaymentReceipt(

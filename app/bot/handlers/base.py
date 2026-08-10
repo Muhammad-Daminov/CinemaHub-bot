@@ -13,7 +13,7 @@ keyboard sends the translated text and a stale keyboard may still show
 the previous language.
 """
 from aiogram import F, Router
-from aiogram.filters import CommandObject, CommandStart
+from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -124,7 +124,10 @@ async def handle_membership_recheck(callback: CallbackQuery, session: AsyncSessi
     await callback.answer()
 
 
-@router.message(F.text == "/help")
+# `Command`, not an exact text match: the command is now advertised in
+# Telegram's menu, and a menu tap or a group mention can arrive as
+# `/help@botname`, which an equality check silently ignores.
+@router.message(Command("help"))
 async def handle_help(message: Message, _) -> None:
     await message.answer(_("help.text"), parse_mode="HTML")
 

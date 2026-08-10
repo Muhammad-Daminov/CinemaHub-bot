@@ -42,6 +42,7 @@ from app.core.config import settings
 from app.db.session import check_db_connection, db_session_ctx
 from app.services.ai import ai_service
 from app.services.permissions import ensure_super_admin
+from app.bot.commands import register_bot_commands
 from app.services.settings_store import maintenance_is_stale
 from app.services.tmdb import tmdb_service
 
@@ -112,6 +113,21 @@ async def lifespan(app: FastAPI):
             logger.info("Scheduled maintenance last ran at %s", last_run.isoformat())
     except Exception:
         logger.exception("Could not check the scheduled-maintenance heartbeat")
+
+    # Populates Telegram's "/" menu. Without this the bot's only commands —
+    # /topup and /promo — were invisible three ways over: absent from the
+    # reply keyboard, absent from /help, and absent from the command menu,
+    # which is where a Telegram user actually looks. Registered here, in
+    # the one startup path, so the menu cannot drift from the handlers.
+    #
+    # Per-language scopes, because a Russian speaker should not be offered
+    # Uzbek command descriptions. Failure is logged, never fatal: a bot
+    # that refuses to boot because a cosmetic menu did not update would be
+    # a far worse outage than a stale menu.
+    try:
+        await register_bot_commands()
+    except Exception:
+        logger.exception("Could not register the Telegram command menu")
 
     if settings.WEBHOOK_BASE_URL:
         await bot.set_webhook(

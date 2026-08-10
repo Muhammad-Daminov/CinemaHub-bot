@@ -5,7 +5,7 @@
  * bot reads, so changing it here also changes the bot's replies. That is
  * the feature, not a side effect — one setting, two surfaces.
  */
-import { Check, ChevronRight, Copy } from "lucide-react";
+import { Check, Copy, Plus, Star } from "lucide-react";
 import { useState } from "react";
 import { LANGUAGES, useT, type Language } from "../lib/i18n";
 import type { UserProfile } from "../types/movie";
@@ -14,8 +14,16 @@ import { PaymentHistory } from "./PaymentHistory";
 interface Props {
   profile: UserProfile | null;
   onChangeLanguage: (language: Language) => Promise<void>;
-  /** Tapping the balance opens the plan catalogue — FR-4's entry point. */
   onOpenPlans: () => void;
+  /**
+   * Opens the canonical top-up sheet directly.
+   *
+   * Separate from `onOpenPlans` on purpose: adding funds and buying a
+   * subscription are two different intentions, and collapsing them meant
+   * the only route to paying was to attempt a purchase you could not
+   * afford and read the error.
+   */
+  onOpenTopUp: () => void;
 }
 
 function Row({ label, value }: { label: string; value: string }) {
@@ -27,7 +35,7 @@ function Row({ label, value }: { label: string; value: string }) {
   );
 }
 
-export function SettingsPage({ profile, onChangeLanguage, onOpenPlans }: Props) {
+export function SettingsPage({ profile, onChangeLanguage, onOpenPlans, onOpenTopUp }: Props) {
   const t = useT();
   const [copied, setCopied] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -68,22 +76,44 @@ export function SettingsPage({ profile, onChangeLanguage, onOpenPlans }: Props) 
         <div className="rounded-xl border border-surface-hi bg-surface px-3">
           <Row label={t("app.settings_name")} value={profile.full_name ?? "—"} />
           <Row label={t("app.settings_telegram_id")} value={String(profile.telegram_id)} />
-          {/* A button, not a Row: the balance is the way into the plan
-              catalogue, which is what makes the purchase flow reachable. */}
-          <button
-            onClick={onOpenPlans}
-            className="flex w-full items-center justify-between gap-3 border-b border-surface-hi py-2.5 text-left last:border-b-0"
-          >
-            <span className="font-body text-sm text-ink-dim">{t("app.settings_balance")}</span>
-            <span className="flex items-center gap-1 font-body text-sm text-marquee">
-              {profile.balance.toFixed(2)}
-              <ChevronRight size={14} />
-            </span>
-          </button>
           <Row
             label={t("app.settings_premium")}
             value={t(profile.is_premium ? "app.settings_premium_yes" : "app.settings_premium_no")}
           />
+        </div>
+      </section>
+
+      {/*
+        Balance and the two things you can do with it, named.
+
+        This used to be a single row whose only affordance was a chevron
+        beside a number: tapping it opened the plan catalogue, and the
+        only way to reach top-up at all was to attempt a purchase you
+        could not afford. Money should not be a puzzle — the balance is
+        stated, and both actions say what they do.
+      */}
+      <section>
+        <h2 className="mb-1 font-display text-sm font-medium tracking-wide text-ink-dim">
+          {t("app.balance_title")}
+        </h2>
+        <div className="space-y-2 rounded-xl border border-surface-hi bg-surface p-3">
+          <p className="font-display text-2xl font-semibold text-marquee">
+            {profile.balance.toFixed(2)}
+          </p>
+          <p className="font-body text-[11px] text-ink-dim">{t("app.balance_hint")}</p>
+
+          <button
+            onClick={onOpenTopUp}
+            className="flex w-full items-center justify-center gap-1.5 rounded-full bg-marquee py-2.5 font-body text-sm font-semibold text-on-marquee transition-transform active:scale-95"
+          >
+            <Plus size={16} /> {t("app.balance_topup_action")}
+          </button>
+          <button
+            onClick={onOpenPlans}
+            className="flex w-full items-center justify-center gap-1.5 rounded-full border border-surface-hi py-2.5 font-body text-sm text-ink transition-transform active:scale-95"
+          >
+            <Star size={15} /> {t("app.balance_buy_plan")}
+          </button>
         </div>
       </section>
 
