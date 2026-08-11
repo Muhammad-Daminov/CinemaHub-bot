@@ -16,6 +16,7 @@ from aiogram.types import Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.catalog import get_title_card_keyboard
+from app.services.access import unlocks_premium_by_id
 from app.bot.keyboards.main_menu import MENU_AI, menu_texts
 from app.bot.middlewares.ai_quota import AIQuotaMiddleware
 from app.db.models.user import UILanguage
@@ -83,11 +84,17 @@ async def handle_ai_prompt(
     )
 
     names = await content_service.localized_names(session, result.titles, lang)
+    # Same one-per-response entitlement lookup the browse pages use, so a
+    # recommended premium title carries the subscribe button too rather
+    # than a Watch button that would be refused.
+    unlocked = await unlocks_premium_by_id(session, user_id)
 
     await message.answer(_("ai.reason", reason=result.reason))
     for title in result.titles:
         caption = _("ai.card", name=names.get(title.id, title.name), year=title.year or "?")
-        keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
+        keyboard = get_title_card_keyboard(
+            title.id, lang, is_favorite=title.id in saved, locked=title.is_premium and not unlocked
+        )
         if title.poster_url:
             await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)
         else:

@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.admin_payment import notify_admins_of_new_receipt
+from app.bot.keyboards.catalog import SUBSCRIBE_CALLBACK
 from app.bot.keyboards.main_menu import MENU_PREMIUM, menu_texts
 from app.bot.keyboards.payment import (
     SELECT_CARD_PREFIX,
@@ -26,6 +27,8 @@ from app.core.config import settings
 from app.db.models.payment import AdminCard, PaymentPurpose, PaymentReceipt
 from app.services.payment_submission import DuplicateReceiptError, guard_against_duplicate
 from app.services.subscription_plans import default_paid_plan
+from app.services.subscriptions import is_user_premium
+from app.services.users import get_user_id
 from app.db.models.user import SubscriptionPlan, UILanguage, User
 
 router = Router(name="payment")
@@ -84,20 +87,32 @@ def _card_prompt_text(card: AdminCard, _) -> str:
     )
 
 
-@router.message(F.text.in_(menu_texts(MENU_PREMIUM)))
-async def handle_premium_start(
-    message: Message, state: FSMContext, session: AsyncSession, lang: UILanguage, _
+async def start_subscription_purchase(
+    target: Message | CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    lang: UILanguage,
+    _,
 ) -> None:
-    # Price and identity come from the plan table. PREMIUM_PRICE is only a
-    # fallback for a database with no active paid plan, which should not
-    # happen but must not make the button silently do nothing.
+    """
+    Begins a subscription purchase — the bot's one way to sell one.
+
+    Extracted so the Premium menu button and the subscribe button on a
+    locked title card run *identical* code. The alternative was a second
+    handler that also reads a plan and starts a payment, which is how a
+    project ends up with two prices for the same subscription.
+
+    Price and identity come from the plan table; nothing is passed in by
+    the caller, so neither entry point can name an amount.
+    """
+    message = target.message if isinstance(target, CallbackQuery) else target
     plan = await default_paid_plan(session)
     if plan is None:
         await message.answer(_("payment.no_plans"))
         return
 
     await _start_payment(
-        message, state, session,
+        target, state, session,
         amount=float(plan.price),
         purpose=PaymentPurpose.SUBSCRIPTION,
         subscription_plan=SubscriptionPlan.PREMIUM,
@@ -105,6 +120,38 @@ async def handle_premium_start(
         _=_,
         plan_id=plan.id,
     )
+
+
+@router.message(F.text.in_(menu_texts(MENU_PREMIUM)))
+async def handle_premium_start(
+    message: Message, state: FSMContext, session: AsyncSession, lang: UILanguage, _
+) -> None:
+    await start_subscription_purchase(message, state, session, lang, _)
+
+
+@router.callback_query(F.data == SUBSCRIBE_CALLBACK)
+async def handle_subscribe_from_card(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, lang: UILanguage, _
+) -> None:
+    """
+    The subscribe button on a locked title card.
+
+    Deliberately thin: it answers the callback and hands straight to the
+    shared starter. Nothing about *which* film was on screen is carried
+    over, because a subscription is not sold per title — carrying an id
+    here would be the first step towards a second purchase concept.
+
+    An active subscriber is told so rather than being walked into paying
+    twice; they reach this only from a stale card, since a card built for
+    them is not locked.
+    """
+    viewer_id = await get_user_id(session, callback.from_user.id)
+    if viewer_id is not None and await is_user_premium(session, viewer_id):
+        await callback.answer(_("payment.already_subscribed"), show_alert=True)
+        return
+
+    await callback.answer()
+    await start_subscription_purchase(callback, state, session, lang, _)
 
 
 @router.message(Command("topup"))
