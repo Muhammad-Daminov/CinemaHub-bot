@@ -15,6 +15,20 @@ export interface Movie {
   episode_count: number;
   /** Whether the current user has saved this title. */
   is_favorite: boolean;
+  /**
+   * The public code a viewer can type — in the bot chat or this app's
+   * search box — to reach this title. Shown so the number is learnable.
+   */
+  code: string | null;
+  /** Whether the title is subscribers-only. The same for every viewer. */
+  is_premium: boolean;
+  /**
+   * Whether *this* viewer is locked out of it: premium, and they hold no
+   * active subscription. A rendering hint only — the server re-decides on
+   * every watch request, so forcing this to false in a debugger changes
+   * the icon and nothing else.
+   */
+  is_locked: boolean;
 }
 
 /** Mirrors CollectionOut in app/api/movies.py. */

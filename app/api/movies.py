@@ -39,7 +39,7 @@ from app.services.content import (
 from app.services.banners import resolve_for_user
 from app.services.personalization import get_profile
 from app.services.images import get_image
-from app.services.access import access_message_key, check_title_access
+from app.services.access import access_message_key, check_title_access, unlocks_premium
 from app.services.streaming import streaming_service
 
 logger = logging.getLogger(__name__)
@@ -66,6 +66,19 @@ class MovieOut(BaseModel):
     # the alternative, asking per card, is five round trips for something
     # a single IN-clause already knows.
     is_favorite: bool = False
+    # The public code a viewer can type to reach this title. Exposed so
+    # the app can *show* it: a code nobody can see is a code nobody types.
+    code: str | None = None
+    # Whether this title is subscribers-only. A property of the title, the
+    # same for everyone.
+    is_premium: bool = False
+    # Whether **this caller** is locked out of it — premium, and they have
+    # no active subscription. Sent so the client can draw a padlock instead
+    # of a play button, and deliberately computed by the server: the client
+    # cannot be trusted to work out its own entitlement, and this field is
+    # a rendering hint, never the enforcement. `POST /watch` re-decides
+    # from scratch, so flipping this in a debugger changes only the icon.
+    is_locked: bool = False
 
 
 class WatchResponse(BaseModel):
@@ -149,12 +162,20 @@ def _to_movie_out(
     episode_count: int = 1,
     is_favorite: bool = False,
     localized: LocalizedTitle | None = None,
+    premium_unlocked: bool = True,
 ) -> MovieOut:
     """
     `localized` carries the name and description as the viewer's language
     renders them. Resolution happens here, server-side, so the client never
     learns that a title has more than one name — the same JSON shape serves
     every language.
+
+    `premium_unlocked` is the viewer's entitlement, resolved once per
+    response by the caller rather than per card — it is a property of the
+    person, not the title. It defaults to True so a card is never shown as
+    locked because a caller forgot to pass it; the padlock is cosmetic and
+    `POST /watch` is the gate, so the failure mode of a wrong default must
+    be a missing padlock, never a refused subscriber.
     """
     text = localized or LocalizedTitle(name=title.name, description=title.description)
     return MovieOut(
@@ -168,6 +189,9 @@ def _to_movie_out(
         view_count=title.view_count,
         episode_count=episode_count,
         is_favorite=is_favorite,
+        code=title.code,
+        is_premium=title.is_premium,
+        is_locked=title.is_premium and not premium_unlocked,
     )
 
 
@@ -182,8 +206,20 @@ async def _to_movie_outs(
     counts = await content_service.episode_counts(session, title_ids)
     saved = await content_service.favorite_title_ids(session, user.id, title_ids)
     localized = await content_service.localized_titles(session, titles, user.language)
+    # One entitlement lookup for the whole page. Asking per card would be
+    # a query per card, and asking `check_title_access` per card would also
+    # hit Telegram's membership API per card — neither is affordable on a
+    # home screen, and neither is needed: whether the *viewer* holds a
+    # subscription does not vary by title.
+    premium_unlocked = await unlocks_premium(session, user)
     return [
-        _to_movie_out(title, counts.get(title.id, 1), title.id in saved, localized.get(title.id))
+        _to_movie_out(
+            title,
+            counts.get(title.id, 1),
+            title.id in saved,
+            localized.get(title.id),
+            premium_unlocked,
+        )
         for title in titles
     ]
 
@@ -532,7 +568,8 @@ async def get_movie(
     counts = await content_service.episode_counts(session, [title.id])
     saved = await content_service.is_favorite(session, user.id, title.id)
     localized = await content_service.localized_title(session, title, user.language)
-    return _to_movie_out(title, counts.get(title.id, 1), saved, localized)
+    premium_unlocked = await unlocks_premium(session, user)
+    return _to_movie_out(title, counts.get(title.id, 1), saved, localized, premium_unlocked)
 
 
 @router.get("/{movie_id}/seasons", response_model=list[int])

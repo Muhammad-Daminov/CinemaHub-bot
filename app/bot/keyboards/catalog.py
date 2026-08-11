@@ -47,6 +47,13 @@ SEASON_PREFIX = "ssn:"
 EPISODE_PAGE_PREFIX = "eps:"
 FAVORITE_PREFIX = "fav:"
 
+# Carries no title id on purpose. A subscription is not bought *for* a
+# film — it unlocks every premium title — and putting an id here would
+# invite a handler that looks like it sells one film, which is a second
+# purchase concept this project does not have. The payment handler reads
+# the plan from the database exactly as the Premium menu button does.
+SUBSCRIBE_CALLBACK = "subscribe"
+
 NOOP = "cat:noop"
 
 EPISODES_PAGE_SIZE = 8
@@ -137,7 +144,7 @@ def get_genres_keyboard(genres: list[str], lang: UILanguage) -> InlineKeyboardMa
 
 
 def get_title_card_keyboard(
-    title_id: int, lang: UILanguage, is_favorite: bool = False
+    title_id: int, lang: UILanguage, is_favorite: bool = False, locked: bool = False
 ) -> InlineKeyboardMarkup:
     """
     Watch + favourite toggle for one title card. Watch opens the title
@@ -146,14 +153,30 @@ def get_title_card_keyboard(
 
     The heart's label carries the current state, so tapping it only needs
     to swap this markup rather than re-send the card.
+
+    `locked` means premium-with-no-entitlement, and swaps Watch for the
+    subscription button rather than adding one beside it. Watch could only
+    ever be refused for this viewer, and a button whose single outcome is
+    an error message is worse than no button — this is the same reasoning
+    that removes the play controls from a locked card in the Mini App.
+
+    It is a *rendering* decision and nothing more. Delivery is gated again
+    in `deliver_and_warn`, so a stale card someone scrolls back to cannot
+    hand out a file, and a card built with `locked=False` by mistake still
+    cannot.
     """
     heart_key = "catalog.btn_fav_remove" if is_favorite else "catalog.btn_fav_add"
+    primary = (
+        InlineKeyboardButton(text=t("catalog.btn_subscribe", lang), callback_data=SUBSCRIBE_CALLBACK)
+        if locked
+        else InlineKeyboardButton(
+            text=t("catalog.btn_watch", lang), callback_data=f"{TITLE_PREFIX}{title_id}"
+        )
+    )
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                InlineKeyboardButton(
-                    text=t("catalog.btn_watch", lang), callback_data=f"{TITLE_PREFIX}{title_id}"
-                ),
+                primary,
                 InlineKeyboardButton(
                     text=t(heart_key, lang), callback_data=f"{FAVORITE_PREFIX}{title_id}"
                 ),

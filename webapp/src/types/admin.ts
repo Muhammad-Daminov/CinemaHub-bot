@@ -57,6 +57,10 @@ export interface AdminTitle {
   created_at: string;
   /** Set when an admin uploaded a custom poster; overrides poster_url. */
   poster_image_id?: number | null;
+  /** The public code viewers type to reach this title. Assigned on creation. */
+  code?: string | null;
+  /** Subscribers-only. */
+  is_premium: boolean;
 }
 
 export interface AdminTitleListItem extends AdminTitle {
@@ -75,6 +79,8 @@ export interface TitleListParams {
   q?: string;
   content_type?: ContentType;
   is_active?: boolean;
+  /** Omit for "all" — the server filters, so paging and `total` stay honest. */
+  is_premium?: boolean;
   page?: number;
   page_size?: number;
 }
@@ -89,9 +95,20 @@ export interface TitleInput {
   poster_url?: string | null;
   tmdb_id?: number | null;
   rating?: number | null;
+  is_premium?: boolean;
 }
 
-export type TitleUpdateInput = Partial<TitleInput> & { is_active?: boolean };
+export type TitleUpdateInput = Partial<TitleInput> & {
+  is_active?: boolean;
+  /** Reassigning a code 409s when it belongs to another title. */
+  code?: string;
+};
+
+/** Mirrors TrialSettingsOut in app/api/admin.py. */
+export interface TrialSettings {
+  enabled: boolean;
+  days: number;
+}
 
 export interface AdminEpisode {
   id: number;
@@ -241,12 +258,20 @@ export interface AdminCollection {
   created_at: string;
   /** Set when an admin uploaded a custom poster; overrides poster_url. */
   poster_image_id?: number | null;
+  /** The public code viewers type to reach this title. Assigned on creation. */
+  code?: string | null;
+  /** Subscribers-only. */
+  is_premium: boolean;
 }
 
 export interface AdminCollectionListItem extends AdminCollection {
   title_count: number;
   /** Set when an admin uploaded a custom poster; overrides poster_url. */
   poster_image_id?: number | null;
+  /** The public code viewers type to reach this title. Assigned on creation. */
+  code?: string | null;
+  /** Subscribers-only. */
+  is_premium: boolean;
 }
 
 export interface CollectionInput {

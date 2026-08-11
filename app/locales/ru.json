@@ -324,5 +324,14 @@
   "access.premium_required": "🔒 Этот фильм доступен только по подписке. Откройте приложение, чтобы оформить её.",
   "catalog.code_not_found": "🔍 Фильм с кодом <code>{code}</code> не найден.",
   "admin.trial_enabled": "Пробная подписка включена",
-  "admin.trial_disabled": "Пробная подписка отключена"
+  "admin.trial_disabled": "Пробная подписка отключена",
+  "catalog.premium_badge": "⭐ Премиум",
+  "catalog.code_label": "🔢 Код: <code>{code}</code>",
+  "app.premium_badge": "Премиум",
+  "app.premium_locked": "Нужна подписка",
+  "app.premium_locked_hint": "Этот фильм доступен только по подписке. Оформите её — и он сразу откроется.",
+  "app.code_label": "Код",
+  "app.premium_cta": "Оформить подписку",
+  "catalog.btn_subscribe": "⭐ Оформить подписку",
+  "payment.already_subscribed": "У вас есть активная подписка — этот фильм уже доступен."
 }

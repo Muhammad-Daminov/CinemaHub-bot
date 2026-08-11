@@ -1,4 +1,4 @@
-import { Heart, Play, Star, X } from "lucide-react";
+import { Crown, Heart, Lock, Play, Star, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import { api } from "../lib/api";
 import { useT } from "../lib/i18n";
@@ -18,6 +18,12 @@ interface Props {
   audioLanguage: AudioLanguageFilter | null;
   isFavorite: boolean;
   onToggleFavorite: (movie: Movie) => void;
+  /**
+   * Opens the app's one subscription sheet. Threaded in from App rather
+   * than rendered here so there stays exactly one PlansSheet instance and
+   * one place that refreshes state after a purchase.
+   */
+  onOpenPlans: () => void;
 }
 
 export function MovieDetailSheet({
@@ -28,6 +34,7 @@ export function MovieDetailSheet({
   audioLanguage,
   isFavorite,
   onToggleFavorite,
+  onOpenPlans,
 }: Props) {
   const t = useT();
   const [similar, setSimilar] = useState<Movie[]>([]);
@@ -98,13 +105,62 @@ export function MovieDetailSheet({
             </span>
           )}
           {movie.genres && <span>{movie.genres.map((g) => t(`genre.${g}`)).join(", ")}</span>}
+          {/* The number a viewer can type in the bot or the search box to
+              come straight back here. Shown wherever the title is, because
+              a code that is never displayed is a code nobody can use. */}
+          {movie.code && (
+            <span className="text-ink-dim">
+              {t("app.code_label")} {movie.code}
+            </span>
+          )}
         </div>
+
+        {movie.is_premium && (
+          <div
+            className={`mb-3 flex items-center gap-2 rounded-xl px-3 py-2 text-xs ${
+              movie.is_locked
+                ? "bg-surface-hi text-ink"
+                : "bg-surface text-marquee"
+            }`}
+          >
+            {movie.is_locked ? <Lock size={14} /> : <Crown size={14} />}
+            <span>
+              {movie.is_locked ? t("app.premium_locked_hint") : t("app.premium_badge")}
+            </span>
+          </div>
+        )}
+
+        {/*
+          The way out of the locked state. Without it the padlock is a dead
+          end: the viewer is told a subscription is needed and left to find
+          the settings screen on their own.
+
+          It opens the existing sheet and does nothing else — no plan is
+          chosen, nothing is reserved, and no request is sent. Opening a
+          locked film must never begin a purchase; the buy still happens
+          only where it always has, behind the plan's own button.
+        */}
+        {movie.is_locked && (
+          <button
+            onClick={onOpenPlans}
+            className="mb-4 flex w-full items-center justify-center gap-1.5 rounded-full bg-marquee py-3 font-semibold text-on-marquee shadow-marquee transition-transform active:scale-95"
+          >
+            <Crown size={16} />
+            {t("app.premium_cta")}
+          </button>
+        )}
 
         {movie.description && (
           <p className="mb-4 text-sm leading-relaxed text-ink-dim">{movie.description}</p>
         )}
 
-        <EpisodeSelector movieId={movie.id} onPlay={(episode) => onWatch(movie, episode)} />
+        {/* A locked title offers no play control at all — neither the
+            episode rows nor the watch button below. The server would
+            refuse either one, so showing them would only produce a tap
+            that fails; the notice above says what to do instead. */}
+        {!movie.is_locked && (
+          <EpisodeSelector movieId={movie.id} onPlay={(episode) => onWatch(movie, episode)} />
+        )}
 
         {similar.length > 0 && (
           <section className="mb-4">
@@ -119,7 +175,7 @@ export function MovieDetailSheet({
 
         {/* Hidden when the episode list is up: each row is its own play
             control, and this button would silently start episode 1. */}
-        {!hasEpisodeChooser && (
+        {!hasEpisodeChooser && !movie.is_locked && (
         <button
           onClick={() => onWatch(movie)}
           className="flex w-full items-center justify-center gap-1.5 rounded-full bg-marquee py-3 font-semibold text-on-marquee shadow-marquee transition-transform active:scale-95"

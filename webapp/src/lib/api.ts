@@ -47,6 +47,7 @@ import type {
   BroadcastAudience,
   BroadcastAudienceSize,
   MembershipSettings,
+  TrialSettings,
   EpisodeInput,
   MediaFileInput,
   PaymentStatus,
@@ -124,6 +125,16 @@ export const api = {
       audio_language?: AudioLanguageFilter;
     } = {},
   ) => request<Movie[]>(`/movies${toQuery(params)}`),
+  /**
+   * One title, freshly resolved for the caller.
+   *
+   * Exists so a card held in state can be re-asked after something that
+   * changes entitlement — buying a subscription, most of all. `is_locked`
+   * is decided by the server per request, so a snapshot taken before the
+   * purchase would keep showing a padlock until the app was navigated away
+   * from and back.
+   */
+  movie: (movieId: number) => request<Movie>(`/movies/${movieId}`),
   topMovies: (limit = 10, audio_language?: AudioLanguageFilter) =>
     request<Movie[]>(`/movies/top${toQuery({ limit, audio_language })}`),
   searchMovies: (q: string, audio_language?: AudioLanguageFilter) =>
@@ -389,6 +400,9 @@ export const adminApi = {
       require_membership,
       required_channel,
     }),
+  trialSettings: () => request<TrialSettings>("/admin/settings/trial"),
+  saveTrialSettings: (enabled: boolean, days: number) =>
+    send<TrialSettings>("/admin/settings/trial", "PUT", { enabled, days }),
 
   // ---------- appearance: themes ----------
   themes: () => request<AdminTheme[]>("/admin/themes"),

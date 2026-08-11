@@ -403,10 +403,21 @@ async def test_the_search_endpoint_matches_translations(db_session, as_user):
         assert [item["id"] for item in results] == [title.id]
 
 
-async def test_the_response_shape_is_unchanged(db_session, as_user):
+async def test_the_response_shape_exposes_no_translation_internals(db_session, as_user):
     """
     Resolution is server-side: the client never learns a title has more
     than one name, so no frontend change was needed for any of this.
+
+    The card is allowed to grow — `code`, `is_premium` and `is_locked`
+    were added deliberately when premium titles shipped — but it must
+    never grow a *translation* field. `title` and `description` stay
+    single, already-resolved strings; the day a `translations` list or a
+    `name_ru` appears here, the resolution has leaked to the client and
+    the two surfaces can start disagreeing about what a film is called.
+
+    So this asserts both halves: the exact set (a new field is a decision,
+    not an accident) and, separately, that nothing translation-shaped is
+    in it — which is the part that must hold whatever else is added.
     """
     user = await make_user(db_session, 9405)
     title = await _title(db_session, "Qum sayyorasi")
@@ -426,4 +437,11 @@ async def test_the_response_shape_is_unchanged(db_session, as_user):
         "view_count",
         "episode_count",
         "is_favorite",
+        "code",
+        "is_premium",
+        "is_locked",
     }
+    assert isinstance(card["title"], str)
+    assert not any(
+        "translation" in key or key.endswith(("_uz", "_ru", "_en")) for key in card
+    )

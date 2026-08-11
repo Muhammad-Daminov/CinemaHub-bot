@@ -66,6 +66,56 @@ class AccessResult:
         return self.decision is AccessDecision.ALLOWED
 
 
+async def unlocks_premium(session: AsyncSession, user: User) -> bool:
+    """
+    Whether this viewer may open premium titles at all — the one question
+    behind both the gate and the padlock the Mini App draws.
+
+    Split out so a *listing* can answer "is this title locked for you?"
+    without running the whole per-title check. `check_title_access` asks
+    about one title and may call Telegram for the membership test; a home
+    screen renders sixty cards and must not. The premium half needs
+    neither the title nor the network — it is a property of the viewer —
+    so asking it once per response is both correct and cheap.
+
+    **A trial counts.** A trial is a real `chp_subscriptions` row with an
+    expiry, and giving away a taste of premium is the entire point of
+    offering one; `is_user_premium` therefore treats it exactly like a
+    purchased plan. That is a deliberate product decision, recorded here
+    because "does the free trial unlock paid films?" must never be an
+    accident of which query happened to be reused. If it must ever change,
+    change it here — `Subscription.plan_id IS NULL` distinguishes a trial
+    from a purchase — and not by adding a second premium test elsewhere.
+
+    Administrators pass: they have to be able to inspect what they are
+    curating, and the alternative is an operator who cannot check whether
+    the file they just uploaded plays.
+    """
+    if user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
+        return True
+    return await is_user_premium(session, user.id)
+
+
+async def unlocks_premium_by_id(session: AsyncSession, user_id: int | None) -> bool:
+    """
+    `unlocks_premium` for callers holding an internal user id.
+
+    An adapter, not a second rule — it loads the row and asks the same
+    function. The bot's card builders carry a `chp_users.id` (that is what
+    the favourites lookup needs) while the rule takes the row itself.
+
+    An id that resolves to nothing, or no id at all, is treated as no
+    entitlement: someone who has never pressed /start has no subscription,
+    so the locked card is the honest thing to show them. This decides only
+    what a *card* looks like; delivery is gated separately and fails
+    closed on the same unknown identity.
+    """
+    if user_id is None:
+        return False
+    viewer = await session.get(User, user_id)
+    return await unlocks_premium(session, viewer) if viewer is not None else False
+
+
 async def check_title_access(
     session: AsyncSession, bot: Bot, user: User, title: Title
 ) -> AccessResult:
@@ -82,8 +132,9 @@ async def check_title_access(
         return AccessResult(AccessDecision.ALLOWED, config)
 
     # Asked once and reused for both gates: a subscription answers the
-    # premium question and excuses the membership one.
-    premium = await is_user_premium(session, user.id)
+    # premium question and excuses the membership one. Shared with the
+    # listing path so a card can never show unlocked while this refuses.
+    premium = await unlocks_premium(session, user)
     if premium:
         return AccessResult(AccessDecision.ALLOWED, config)
 

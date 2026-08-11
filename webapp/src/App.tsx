@@ -142,6 +142,13 @@ function Shell({
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
   const [plansOpen, setPlansOpen] = useState(false);
+  // Bumped when something changes what this viewer may watch — today, only
+  // closing the plans sheet. Every catalog row keys off it, because
+  // `is_locked` is decided server-side per request: after a purchase the
+  // rows in state still carry padlocks that are no longer true, and the
+  // viewer would otherwise have to leave the screen and come back to see
+  // what they just paid for.
+  const [catalogVersion, setCatalogVersion] = useState(0);
   // The same TopUpSheet the plans sheet opens on a shortfall. One canonical
   // top-up flow, reachable directly as well as from a failed purchase.
   const [topUpOpen, setTopUpOpen] = useState(false);
@@ -261,7 +268,7 @@ function Shell({
         }
       })
       .catch(() => setCollectionRows([]));
-  }, [baseRows, audioLanguage, t, absorbFavorites]);
+  }, [baseRows, audioLanguage, t, absorbFavorites, catalogVersion]);
 
   useEffect(() => {
     if (!toast) return;
@@ -374,6 +381,12 @@ function Shell({
             view_count: 0,
             episode_count: 1,
             is_favorite: false,
+            // A campaign slide with no title behind it is artwork, not a
+            // film: it has no code, and it is never premium, so it can
+            // never render as locked.
+            code: null,
+            is_premium: false,
+            is_locked: false,
           },
       )
     : (() => {
@@ -497,6 +510,7 @@ function Shell({
           audioLanguage={audioLanguage}
           isFavorite={favorites.has(selectedMovie.id)}
           onToggleFavorite={handleToggleFavorite}
+          onOpenPlans={() => setPlansOpen(true)}
         />
       )}
       {plansOpen && (
@@ -504,7 +518,35 @@ function Shell({
           onClose={() => {
             setPlansOpen(false);
             // Balance and subscription both move on purchase.
-            void api.me().then(setProfile).catch(() => undefined);
+            const wasPremium = profile?.is_premium ?? false;
+            const openId = selectedMovie?.id ?? null;
+            void api
+              .me()
+              .then((fresh) => {
+                setProfile(fresh);
+                // Only when entitlement actually changed. Closing the sheet
+                // without buying is the common case, and refetching every
+                // row for it would spend a handful of requests to arrive at
+                // the identical screen.
+                if (fresh.is_premium === wasPremium) return;
+                // Every `is_locked` in state was resolved before the
+                // purchase, so all of it is now wrong. The server decides
+                // this per request; the client cannot recompute it.
+                setCatalogVersion((version) => version + 1);
+                if (openId === null) return;
+                void api
+                  .movie(openId)
+                  .then((movie) =>
+                    // If the viewer closed the sheet or opened a different
+                    // film while this was in flight, the late answer must
+                    // not resurrect or replace what they are looking at now.
+                    setSelectedMovie((latest) =>
+                      latest && latest.id === openId ? movie : latest,
+                    ),
+                  )
+                  .catch(() => undefined);
+              })
+              .catch(() => undefined);
           }}
           onToast={(message, tone) => setToast({ message, tone })}
         />

@@ -1,4 +1,4 @@
-import { Heart, Star } from "lucide-react";
+import { Crown, Heart, Lock, Star } from "lucide-react";
 import { useT } from "../lib/i18n";
 import type { Movie } from "../types/movie";
 
@@ -42,6 +42,25 @@ export function MovieCard({ movie, onSelect, isFavorite, onToggleFavorite }: Pro
           <div className="flex h-full items-center justify-center px-2 text-center font-display text-sm text-ink-dim">
             {movie.title}
           </div>
+        )}
+        {/*
+          Three states, distinguished on the card itself: a normal title
+          gets neither mark, a premium title the viewer can open gets the
+          crown, and one they cannot gets the padlock over a dimmed poster.
+          The dimming is what makes "locked" readable at a glance without
+          reading the badge — and it is presentation only, since the server
+          refuses the watch request regardless of what is drawn here.
+        */}
+        {movie.is_premium && (
+          <div
+            className="absolute left-1.5 bottom-1.5 flex items-center gap-0.5 rounded-full bg-bg/80 px-1.5 py-0.5 font-mono text-[11px] text-marquee backdrop-blur"
+            aria-label={t(movie.is_locked ? "app.premium_locked" : "app.premium_badge")}
+          >
+            {movie.is_locked ? <Lock size={10} /> : <Crown size={10} />}
+          </div>
+        )}
+        {movie.is_locked && (
+          <div className="pointer-events-none absolute inset-0 bg-bg/45" aria-hidden />
         )}
         {movie.rating != null && (
           <div className="absolute right-1.5 top-1.5 flex items-center gap-0.5 rounded-full bg-bg/80 px-1.5 py-0.5 font-mono text-[11px] text-marquee backdrop-blur">

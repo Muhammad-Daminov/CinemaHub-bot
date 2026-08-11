@@ -57,7 +57,12 @@ from app.bot.keyboards.catalog import (
 from app.bot.keyboards.main_menu import MENU_MOVIES, menu_texts
 from app.db.models.content import ContentType, Title
 from app.db.models.user import UILanguage, User
-from app.services.access import access_message_key, check_title_access
+from app.services.access import (
+    access_message_key,
+    check_title_access,
+    unlocks_premium,
+    unlocks_premium_by_id,
+)
 from app.services.achievements import continue_watching
 from app.services.content import TitlePage, content_service
 from app.services.users import get_user_id
@@ -80,12 +85,23 @@ def _format_card(title: Title, _, name: str | None = None) -> str:
         meta.append(f"⭐ {title.rating}")
     if not title.is_single_episode:
         meta.append(_("catalog.serial_badge"))
+    # Marks the title as subscribers-only wherever it is shown, so the
+    # requirement is visible before the viewer taps and is refused rather
+    # than only in the refusal itself.
+    if title.is_premium:
+        meta.append(_("catalog.premium_badge"))
     if meta:
         lines.append(" · ".join(meta))
     if title.genres:
         # Stored value is a canonical key ("science_fiction"); the hashtag
         # shows the viewer's own label for it.
         lines.append(" ".join(f"#{_(f'genre.{g}')}" for g in title.genres))
+    # The code is shown on every card, which is what makes code search
+    # discoverable at all: a viewer learns the number here and can type it
+    # later, or pass it to someone else. Monospace so it can be copied by
+    # tapping in every Telegram client.
+    if title.code:
+        lines.append(_("catalog.code_label", code=title.code))
     return "\n".join(lines)
 
 
@@ -111,10 +127,16 @@ async def _send_page(
         else set()
     )
     names = await content_service.localized_names(session, page.titles, lang)
+    # Asked once for the page, never per card: whether the *viewer* holds a
+    # subscription does not vary by title, and `check_title_access` would
+    # also ask Telegram about channel membership once per card.
+    unlocked = await unlocks_premium_by_id(session, user_id)
 
     for title in page.titles:
         caption = _format_card(title, _, names.get(title.id))
-        keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
+        keyboard = get_title_card_keyboard(
+            title.id, lang, is_favorite=title.id in saved, locked=title.is_premium and not unlocked
+        )
         if title.poster_url:
             await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)
         else:
@@ -306,9 +328,18 @@ async def handle_favorite_toggle(
 
     saved = await content_service.toggle_favorite(session, user_id, title_id)
 
+    # Recomputed rather than assumed: this rebuilds the whole markup, so
+    # without it a heart tap would quietly replace the subscribe button
+    # with a Watch button that only ever refuses.
+    title = await session.get(Title, title_id)
+    unlocked = await unlocks_premium_by_id(session, user_id)
+    locked = bool(title and title.is_premium and not unlocked)
+
     try:
         await callback.message.edit_reply_markup(
-            reply_markup=get_title_card_keyboard(title_id, lang, is_favorite=saved)
+            reply_markup=get_title_card_keyboard(
+                title_id, lang, is_favorite=saved, locked=locked
+            )
         )
     except Exception:  # noqa: BLE001 — card may be too old to edit; the toast still confirms it
         pass
@@ -440,13 +471,6 @@ async def handle_movie_code(
         await message.answer(_("common.need_start"))
         return
 
-    access = await check_title_access(session, message.bot, user, title)
-    if not access.allowed:
-        await message.answer(
-            _(access_message_key(access.decision), channel=access.membership.channel)
-        )
-        return
-
     # Rendered with the same card builder the browse and search pages use,
     # so a code produces exactly the title card a search would — and its
     # button enters the existing open-title flow, which enforces access
@@ -454,7 +478,32 @@ async def handle_movie_code(
     saved = await content_service.favorite_title_ids(session, user.id, [title.id])
     names = await content_service.localized_names(session, [title], lang)
     caption = _format_card(title, _, names.get(title.id))
-    keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
+    keyboard = get_title_card_keyboard(
+        title.id,
+        lang,
+        is_favorite=title.id in saved,
+        locked=title.is_premium and not await unlocks_premium(session, user),
+    )
+
+    # A title the viewer cannot open is still *shown*, with the reason
+    # under it — the same thing the Mini App does by drawing a padlock.
+    #
+    # This handler used to answer a bare refusal and show nothing, which
+    # was wrong twice over: it disagreed with the Mini App about what a
+    # code does, and it contradicted the membership policy, which gates
+    # delivery and deliberately leaves the catalog open. It also sold
+    # nothing — someone who typed a code off a poster learned only that
+    # they were not welcome, not what the film was or what would unlock it.
+    #
+    # Nothing is loosened by this: the card carries no file, and the watch
+    # button lands in `deliver_and_warn`, which asks the same question
+    # again before anything is sent.
+    access = await check_title_access(session, message.bot, user, title)
+    if not access.allowed:
+        caption = (
+            f"{caption}\n\n"
+            f"{_(access_message_key(access.decision), channel=access.membership.channel)}"
+        )
 
     if title.poster_url:
         await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)

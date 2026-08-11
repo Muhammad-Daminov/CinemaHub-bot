@@ -67,17 +67,30 @@ async def deliver_and_warn(
     #
     # The refusal is spoken here too, because returning None would surface
     # as "send error" and tell a subscriber-to-be nothing about why.
+    #
+    # **Fails closed.** This previously ran the check only `if viewer is
+    # not None`, so an unrecognised telegram_id — a row deleted mid-session,
+    # or any future path that reaches delivery before provisioning — skipped
+    # the gate entirely and was handed the file. An identity we cannot
+    # resolve is an identity whose subscription we cannot verify, and the
+    # safe answer to that is no.
     viewer = (
         await session.execute(select(User).where(User.telegram_id == telegram_id))
     ).scalar_one_or_none()
-    if viewer is not None:
-        access = await check_title_access(session, bot, viewer, title)
-        if not access.allowed:
-            await bot.send_message(
-                chat_id,
-                _(access_message_key(access.decision), channel=access.membership.channel),
-            )
-            return None
+    if viewer is None:
+        logger.warning(
+            "Refusing delivery to unknown telegram_id=%s for title_id=%s", telegram_id, title.id
+        )
+        await bot.send_message(chat_id, _("common.need_start"))
+        return None
+
+    access = await check_title_access(session, bot, viewer, title)
+    if not access.allowed:
+        await bot.send_message(
+            chat_id,
+            _(access_message_key(access.decision), channel=access.membership.channel),
+        )
+        return None
 
     user_id, language = await _viewer(session, telegram_id)
     media_file = await content_service.pick_file(session, episode.id, language)

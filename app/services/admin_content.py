@@ -102,6 +102,7 @@ class AdminContentService:
         poster_url: str | None = None,
         tmdb_id: int | None = None,
         rating: float | None = None,
+        is_premium: bool = False,
     ) -> Title:
         title = Title(
             name=name.strip(),
@@ -115,6 +116,7 @@ class AdminContentService:
             poster_url=poster_url,
             tmdb_id=tmdb_id,
             rating=rating,
+            is_premium=is_premium,
         )
         session.add(title)
         await session.flush()
@@ -216,6 +218,7 @@ class AdminContentService:
         query: str | None = None,
         content_type: ContentType | None = None,
         is_active: bool | None = None,
+        is_premium: bool | None = None,
         page: int = 0,
         page_size: int = 20,
     ) -> tuple[list[tuple[Title, int, int]], int]:
@@ -244,6 +247,13 @@ class AdminContentService:
             filters.append(Title.content_type == content_type)
         if is_active is not None:
             filters.append(Title.is_active.is_(is_active))
+        # Filtered in SQL, not in the client: this list is paged, so
+        # dropping rows after the fact would leave `total` and the page
+        # count describing a different set than the one on screen — and
+        # would get slower every time the catalog grows. `is_premium` is
+        # indexed, so this narrows the same scan rather than adding work.
+        if is_premium is not None:
+            filters.append(Title.is_premium.is_(is_premium))
 
         total = (
             await session.execute(select(func.count(Title.id)).where(*filters))

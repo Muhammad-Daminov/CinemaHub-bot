@@ -71,6 +71,7 @@ interface FormState {
   description: string;
   poster_url: string;
   rating: string;
+  is_premium: boolean;
 }
 
 // The stored Title.name is the Uzbek name and the fallback for every
@@ -92,6 +93,7 @@ const EMPTY_FORM: FormState = {
   description: "",
   poster_url: "",
   rating: "",
+  is_premium: false,
 };
 
 function toForm(title: AdminTitle): FormState {
@@ -104,6 +106,7 @@ function toForm(title: AdminTitle): FormState {
     description: title.description ?? "",
     poster_url: title.poster_url ?? "",
     rating: title.rating?.toString() ?? "",
+    is_premium: title.is_premium ?? false,
   };
 }
 
@@ -729,6 +732,9 @@ function EpisodeManager({
 
 export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
+  // The assigned public code, shown but never edited here. Kept beside the
+  // form rather than in it so it cannot be posted back by accident.
+  const [currentCode, setCurrentCode] = useState<string | null>(null);
   const [savedId, setSavedId] = useState<number | null>(titleId);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -775,6 +781,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
         // back to showing TMDB's — looking exactly like a failed upload.
         const title = await adminApi.getTitle(id);
         setForm(toForm(title));
+        setCurrentCode(title.code ?? null);
         syncPoster(title);
         setHasTmdbId(title.tmdb_id != null);
       } catch {
@@ -806,6 +813,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
       description: form.description.trim() || null,
       poster_url: form.poster_url.trim() || null,
       rating: parseNumber(form.rating),
+      is_premium: form.is_premium,
     };
 
     try {
@@ -815,6 +823,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
           : await adminApi.updateTitle(savedId, payload);
       setSavedId(saved.id);
       setForm(toForm(saved));
+        setCurrentCode(saved.code ?? null);
       syncPoster(saved);
       setMessage("Saqlandi.");
       setError(null);
@@ -828,6 +837,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
     try {
       const enriched = await adminApi.enrichTitle(savedId);
       setForm(toForm(enriched));
+        setCurrentCode(enriched.code ?? null);
       syncPoster(enriched);
       setHasTmdbId(enriched.tmdb_id != null);
       setMessage(
@@ -891,6 +901,38 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
             placeholder="Komediya, Action"
           />
         </Field>
+
+        {/*
+          Premium and the public code sit together because they are the two
+          things about a title that are neither metadata nor artwork: one
+          decides who may watch it, the other how a viewer asks for it.
+
+          The code is shown, not edited. It is assigned automatically and
+          may already be printed on a poster or sitting in a channel post,
+          so reassigning it from a form field that looks like every other
+          field is a footgun; the API accepts a change for the rare case
+          that needs one. Blank only for a title that has not been saved yet.
+        */}
+        <div className="rounded-xl border border-surface-hi bg-surface p-3">
+          <label className="flex items-center justify-between gap-3">
+            <span className="font-body text-sm text-ink">Premium kino (faqat obunachilarga)</span>
+            <input
+              type="checkbox"
+              checked={form.is_premium}
+              onChange={(event) => update("is_premium", event.target.checked)}
+              className="h-5 w-5 accent-marquee"
+            />
+          </label>
+          <p className="mt-2 font-body text-xs text-ink-dim">
+            Yoqilganda faqat aktiv obunasi borlar ko'ra oladi. Kanalga obuna bo'lish bu kinoni
+            ochmaydi. Katalogda ko'rinadi, lekin qulflangan holda.
+          </p>
+          {titleId != null && (
+            <p className="mt-3 font-mono text-xs text-ink-dim">
+              Kod: <span className="text-ink">{currentCode ?? "—"}</span>
+            </p>
+          )}
+        </div>
         <Field label="Poster havolasi (TMDB)">
           <TextInput
             value={form.poster_url}
@@ -957,6 +999,7 @@ export function TitleEditor({ titleId, onClose, onOpenTitle }: Props) {
             // Name is intentionally absent from the applied fields — keep
             // whatever the admin typed, in Uzbek.
             setForm(toForm(updated));
+            setCurrentCode(updated.code ?? null);
             syncPoster(updated);
             setHasTmdbId(updated.tmdb_id != null);
             setMessage("TMDB ma'lumotlari qo'llandi.");

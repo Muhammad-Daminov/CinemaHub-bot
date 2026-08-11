@@ -88,6 +88,110 @@ export function SettingsPanel() {
       <Button full disabled={busy} onClick={save}>
         Saqlash
       </Button>
+
+      <TrialSettingsSection />
+    </div>
+  );
+}
+
+/**
+ * The new-user trial: whether a person who has just started the bot is
+ * given a subscription, and for how long.
+ *
+ * Its own component with its own request state rather than folded into
+ * the panel above, so a failure saving the channel cannot look like a
+ * failure saving the trial. The two settings share a screen, nothing else.
+ *
+ * Kept off by default on the server. This UI states plainly that the
+ * setting applies to *future* signups only — an operator raising the
+ * duration from 3 to 7 days would otherwise reasonably expect existing
+ * trials to lengthen, and they do not.
+ */
+function TrialSettingsSection() {
+  const [enabled, setEnabled] = useState(false);
+  const [days, setDays] = useState("3");
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    adminApi
+      .trialSettings()
+      .then((settings) => {
+        setEnabled(settings.enabled);
+        setDays(String(settings.days));
+      })
+      .catch((err) =>
+        setError(err instanceof ApiError ? err.message : "Sozlamani o'qib bo'lmadi."),
+      )
+      .finally(() => setLoading(false));
+  }, []);
+
+  // Validated here as well as on the server, which bounds it to 1–365.
+  // The client check exists to explain the rule before a round trip, not
+  // to enforce it — the server refuses a bad value either way.
+  const parsedDays = Number(days);
+  const daysValid = Number.isInteger(parsedDays) && parsedDays >= 1 && parsedDays <= 365;
+
+  const save = async () => {
+    if (!daysValid) return;
+    setBusy(true);
+    try {
+      const saved = await adminApi.saveTrialSettings(enabled, parsedDays);
+      setEnabled(saved.enabled);
+      setDays(String(saved.days));
+      setError(null);
+      setMessage("Saqlandi.");
+    } catch (err) {
+      setMessage(null);
+      setError(err instanceof ApiError ? err.message : "Saqlashda xatolik.");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  return (
+    <div className="mt-6 space-y-3 border-t border-surface-hi pt-6">
+      <SectionTitle>Sinov obunasi</SectionTitle>
+      {error && <Notice message={error} tone="error" />}
+      {message && <Notice message={message} />}
+
+      {loading ? (
+        <p className="font-body text-sm text-ink-dim">Yuklanmoqda…</p>
+      ) : (
+        <>
+          <div className="rounded-xl border border-surface-hi bg-surface p-3">
+            <label className="flex items-center justify-between gap-3">
+              <span className="font-body text-sm text-ink">Yangi foydalanuvchiga sinov berilsin</span>
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(event) => setEnabled(event.target.checked)}
+                className="h-5 w-5 accent-marquee"
+              />
+            </label>
+            <p className="mt-2 font-body text-xs text-ink-dim">
+              Yoqilganda botni birinchi marta ishga tushirgan foydalanuvchi shuncha kunlik premium
+              obuna oladi. Sinov obunasi premium kinolarni ham ochadi.
+            </p>
+          </div>
+
+          <Field label="Sinov muddati (kun)">
+            <TextInput value={days} onChange={setDays} placeholder="3" mono />
+          </Field>
+
+          {!daysValid && (
+            <Notice message="Muddat 1 dan 365 gacha butun son bo'lishi kerak." tone="error" />
+          )}
+
+          <Notice message="O'zgarish faqat yangi foydalanuvchilarga taalluqli. Mavjud obunalar o'zgarmaydi. Har bir foydalanuvchi sinovni faqat bir marta oladi." />
+
+          <Button full disabled={busy || !daysValid} onClick={save}>
+            {busy ? "Saqlanmoqda…" : "Saqlash"}
+          </Button>
+        </>
+      )}
     </div>
   );
 }

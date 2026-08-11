@@ -25,6 +25,7 @@ from decimal import Decimal
 
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import aliased
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -580,6 +581,13 @@ class TitleOut(BaseModel):
     view_count: int
     is_active: bool
     is_manual_override: bool
+    # The public code viewers type to reach this title. Shown so an
+    # operator can put it on a poster or in a channel post; assigned
+    # automatically on creation, never blank for a title that exists.
+    code: str | None = None
+    # Subscribers-only. Editable from the panel — without this the column
+    # and its enforcement shipped with no way to switch either on.
+    is_premium: bool = False
     created_at: datetime
 
 
@@ -605,6 +613,9 @@ class TitleIn(BaseModel):
     poster_url: str | None = None
     tmdb_id: int | None = None
     rating: float | None = None
+    # Defaults to a free title. A new film is not paywalled unless someone
+    # says so — the safe default for a flag that withholds content.
+    is_premium: bool = False
 
 
 class TitleUpdateIn(BaseModel):
@@ -618,6 +629,16 @@ class TitleUpdateIn(BaseModel):
     tmdb_id: int | None = None
     rating: float | None = None
     is_active: bool | None = None
+    # Both directions: omitted means "leave as it is", so an unrelated edit
+    # cannot silently un-paywall a title.
+    is_premium: bool | None = None
+    # Reassignable, but never to blank: a title without a code is
+    # unreachable by the search a viewer is most likely to be given.
+    # Digits and letters only — a code is typed by hand, sometimes off a
+    # poster, and whitespace or punctuation would make two codes that look
+    # identical and are not. Uniqueness is enforced by the database; the
+    # route turns the collision into a 409 rather than a 500.
+    code: str | None = Field(default=None, min_length=1, max_length=16, pattern=r"^[A-Za-z0-9]+$")
 
 
 @router.get("/titles", response_model=TitlePageOut, dependencies=[Depends(require_permission(Permission.MANAGE_MOVIES))])
@@ -625,12 +646,22 @@ async def list_titles(
     q: str | None = None,
     content_type: ContentType | None = None,
     is_active: bool | None = None,
+    # Tri-state by omission: absent means "all", which is what the panel's
+    # default tab sends. FastAPI validates the bool, so no string parsing
+    # and no way to smuggle a value past it.
+    is_premium: bool | None = None,
     page: int = Query(default=0, ge=0),
     page_size: int = Query(default=20, ge=1, le=100),
     session: AsyncSession = Depends(get_db_session),
 ) -> TitlePageOut:
     rows, total = await admin_content_service.list_titles(
-        session, query=q, content_type=content_type, is_active=is_active, page=page, page_size=page_size
+        session,
+        query=q,
+        content_type=content_type,
+        is_active=is_active,
+        is_premium=is_premium,
+        page=page,
+        page_size=page_size,
     )
     return TitlePageOut(
         items=[
@@ -657,7 +688,28 @@ async def update_title_route(
     title_id: int, body: TitleUpdateIn, session: AsyncSession = Depends(get_db_session)
 ) -> Title:
     fields = body.model_dump(exclude_unset=True)
-    title = await admin_content_service.update_title(session, title_id, **fields)
+
+    # A hand-set code collides with the unique index, which would surface
+    # as a 500 and tell the operator nothing. Checked here for a clean
+    # answer in the ordinary case, and caught below for the race the check
+    # cannot close — the index stays the authority, this is only the
+    # difference between "409, that code belongs to another film" and a
+    # stack trace.
+    if fields.get("code") is not None:
+        clash = (
+            await session.execute(
+                select(Title.id).where(Title.code == fields["code"], Title.id != title_id)
+            )
+        ).scalars().first()
+        if clash is not None:
+            raise HTTPException(status_code=409, detail="Bu kod boshqa kinoga biriktirilgan.")
+
+    try:
+        title = await admin_content_service.update_title(session, title_id, **fields)
+    except IntegrityError as exc:
+        raise HTTPException(
+            status_code=409, detail="Bu kod boshqa kinoga biriktirilgan."
+        ) from exc
     if title is None:
         raise HTTPException(status_code=404, detail="Title not found")
     return title

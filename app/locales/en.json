@@ -324,5 +324,14 @@
   "access.premium_required": "🔒 This title requires a subscription. Open the app to get one.",
   "catalog.code_not_found": "🔍 No title found for code <code>{code}</code>.",
   "admin.trial_enabled": "Trial subscription enabled",
-  "admin.trial_disabled": "Trial subscription disabled"
+  "admin.trial_disabled": "Trial subscription disabled",
+  "catalog.premium_badge": "⭐ Premium",
+  "catalog.code_label": "🔢 Code: <code>{code}</code>",
+  "app.premium_badge": "Premium",
+  "app.premium_locked": "Subscription required",
+  "app.premium_locked_hint": "This title is for subscribers only. Subscribe and it unlocks right away.",
+  "app.code_label": "Code",
+  "app.premium_cta": "Get a subscription",
+  "catalog.btn_subscribe": "⭐ Get a subscription",
+  "payment.already_subscribed": "You already have an active subscription — this title is unlocked."
 }
