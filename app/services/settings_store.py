@@ -27,6 +27,17 @@ REQUIRE_MEMBERSHIP = "require_membership"
 # it — so the only way to know whether it runs is to have it say so.
 LAST_MAINTENANCE_RUN = "last_maintenance_run"
 
+# New-user trial. Two keys rather than one encoded value, so an operator
+# can turn the offer off without losing the duration they had chosen.
+TRIAL_ENABLED = "trial_enabled"
+TRIAL_DAYS = "trial_days"
+
+# Used when nothing has been configured. Off by default: a platform that
+# started handing out free subscriptions because a row was missing would
+# be giving away inventory on a default nobody chose.
+DEFAULT_TRIAL_DAYS = 3
+MAX_TRIAL_DAYS = 365
+
 # A daily job unheard from for two days has missed at least one run. Wide
 # enough that a late or skipped single run is not alarming, narrow enough
 # that a silently unscheduled job is noticed within a day.
@@ -155,3 +166,45 @@ async def maintenance_is_stale(
     if last is None:
         return True, None
     return datetime.now(timezone.utc) - last > max_age, last
+
+
+# ---------- new-user trial ----------
+
+
+@dataclass(frozen=True)
+class TrialConfig:
+    """Whether new users are given a subscription, and for how long."""
+
+    enabled: bool
+    days: int
+
+
+async def get_trial_config(session: AsyncSession) -> TrialConfig:
+    """
+    The trial offer as configured, falling back to "off".
+
+    An unreadable or nonsensical duration falls back to the default rather
+    than raising: a typo in the admin panel must not stop people signing
+    up, and it must certainly not grant an accidental thousand-day
+    subscription.
+    """
+    raw_enabled = await get_setting(session, TRIAL_ENABLED)
+    raw_days = await get_setting(session, TRIAL_DAYS)
+
+    try:
+        days = int(raw_days) if raw_days else DEFAULT_TRIAL_DAYS
+    except (TypeError, ValueError):
+        days = DEFAULT_TRIAL_DAYS
+    days = max(1, min(days, MAX_TRIAL_DAYS))
+
+    return TrialConfig(enabled=(raw_enabled or "").lower() == "true", days=days)
+
+
+async def set_trial_config(
+    session: AsyncSession, enabled: bool, days: int, updated_by_id: int | None = None
+) -> TrialConfig:
+    """Stores the trial offer. The duration is clamped, never rejected."""
+    days = max(1, min(int(days), MAX_TRIAL_DAYS))
+    await set_setting(session, TRIAL_ENABLED, "true" if enabled else "false", updated_by_id)
+    await set_setting(session, TRIAL_DAYS, str(days), updated_by_id)
+    return TrialConfig(enabled=enabled, days=days)

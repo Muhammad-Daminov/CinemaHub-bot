@@ -320,5 +320,9 @@
   "command.start": "Start",
   "command.help": "Help",
   "command.topup": "Top up balance",
-  "command.promo": "Redeem a promo code"
+  "command.promo": "Redeem a promo code",
+  "access.premium_required": "🔒 This title requires a subscription. Open the app to get one.",
+  "catalog.code_not_found": "🔍 No title found for code <code>{code}</code>.",
+  "admin.trial_enabled": "Trial subscription enabled",
+  "admin.trial_disabled": "Trial subscription disabled"
 }

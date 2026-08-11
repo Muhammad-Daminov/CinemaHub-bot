@@ -39,7 +39,7 @@ from app.services.content import (
 from app.services.banners import resolve_for_user
 from app.services.personalization import get_profile
 from app.services.images import get_image
-from app.services.membership import check_access
+from app.services.access import access_message_key, check_title_access
 from app.services.streaming import streaming_service
 
 logger = logging.getLogger(__name__)
@@ -373,6 +373,18 @@ async def search_movies(
     session: AsyncSession = Depends(get_db_session),
     user: User = Depends(get_active_user),
 ) -> list[MovieOut]:
+    # A code is an exact identifier, so it is tried first and, when it
+    # hits, it is the whole answer — a viewer who typed a code wants that
+    # film, not a list of titles whose names happen to contain digits.
+    # Falls through to name search when nothing matches, so a title
+    # genuinely called "1984" is still findable.
+    #
+    # Same lookup the bot uses; neither surface has its own idea of what a
+    # code means.
+    by_code = await content_service.by_code(session, q)
+    if by_code is not None:
+        return await _to_movie_outs(session, [by_code], user)
+
     result = await session.execute(
         _playable_titles(audio_language)
         .where(_title_name_matches(q))
@@ -602,11 +614,19 @@ async def watch_movie(
     # spends the channel's audience — delivering a file. When no channel is
     # configured this is a no-op, so nothing changes for a platform that
     # does not use the feature.
-    allowed, membership = await check_access(session, bot, user)
-    if not allowed:
+    # The canonical decision, shared with the bot: a subscription outranks
+    # channel membership, and a premium title is not unlocked by joining a
+    # channel. Enforced here rather than by hiding a button, so calling
+    # this endpoint directly gains nothing.
+    access = await check_title_access(session, bot, user, title)
+    if not access.allowed:
         raise HTTPException(
             status_code=403,
-            detail=t("membership.required", user.language, channel=membership.channel),
+            detail=t(
+                access_message_key(access.decision),
+                user.language,
+                channel=access.membership.channel,
+            ),
         )
 
     if episode_id is None:

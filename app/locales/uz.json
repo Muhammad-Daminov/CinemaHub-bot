@@ -320,5 +320,9 @@
   "command.start": "Boshlash",
   "command.help": "Yordam",
   "command.topup": "Balansni to'ldirish",
-  "command.promo": "Promokodni faollashtirish"
+  "command.promo": "Promokodni faollashtirish",
+  "access.premium_required": "🔒 Bu kino faqat obunachilar uchun. Obuna sotib olish uchun ilovani oching.",
+  "catalog.code_not_found": "🔍 <code>{code}</code> kodi bo'yicha kino topilmadi.",
+  "admin.trial_enabled": "Sinov obunasi yoqilgan",
+  "admin.trial_disabled": "Sinov obunasi o'chirilgan"
 }

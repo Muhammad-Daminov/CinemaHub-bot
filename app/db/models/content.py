@@ -27,6 +27,7 @@ from datetime import datetime
 
 from sqlalchemy import (
     BigInteger,
+    Sequence,
     Boolean,
     Column,
     DateTime,
@@ -37,6 +38,7 @@ from sqlalchemy import (
     Table,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import ARRAY
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -75,6 +77,14 @@ class VideoQuality(str, enum.Enum):
     UHD_4K = "4k"
 
 
+# Owns public title numbering. Declared on the metadata as well as in
+# migration f2b9c04e7a13 because the test schema is built by
+# `metadata.create_all`: a sequence that existed only in the migration
+# would be absent under test, and every "codes are never reused"
+# assertion would pass against a database that could not honour it.
+TITLE_CODE_SEQUENCE = Sequence("chp_title_code_seq", start=1000, metadata=Base.metadata)
+
+
 class Title(Base):
     """One work — a film, serial, cartoon or anime."""
 
@@ -101,6 +111,26 @@ class Title(Base):
     view_count: Mapped[int] = mapped_column(BigInteger, default=0, nullable=False)
     is_active: Mapped[bool] = mapped_column(default=True, nullable=False, index=True)
     is_manual_override: Mapped[bool] = mapped_column(default=False, nullable=False)
+
+    # The short number a viewer types to find this title — in the bot chat
+    # or the Mini App's search box. Deliberately NOT the primary key: an
+    # id is an implementation detail whose sequence leaks how much catalog
+    # exists and which rows were deleted, and it could never be reassigned
+    # or printed on promotional material. Stored as text because a code is
+    # an identifier, not a quantity: nothing arithmetic is ever done to it,
+    # and a leading zero must survive.
+    #
+    # Nullable so a title can exist before it is given one, and unique so
+    # one code can never resolve to two films.
+    code: Mapped[str | None] = mapped_column(String(16), unique=True, index=True)
+
+    # Whether watching this requires an active subscription. Channel
+    # membership does not unlock it — that distinction is the whole point
+    # of the flag, and it is enforced server-side in
+    # app.services.access, never by hiding a button.
+    is_premium: Mapped[bool] = mapped_column(
+        Boolean, default=False, server_default=text("false"), nullable=False, index=True
+    )
 
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
     updated_at: Mapped[datetime] = mapped_column(
@@ -301,6 +331,21 @@ class Collection(Base):
     slug: Mapped[str] = mapped_column(String(128), unique=True, index=True, nullable=False)
     description: Mapped[str | None] = mapped_column(String(500))
     poster_url: Mapped[str | None] = mapped_column(String(512))
+
+    # An admin-uploaded poster, overriding poster_url — the same pair
+    # Title carries, and read through the same /api/movies/images route.
+    #
+    # The column has existed in the database since migration
+    # f6b2d94ae713, which added it to chp_titles and chp_collections
+    # together; only this model declaration was missed. Four call sites
+    # already assumed it — the admin upload and clear routes, the admin
+    # CollectionOut schema, and _collection_out in the viewer API — so
+    # the model was the one place the column was absent, and the ORM
+    # instance therefore never had the attribute at all. That is why
+    # /collections and /search/all raised AttributeError rather than
+    # merely rendering the wrong poster, and why the admin's uploaded
+    # poster was silently discarded instead of saved.
+    poster_image_id: Mapped[int | None] = mapped_column(ForeignKey("chp_uploaded_images.id"))
 
     # Hand-ordered rail position; ties fall back to name.
     sort_order: Mapped[int] = mapped_column(Integer, default=0, nullable=False)

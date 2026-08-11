@@ -67,4 +67,14 @@ async def get_or_create_user(
     )
     session.add(user)
     await session.flush()
+
+    # A genuinely new person, so this is the one moment the trial can be
+    # offered. Inside the same transaction as the signup: a trial that
+    # survived a rolled-back registration would belong to nobody, and a
+    # signup that failed because the trial did would be far worse than no
+    # trial. Returns None quietly when the offer is off or the person has
+    # had a subscription before.
+    from app.services.trial import grant_trial_if_eligible
+
+    await grant_trial_if_eligible(session, user)
     return user

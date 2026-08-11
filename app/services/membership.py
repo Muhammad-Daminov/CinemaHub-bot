@@ -90,4 +90,15 @@ async def check_access(
         return True, config
     if user.role in (UserRole.ADMIN, UserRole.SUPER_ADMIN):
         return True, config
+
+    # A subscriber is not also asked to join the channel. The requirement
+    # exists to grow an audience out of people who are not paying;
+    # charging someone and then still gating them behind a join is how you
+    # earn a refund request. Imported here rather than at module scope —
+    # `subscriptions` reads settings that read this module.
+    from app.services.subscriptions import is_user_premium
+
+    if await is_user_premium(session, user.id):
+        return True, config
+
     return await is_channel_member(bot, config.channel, user.telegram_id), config

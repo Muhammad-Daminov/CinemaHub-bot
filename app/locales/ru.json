@@ -320,5 +320,9 @@
   "command.start": "Начать",
   "command.help": "Помощь",
   "command.topup": "Пополнить баланс",
-  "command.promo": "Активировать промокод"
+  "command.promo": "Активировать промокод",
+  "access.premium_required": "🔒 Этот фильм доступен только по подписке. Откройте приложение, чтобы оформить её.",
+  "catalog.code_not_found": "🔍 Фильм с кодом <code>{code}</code> не найден.",
+  "admin.trial_enabled": "Пробная подписка включена",
+  "admin.trial_disabled": "Пробная подписка отключена"
 }

@@ -246,6 +246,28 @@ class ContentService:
         )
         return [CollectionSummary(collection=row[0], title_count=row[1]) for row in result.all()]
 
+    async def by_code(self, session: AsyncSession, code: str) -> Title | None:
+        """
+        The title a viewer's typed code refers to, or None.
+
+        Codes are compared as trimmed text, not parsed as numbers: they are
+        identifiers, so "0042" and "42" are different codes and neither is
+        forty-two. Inactive titles are excluded — an unpublished film must
+        not be reachable just because somebody guessed its number.
+
+        The single lookup behind both surfaces. The bot's numeric-message
+        handler and the Mini App's search box call this, so a code can
+        never resolve differently depending on where it was typed.
+        """
+        cleaned = (code or "").strip()
+        if not cleaned or len(cleaned) > 16:
+            return None
+
+        result = await session.execute(
+            select(Title).where(Title.code == cleaned, Title.is_active.is_(True))
+        )
+        return result.scalar_one_or_none()
+
     async def get_title(self, session: AsyncSession, title_id: int) -> Title | None:
         result = await session.execute(
             select(Title).where(Title.id == title_id).options(selectinload(Title.episodes))

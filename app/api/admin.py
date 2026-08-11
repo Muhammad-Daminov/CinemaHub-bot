@@ -105,7 +105,13 @@ from app.services.permissions import (
     set_permissions,
 )
 from app.services.promo import promo_service
-from app.services.settings_store import get_membership_config, set_membership_config
+from app.services.settings_store import (
+    MAX_TRIAL_DAYS,
+    get_membership_config,
+    get_trial_config,
+    set_membership_config,
+    set_trial_config,
+)
 from app.services.themes import (
     CARD_SHAPES,
     DECORATIONS,
@@ -2267,6 +2273,63 @@ async def update_membership_settings(
         )
     config = await set_membership_config(session, body.require_membership, channel, admin.id)
     return _membership_out(config)
+
+
+# ---------- New-user trial ----------
+#
+# Reuses the existing key/value settings mechanism and the existing
+# MANAGE_SYSTEM_SETTINGS gate — a trial is a platform setting, not a new
+# subsystem, so it needs no permission and no table of its own.
+
+
+class TrialSettingsOut(BaseModel):
+    enabled: bool
+    days: int
+
+
+class TrialSettingsIn(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool
+    # Bounded here as well as in the service. The service clamps rather
+    # than raises so a stray value can never stop signups; this refuses
+    # outright, because an administrator typing 5000 deserves to be told
+    # rather than silently given 365.
+    days: int = Field(ge=1, le=MAX_TRIAL_DAYS)
+
+
+@router.get(
+    "/settings/trial",
+    response_model=TrialSettingsOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def get_trial_settings(
+    session: AsyncSession = Depends(get_db_session),
+) -> TrialSettingsOut:
+    config = await get_trial_config(session)
+    return TrialSettingsOut(enabled=config.enabled, days=config.days)
+
+
+@router.put(
+    "/settings/trial",
+    response_model=TrialSettingsOut,
+    dependencies=[Depends(require_permission(Permission.MANAGE_SYSTEM_SETTINGS))],
+)
+async def update_trial_settings(
+    body: TrialSettingsIn,
+    admin: User = Depends(get_current_admin),
+    session: AsyncSession = Depends(get_db_session),
+) -> TrialSettingsOut:
+    """
+    Sets the trial offer for **future** signups.
+
+    Existing users are deliberately untouched: changing the duration is
+    not a decision to extend or shorten subscriptions people already hold,
+    and retroactively editing them would be editing paid-for state on a
+    settings change.
+    """
+    config = await set_trial_config(session, body.enabled, body.days, admin.id)
+    return TrialSettingsOut(enabled=config.enabled, days=config.days)
 
 
 # ---------- Promotional banners ----------

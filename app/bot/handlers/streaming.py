@@ -20,6 +20,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.bot.keyboards.movie import WATCH_CALLBACK_PREFIX, get_resend_keyboard
 from app.db.models.content import Episode, Title
 from app.db.models.user import UILanguage, User
+from app.services.access import access_message_key, check_title_access
 from app.services.content import content_service
 from app.services.streaming import streaming_service
 
@@ -58,6 +59,25 @@ async def deliver_and_warn(
     title = await session.get(Title, episode.title_id)
     if title is None:
         return None
+
+    # Every bot route to a file passes through here — code search, name
+    # search, genres, collections, the episode picker — so this is where
+    # the canonical check belongs. Placing it in each caller would mean
+    # one forgotten caller is an open door to paid content.
+    #
+    # The refusal is spoken here too, because returning None would surface
+    # as "send error" and tell a subscriber-to-be nothing about why.
+    viewer = (
+        await session.execute(select(User).where(User.telegram_id == telegram_id))
+    ).scalar_one_or_none()
+    if viewer is not None:
+        access = await check_title_access(session, bot, viewer, title)
+        if not access.allowed:
+            await bot.send_message(
+                chat_id,
+                _(access_message_key(access.decision), channel=access.membership.channel),
+            )
+            return None
 
     user_id, language = await _viewer(session, telegram_id)
     media_file = await content_service.pick_file(session, episode.id, language)

@@ -17,7 +17,9 @@ layer. There is deliberately no separate catalog service.
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
+from aiogram.filters import StateFilter
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.handlers.streaming import deliver_and_warn
@@ -54,7 +56,8 @@ from app.bot.keyboards.catalog import (
 )
 from app.bot.keyboards.main_menu import MENU_MOVIES, menu_texts
 from app.db.models.content import ContentType, Title
-from app.db.models.user import UILanguage
+from app.db.models.user import UILanguage, User
+from app.services.access import access_message_key, check_title_access
 from app.services.achievements import continue_watching
 from app.services.content import TitlePage, content_service
 from app.services.users import get_user_id
@@ -400,3 +403,60 @@ async def handle_episode_page(
         await callback.answer(_("catalog.no_episodes_on_page"), show_alert=True)
         return
     await callback.answer()
+
+
+# A bare number is a movie code. Deliberately constrained twice over:
+#
+#   StateFilter(None) — only when no conversation is in progress, so
+#   typing a promo code, an AI prompt, a search query or a rejection
+#   reason still reaches the handler that asked for it. Every one of
+#   those is FSM-gated, and this handler steps aside for all of them.
+#
+#   digits only, 1–16 — menu buttons are words and commands start with a
+#   slash, so neither can be mistaken for a code. Episode selection and
+#   pagination arrive as callback queries, not messages, and are
+#   untouched.
+@router.message(StateFilter(None), F.text.regexp(r"^\d{1,16}$"))
+async def handle_movie_code(
+    message: Message, session: AsyncSession, lang: UILanguage, _
+) -> None:
+    """
+    Opens the title a viewer's code refers to.
+
+    Resolution and the access decision both come from the shared services,
+    and the result is rendered through the same page the search flow uses —
+    so a code produces exactly the title card a search would, and tapping
+    it enters the existing playback flow with its own enforcement.
+    """
+    code = message.text.strip()
+    title = await content_service.by_code(session, code)
+    if title is None:
+        await message.answer(_("catalog.code_not_found", code=code))
+        return
+
+    result = await session.execute(select(User).where(User.telegram_id == message.from_user.id))
+    user = result.scalar_one_or_none()
+    if user is None:
+        await message.answer(_("common.need_start"))
+        return
+
+    access = await check_title_access(session, message.bot, user, title)
+    if not access.allowed:
+        await message.answer(
+            _(access_message_key(access.decision), channel=access.membership.channel)
+        )
+        return
+
+    # Rendered with the same card builder the browse and search pages use,
+    # so a code produces exactly the title card a search would — and its
+    # button enters the existing open-title flow, which enforces access
+    # again at delivery.
+    saved = await content_service.favorite_title_ids(session, user.id, [title.id])
+    names = await content_service.localized_names(session, [title], lang)
+    caption = _format_card(title, _, names.get(title.id))
+    keyboard = get_title_card_keyboard(title.id, lang, is_favorite=title.id in saved)
+
+    if title.poster_url:
+        await message.answer_photo(title.poster_url, caption=caption, reply_markup=keyboard)
+    else:
+        await message.answer(caption, reply_markup=keyboard)

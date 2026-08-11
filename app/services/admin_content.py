@@ -33,6 +33,7 @@ from app.db.models.content import (
     Episode,
     MediaFile,
     PendingUpload,
+    TITLE_CODE_SEQUENCE,
     Title,
     TitleTranslation,
     TranslationSource,
@@ -76,6 +77,14 @@ class DashboardStats:
     active_promo_codes: int = 0
 
 
+# Re-exported from the model, which is where the sequence is declared, so
+# the runtime, the migration and the test schema all name one object.
+CODE_SEQUENCE = TITLE_CODE_SEQUENCE.name
+
+# Bounded retry for the hand-set-code collision described in _next_code.
+_CODE_ATTEMPTS = 50
+
+
 class AdminContentService:
     """Catalog mutations + dashboard aggregates for the admin dashboard."""
 
@@ -109,7 +118,41 @@ class AdminContentService:
         )
         session.add(title)
         await session.flush()
+
+        # A title with no code is unreachable by the one search a viewer is
+        # most likely to be given — a number on a poster or in a channel
+        # post. Assigned on creation so the catalog never grows rows that
+        # the code lookup cannot see; the migration did the same for every
+        # title that already existed.
+        title.code = await self._next_code(session)
+        await session.flush()
         return title
+
+    async def _next_code(self, session: AsyncSession) -> str:
+        """
+        The next free public code, from the dedicated sequence.
+
+        A sequence rather than `MAX(code) + 1`: a maximum taken over
+        surviving rows hands a deleted title's number to the next one, and
+        that number may already be printed on a poster or sitting in a
+        channel post. `nextval` is a high-water mark — it does not roll
+        back on delete, and it is atomic, so two administrators creating
+        titles at once cannot be handed the same number.
+
+        The loop covers the one case the sequence cannot know about: a
+        code set by hand. It advances past a collision rather than failing
+        the creation, and is bounded so a pathological catalog cannot spin
+        here forever — the unique index is still the backstop.
+        """
+        for _ in range(_CODE_ATTEMPTS):
+            candidate = str((await session.execute(TITLE_CODE_SEQUENCE.next_value().select())).scalar())
+            taken = (
+                await session.execute(select(Title.id).where(Title.code == candidate))
+            ).scalars().first()
+            if taken is None:
+                return candidate
+
+        raise RuntimeError("Could not allocate a free title code")
 
     async def update_title(self, session: AsyncSession, title_id: int, **fields) -> Title | None:
         """
