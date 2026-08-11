@@ -124,7 +124,8 @@ Users can top up but cannot spend. `DEDUCTION`/`REFUND` tx types are unused. Dec
 ### P2-2 · Give premium real benefits
 `IN PROGRESS` (Phase 8) · the *mechanism* exists; **which** benefits to sell is still a product decision
 Features are now enforced, not merely displayed: `app/services/plan_features.py` is the single entitlement decision point, and `ai_daily_limit` is the first feature that actually changes behaviour. Adding a second benefit is now a data change in the admin panel plus one call to the resolver — no parallel entitlement system to build.
-**Still needed from you:** what premium should actually include. Candidates unchanged: higher-quality files, early access, larger favourites cap.
+**Phase 10 shipped the first content benefit:** `chp_titles.is_premium` marks a title subscribers-only, enforced through `check_title_access` rather than by hiding a button, and a subscription now also exempts the holder from the channel-membership requirement. Premium is no longer "unlimited AI" alone.
+**Still needed from you:** the rest of what premium should include, and *which* titles are marked premium — the flag is a per-title editorial decision nobody has made yet, so today every title is free. Candidates unchanged: higher-quality files, early access, larger favourites cap.
 
 ### P2-3 · Pay out referral rewards
 `DONE` (Phase 6) · rule from IDEAS.md I-2; amount is configuration
@@ -197,8 +198,10 @@ Titles are now per-language; **collection names, plan names and plan benefits ar
 `app/services/ai.py` sends the catalog to Gemini using stored names only, so a Russian-speaking user asking in Russian is matched against Uzbek titles. Including translations would improve matching, at the cost of a larger prompt for the 150-title context window.
 
 ### P2-12 · Membership check on the bot's own delivery path
-`TODO` · follow-up to Phase 6
-`AccessMiddleware` gates every bot update except `/start`, and the Mini App gates `POST /watch`. Both are correct, but they are two enforcement points for one rule. If a third surface appears, move the gate into `streaming_service.deliver_episode`, which is the single place a file actually leaves the platform.
+`Done` · Phase 10 (2026-08-11)
+Originally: `AccessMiddleware` gates every bot update except `/start`, and the Mini App gates `POST /watch` — both correct, but two enforcement points for one rule.
+**The rule is now single-sourced.** [app/services/access.py](app/services/access.py) `check_title_access` is the only place the decision is made; both surfaces call it and neither re-derives it. On the bot it is invoked from `deliver_and_warn`, the one chokepoint every route to a file passes through (code search, name search, genres, collections, the episode picker), which is the practical equivalent of the `deliver_episode` suggestion above without moving user-facing messaging into the streaming service — a refusal has to be *spoken*, and returning None there would surface as "send error".
+Two enforcement *call sites* remain, one per surface; that is inherent to having two surfaces. What was eliminated is two copies of the rule.
 
 ---
 
@@ -213,6 +216,14 @@ Titles are now per-language; **collection names, plan names and plan benefits ar
 ---
 
 ## Done
+
+### Phase 10 — Access control, trial, premium content, movie codes (2026-08-11, `1082711`)
+- **One access decision** (P2-12) — [app/services/access.py](app/services/access.py) `check_title_access`, shared by the Mini App's `watch_movie` and the bot's `deliver_and_warn`. A subscription outranks channel membership; a premium title is not unlocked by joining a channel.
+- **Premium-only titles** (first content benefit under P2-2) — `chp_titles.is_premium`, enforced server-side.
+- **New-user trial** — granted inside the signup transaction, refused if the account ever held a subscription, off by default, configurable from the admin panel.
+- **Public movie codes** — one shared `by_code` lookup behind the bot's bare-number handler and the Mini App search box. Allocated from a Postgres sequence so a deleted title's number is never reissued; the sequence is declared on the model *and* in the migration, per `CLAUDE.md` §5.
+- **Fixed a pre-existing 500** on `GET /api/movies/collections` and `GET /api/movies/search/all` — `Collection.poster_image_id` existed in the database since `f6b2d94ae713` but was never declared on the model, which also meant the admin's collection-poster upload was silently discarded. No migration needed; `alembic check` confirms no drift.
+- **Verification:** 802 tests passing in one serial run; tsc, build, pyflakes, `alembic check`, locale parity all clean. **Migration `f2b9c04e7a13` is not yet applied to production.**
 
 ### Phase 8 (2026-08-08)
 - **Maintenance heartbeat** (P0-5, detection half) — `record_maintenance_run` / `maintenance_is_stale`, stamped by cron and checked at startup.

@@ -73,10 +73,11 @@ Mini App ──REST─────┘         │                 └─> Redis
 - `chp_admin_permissions` — one row per capability granted to an administrator; the Super Admin holds all of them implicitly and has no rows
 
 **Content**
-- `chp_titles` — content_type, name, year, `genres` (Postgres array), country, tmdb_id, poster, rating, view_count, `is_active`, `is_manual_override`
+- `chp_titles` — content_type, name, year, `genres` (Postgres array), country, tmdb_id, poster, rating, view_count, `is_active`, `is_manual_override`, **`code`** (the short public number a viewer types; text, unique, nullable — an identifier, so `0042` ≠ `42`), **`is_premium`** (subscribers-only, enforced in `services/access.py`)
 - `chp_episodes` — season, number, duration
 - `chp_media_files` — Telegram `file_id`, `language` (uz_dub / uz_sub / ru / en / original), quality
-- `chp_collections` + `chp_title_collections` (M2M)
+- `chp_collections` + `chp_title_collections` (M2M). `poster_image_id` overrides `poster_url` with an admin upload, exactly as on `chp_titles` — the column existed from `f6b2d94ae713` but was only declared on the model in Phase 10, which is why both collection endpoints returned 500 until then
+- **`chp_title_code_seq`** — a sequence, not a table. Owns public title numbering, and is a high-water mark on purpose: `MAX(code) + 1` would reissue a deleted title's number, which may already be printed on a poster. Declared on `Base.metadata` *and* in migration `f2b9c04e7a13`, so the `create_all` test schema has it too
 - `chp_title_translations` — a title's name and description per interface language, unique on (title_id, language). `chp_titles.name` stays authoritative and is the per-field fallback; `source` records whether a person or TMDB supplied the row, which is what stops auto-fill overwriting an administrator
 - `chp_watch_history`, `chp_favorites`, `chp_pending_uploads`
 
@@ -84,7 +85,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 - `chp_broadcasts` — one row per admin broadcast with its audience, target, media reference, status and delivery counts. The status column, claimed under a row lock, is what makes a duplicate send impossible. `target_value` records what an `INTEREST`/`BADGE` send was addressed at; it is audit, not authority — after materialisation the recipient rows are the truth.
 - `chp_broadcast_messages` — one row per broadcast per recipient, unique on `(broadcast_id, user_id)`. The frozen recipient set: delivery, retry and resume all read these rows and never re-evaluate the audience. Deliberately internal — no endpoint exposes them.
 - `chp_broadcast_translations` — a broadcast's body per interface language, unique on `(broadcast_id, language)`. The recipient's own language chooses; the broadcast's `message` is the fallback.
-- `chp_system_settings` — key/value settings edited from the admin panel; today the required-membership channel and flag. Read only through `app.services.settings_store`.
+- `chp_system_settings` — key/value settings edited from the admin panel: the required-membership channel and flag, the maintenance heartbeat, and the new-user trial (`trial_enabled`, `trial_days`). Read only through `app.services.settings_store`.
 
 **Payments & promo**
 - `chp_admin_cards`, `chp_payment_receipts` (pending/approved/rejected; purpose topup/subscription)
@@ -94,7 +95,13 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 **Hierarchy:** `Title → Episode → MediaFile`. A film is a Title with one Episode. A title is only "watchable" if it has at least one MediaFile — enforced everywhere by the single `_has_playable_file()` correlated EXISTS.
 
-**Migrations:** 15 revisions. Production is on `a91c4e7f20b8` (applied 2026-08-07). Head is **`c8d3a51fb742`** (Phase 7), with `b2f7c1a95e30` (Phase 6) before it — both rehearsed on a scratch database and **not yet applied to production**. Until they are, the broadcast and settings screens and the translation editor will fail against the deployed database.
+**Access to a title** is decided in exactly one place — `app.services.access.check_title_access`, the entitlement counterpart to `has_permission`. The Mini App reaches it through `watch_movie`, the bot through `deliver_and_warn` (the single chokepoint every bot route to a file passes through). A subscription outranks channel membership; a premium title is not unlocked by joining a channel. Never re-derive either rule elsewhere.
+
+**Migrations:** 24 revisions, single head **`f2b9c04e7a13`** (Phase 10 — title `code`, `is_premium`, and the code sequence).
+
+**Production's exact revision is unverified.** What is known: `alembic check` against `DATABASE_URL` on 2026-08-11 reported *"Target database is not up to date"*, so production is behind head; the attempt to read `alembic_version` directly was blocked by the local permission policy and was not retried. The last recorded value was `a91c4e7f20b8` (2026-08-07), and several phases have shipped migrations since, so **confirm with `alembic current` against production before applying anything** rather than trusting a number in this file.
+
+`f2b9c04e7a13` is committed and was rehearsed from empty on a throwaway database — upgrade, downgrade and re-upgrade all clean — but is **not applied to production**. Until it is, anything reading `chp_titles.code` or `.is_premium` (code search on both surfaces, the premium gate) will fail against the deployed database. Its backfill has never run against real rows.
 
 ---
 
@@ -104,7 +111,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 **Bot**
 - Onboarding with language selection; deep-link referral capture (`REF_<code>`)
-- Catalog browse: genres, collections, search, pagination, seasons/episodes
+- Catalog browse: genres, collections, search, pagination, seasons/episodes; a bare number typed in chat opens that title's card by its public code
 - Favorites (toggle + list), continue-watching
 - Streaming delivery with language fallback (uz_dub → uz_sub → any)
 - Payments: top-up and subscription via receipt photo + admin card; admin approve/reject inline
@@ -115,7 +122,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 **Mini App**
 - Home rows: recommended, continue, newest, top, by type, collections
-- Rotating hero banner, search, movie detail sheet with similar titles
+- Rotating hero banner, search (a movie code entered in the search box resolves to that title alone), movie detail sheet with similar titles
 - Season/episode selector with paged infinite scroll, per-episode audio badges and watched markers. No play control can start an episode the viewer did not choose, and `POST /watch` refuses an ambiguous request (422) rather than defaulting to episode 1 — enforced server-side, not just in the UI
 - Audio-language filter applied across **every** catalog row
 - Favorites — heart on every card and in the detail sheet, a Saved home row, and an `is_favorite` flag carried on the card itself so a row renders correctly from one response
@@ -125,10 +132,12 @@ Mini App ──REST─────┘         │                 └─> Redis
 **Admin panel** — 71 REST endpoint paths, each gated on a named permission; dashboard, stats, content + title editor, TMDB search/enrich, collections, promos, receipts (photo proxy, status filter, server-side search), pending uploads, users (with the ban toggle), cards, appearance (themes, assignments, banners), the broadcast control centre (compose with UZ/RU/EN bodies and media, interest/badge targeting, server-side recipient estimate, live progress, operator resume), platform settings, and administrator management (Super Admin only)
 
 **Platform**
-- i18n: 3 languages, 240 keys, one catalog shared by bot and Mini App — **plus catalog data**: movie titles and descriptions resolve per language from `chp_title_translations`
+- i18n: 3 languages, 326 keys, one catalog shared by bot and Mini App — **plus catalog data**: movie titles and descriptions resolve per language from `chp_title_translations`
 - Telegram `initData` HMAC auth; authorization by role + 19 granular permissions, enforced through one function shared by the API and the bot (`services/permissions.has_permission`)
 - Bans enforced on both surfaces — `get_active_user` on the REST side, `AccessMiddleware` on every bot update. `/api/auth/me` deliberately still answers, so the app can say *why* it is empty
-- Optional required-channel membership, gating delivery only
+- Optional required-channel membership, gating delivery only — and **exempting subscribers**, since charging someone and still gating them behind a join is how you earn a refund request
+- One access decision for "may this viewer watch this title?" (`services/access.py`), covering membership, subscription and the per-title premium flag, shared by both surfaces
+- A new-user trial, granted in the signup transaction, once per account, off by default and configured from the admin panel
 - Redis-backed throttling for the bot **and** for `/api/*` (Phase 8: fail-open, keyed on the verified Telegram id, stricter on upload and delivery), AI quota (self-expiring daily keys), TMDB cache
 - `/health` reports the running commit, so "is my deploy live?" is answerable without fingerprinting the OpenAPI schema
 
@@ -136,7 +145,7 @@ Mini App ──REST─────┘         │                 └─> Redis
 
 | Feature | Built | Gap |
 |---|---|---|
-| **Premium** | Sold, tracked, displayed | Unlocks **only** unlimited AI. No content, quality, or ad benefit. Weak value proposition for the price. |
+| **Premium** | Sold, tracked, displayed. Unlocks unlimited AI, **premium-only titles** (`is_premium`, Phase 10) and exemption from the channel-membership requirement | The content benefit exists but is **unused**: no title has been marked premium yet — that is a per-title editorial decision, not a code gap. No quality or ad benefit. |
 | **Referral** | Both parties credited on the referred user's first approved top-up (Phase 6), idempotent through the ledger index | The **amount** is a documented default (`REFERRAL_BONUS_AMOUNT`, 5000) rather than a settled business figure. No tiered rewards, no premium-days variant. |
 | **Balance** | Credited *and spent* — subscriptions are purchasable from it in the Mini App (Phase 5) | `REFUND` remains unused; there is no cancellation or refund path. |
 | **Percentage-discount promo** | Stored, redeemable, usage recorded | No checkout to apply it to — explicitly deferred in `services/promo.py`. |

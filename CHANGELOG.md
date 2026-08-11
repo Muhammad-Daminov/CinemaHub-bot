@@ -7,6 +7,27 @@ Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The pro
 
 ## [Unreleased]
 
+### Access control, trial and movie code search (2026-08-11, `1082711`)
+
+Verified by 802 passing tests in one serial run. **Migration
+`f2b9c04e7a13` is committed but NOT yet applied to production.**
+
+#### Added
+- **One place decides whether a viewer may watch a title.** [app/services/access.py](app/services/access.py) is the entitlement counterpart to `has_permission`: the Mini App reaches it through `watch_movie`, the bot through `deliver_and_warn` — the single chokepoint every bot route to a file passes through, so a forgotten caller cannot become an open door to paid content. Two rules are now stated rather than implied: **a subscription outranks channel membership**, so a paying viewer is never also asked to join a channel, and **a premium title is not unlocked by joining one**.
+- **Premium-only titles.** `chp_titles.is_premium` gates delivery server-side, never by hiding a button — calling `POST /watch` directly gains nothing.
+- **A new-user trial**, granted inside the signup transaction so it cannot survive a rolled-back registration and cannot fail a signup. Refused if the account has ever held a subscription, with the user row locked. Configured from the admin panel (`GET`/`PUT /api/admin/settings/trial`) and **off by default** — a platform that starts giving away inventory because a settings row is missing is worse than one that gives away none. Changing the duration deliberately does not touch subscriptions people already hold.
+- **Public movie codes.** Every title carries a short code a viewer can type — a bare number in the bot chat, or the Mini App's search box. One shared lookup (`content_service.by_code`) serves both, so a code cannot mean different things in different places, and an exact hit is the whole answer rather than one result among titles whose names contain digits. Compared as text, never parsed: `0042` and `42` are different codes and neither is forty-two. Inactive titles are excluded, so an unpublished film is not reachable by guessing its number.
+- The bot's numeric handler is constrained twice — `StateFilter(None)` so promo entry, AI prompts, search and rejection reasons still reach the flow that asked for them, and digits-only so no menu button or command can be mistaken for a code.
+
+#### Fixed
+- **`GET /api/movies/collections` and `GET /api/movies/search/all` returned 500 on every request** — pre-existing, found by new tests rather than reported. Migration `f6b2d94ae713` added `poster_image_id` to `chp_titles` and `chp_collections` together, but only `Title` ever declared it, so the ORM instance had no such attribute and `_collection_out` raised `AttributeError` instead of reading a value. The same gap meant **the admin panel's collection-poster upload was silently discarded** rather than saved. Fixed by declaring the column the database already has. **No migration** — `alembic check` reports no drift against a schema built from the migrations, which is what proves the column was there all along. The reader was correct and is untouched.
+- Any collection poster uploaded before this fix was never persisted; those images are orphan rows in `chp_uploaded_images` and need re-uploading.
+
+#### Notes
+- **Codes come from a Postgres sequence, not `MAX(code) + 1`.** A maximum over surviving rows hands a deleted title's number to the next one, and that number may already be printed on a poster. `nextval` is a high-water mark: it does not roll back on delete and is atomic, so two administrators creating titles at once cannot be handed the same number. Proven by test, not by argument — the recycling was reproduced before it was fixed.
+- The sequence is declared **on the model as well as in the migration**. The test schema is built by `metadata.create_all`, so a sequence living only in the migration would be absent under test and every "codes are never reused" assertion would pass against a database that could not enforce it (`CLAUDE.md` §5).
+- Three new test files — [tests/test_access_and_trial.py](tests/test_access_and_trial.py) (access matrix, expiry boundaries, admin exemption, trial grant/refusal/once-only, concurrent signup), [tests/test_title_codes.py](tests/test_title_codes.py) (no reuse after deletion, no rewind, concurrent uniqueness), [tests/test_collections.py](tests/test_collections.py) (the collections regression above).
+
 ### Post-deploy hardening and appearance completion (2026-08-10)
 
 #### Fixed
