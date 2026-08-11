@@ -22,6 +22,7 @@ import {
 
 type TypeFilter = ContentType | "all";
 type ActiveFilter = "all" | "active" | "hidden";
+type PremiumFilter = "all" | "premium" | "free";
 
 const PAGE_SIZE = 20;
 
@@ -32,6 +33,7 @@ export function ContentPanel() {
   const [query, setQuery] = useState("");
   const [typeFilter, setTypeFilter] = useState<TypeFilter>("all");
   const [activeFilter, setActiveFilter] = useState<ActiveFilter>("all");
+  const [premiumFilter, setPremiumFilter] = useState<PremiumFilter>("all");
   const [editingId, setEditingId] = useState<number | null>(null);
   const [creating, setCreating] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +44,10 @@ export function ContentPanel() {
         q: query || undefined,
         content_type: typeFilter === "all" ? undefined : typeFilter,
         is_active: activeFilter === "all" ? undefined : activeFilter === "active",
+        // Omitted for "all". Filtered by the server so the result count and
+        // the pages agree with what is on screen — dropping rows here would
+        // leave `total` describing a different set.
+        is_premium: premiumFilter === "all" ? undefined : premiumFilter === "premium",
         page,
         page_size: PAGE_SIZE,
       });
@@ -51,7 +57,7 @@ export function ContentPanel() {
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "Yuklashda xatolik.");
     }
-  }, [query, typeFilter, activeFilter, page]);
+  }, [query, typeFilter, activeFilter, premiumFilter, page]);
 
   useEffect(() => {
     load();
@@ -120,6 +126,18 @@ export function ContentPanel() {
               { value: "hidden", label: "Yashirin" },
             ]}
           />
+          <Select<PremiumFilter>
+            value={premiumFilter}
+            onChange={(value) => {
+              setPage(0);
+              setPremiumFilter(value);
+            }}
+            options={[
+              { value: "all", label: "Premium: barchasi" },
+              { value: "premium", label: "Faqat premium" },
+              { value: "free", label: "Faqat oddiy" },
+            ]}
+          />
         </div>
         <Button full onClick={() => setCreating(true)}>
           <span className="inline-flex items-center justify-center gap-1.5">
@@ -147,8 +165,10 @@ export function ContentPanel() {
                       <span className="font-mono text-[11px] text-ink-dim">{item.year}</span>
                     )}
                     <Badge active={item.is_active}>{item.is_active ? "Faol" : "Yashirin"}</Badge>
+                    {item.is_premium && <Badge active>Premium</Badge>}
                   </div>
                   <p className="mt-1 font-mono text-[11px] text-ink-dim">
+                    {item.code && <>Kod {item.code} · </>}
                     {item.episode_count} qism · {item.file_count} fayl
                   </p>
                 </div>
