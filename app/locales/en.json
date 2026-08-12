@@ -12,10 +12,10 @@
   "menu.premium": "⭐ Premium",
   "menu.orders": "🧾 My Orders",
   "menu.settings": "⚙️ Settings",
-  "start.welcome": "👋 Welcome to CinemaHub Pro, {name}!\n\nBrowse movies, get AI recommendations, or open the full app below.",
+  "start.welcome": "👋 Welcome to CinemaHub Pro, {name}!",
   "start.friend": "friend",
   "start.quick_access": "Quick access:",
-  "help.text": "ℹ️ <b>CinemaHub Pro — Help</b>\n\n🎬 Movies — browse the catalog\n🤖 AI Assistant — get personalized recommendations\n📱 Open App — full Mini App experience\n👤 Profile — balance, subscription, referral code\n⭐ Premium — upgrade for unlimited AI + perks\n🧾 My Orders — payment & order history\n⚙️ Settings — change language\n\n💳 /topup — top up your balance\n🎟️ /promo — redeem a promo code",
+  "help.text": "📖 <b>How to use this bot</b>\n\n1️⃣ <b>Open the app</b>\nUse the «📱 Open the app» button below to search films, browse collections and subscribe.\n\n2️⃣ <b>Search by code</b>\nSend a film's code straight into this chat — for example <code>1000</code> — and its card appears right away.\n\n3️⃣ <b>Watching</b>\nTap «Watch» under the card and the bot sends the film to this chat.\n\n4️⃣ <b>Language</b>\nChange the language any time from «⚙️ Settings».\n\n💳 /topup — top up your balance\n🎟️ /promo — redeem a promo code",
   "profile.text": "👤 <b>Profile</b>\nBalance: {balance}\nReferral code: <code>{code}</code>\nPremium: {premium}",
   "catalog.menu_prompt": "🎬 Catalog — how would you like to search?",
   "catalog.btn_search": "🔍 Search",
@@ -333,5 +333,6 @@
   "app.code_label": "Code",
   "app.premium_cta": "Get a subscription",
   "catalog.btn_subscribe": "⭐ Get a subscription",
-  "payment.already_subscribed": "You already have an active subscription — this title is unlocked."
+  "payment.already_subscribed": "You already have an active subscription — this title is unlocked.",
+  "menu.guide": "📖 Guide"
 }

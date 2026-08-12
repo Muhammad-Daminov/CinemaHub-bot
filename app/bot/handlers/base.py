@@ -19,6 +19,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.bot.keyboards.main_menu import (
+    MENU_GUIDE,
     MENU_ORDERS,
     MENU_PROFILE,
     MENU_SETTINGS,
@@ -43,11 +44,24 @@ router = Router(name="base")
 
 
 async def _send_main_menu(message: Message, lang: UILanguage, name: str | None) -> None:
+    """
+    Greeting, then the guide with the Mini App button under it.
+
+    The guide is sent here rather than left to /help because most of the
+    product now lives in the Mini App, and a first-time user who is only
+    shown a keyboard has no way to discover that a bare code typed into
+    the chat finds a film. It is the same `help.text` the 📖 button and
+    /help send — one text, so the three cannot disagree.
+    """
     await message.answer(
         t("start.welcome", lang, name=name or t("start.friend", lang)),
         reply_markup=get_main_menu_keyboard(lang),
     )
-    await message.answer(t("start.quick_access", lang), reply_markup=get_mini_app_inline_keyboard(lang))
+    await message.answer(
+        t("help.text", lang),
+        parse_mode="HTML",
+        reply_markup=get_mini_app_inline_keyboard(lang),
+    )
 
 
 @router.message(CommandStart())
@@ -129,6 +143,19 @@ async def handle_membership_recheck(callback: CallbackQuery, session: AsyncSessi
 # `/help@botname`, which an equality check silently ignores.
 @router.message(Command("help"))
 async def handle_help(message: Message, _) -> None:
+    await message.answer(_("help.text"), parse_mode="HTML")
+
+
+# The same guide the user was shown at /start, for everyone who skipped or
+# forgot it. Deliberately the same locale key rather than a second text:
+# two copies of "how this bot works" drift, and the one that drifts is
+# always the one nobody re-reads.
+#
+# `_` is the middleware's translator, already bound to this user's chosen
+# language, so the guide follows the language they picked without this
+# handler knowing which it is.
+@router.message(F.text.in_(menu_texts(MENU_GUIDE)))
+async def handle_guide_entry(message: Message, _) -> None:
     await message.answer(_("help.text"), parse_mode="HTML")
 
 

@@ -29,6 +29,24 @@ MENU_PROFILE = "menu.profile"
 MENU_PREMIUM = "menu.premium"
 MENU_ORDERS = "menu.orders"
 MENU_SETTINGS = "menu.settings"
+MENU_GUIDE = "menu.guide"
+
+# Buttons no longer shown on the reply keyboard. Their handlers, services,
+# callbacks and locale strings all remain — this is a **visibility freeze**,
+# not a removal, and restoring one is a matter of putting it back in
+# `get_main_menu_keyboard`.
+#
+# They are hidden because the Mini App now does these jobs better than a
+# chat can: browsing a catalog, reading a profile, comparing plans and
+# scrolling order history are all screens, and the bot was offering a
+# worse second copy of each. What the bot is uniquely good at — taking a
+# code typed into the chat and handing back a film — is untouched.
+#
+# Kept as a named list rather than deleted lines so the freeze is
+# greppable and the intent survives: see tests/test_bot_menu.py, which
+# asserts both that these are absent from the keyboard and that every one
+# of their handlers is still registered.
+FROZEN_MENU_KEYS = (MENU_MOVIES, MENU_AI, MENU_PROFILE, MENU_PREMIUM, MENU_ORDERS)
 
 SET_LANG_PREFIX = "setlang:"
 
@@ -38,22 +56,48 @@ def menu_texts(key: str) -> set[str]:
     return all_translations(key)
 
 
+def mini_app_url() -> str | None:
+    """
+    Where the Mini App lives, or None when this deployment has no base URL.
+
+    One definition, used by both the inline launcher and the reply
+    keyboard's Web App button, so the two cannot drift onto different
+    URLs. Returns None rather than a placeholder: Telegram rejects a Web
+    App button whose URL is not https, and a button pointing at a stand-in
+    domain is worse than no button at all.
+    """
+    if not settings.WEBHOOK_BASE_URL:
+        return None
+    return f"{settings.WEBHOOK_BASE_URL}/miniapp"
+
+
 def get_main_menu_keyboard(lang: UILanguage) -> ReplyKeyboardMarkup:
-    """Persistent bottom reply keyboard shown after /start."""
-    return ReplyKeyboardMarkup(
-        keyboard=[
-            [KeyboardButton(text=t(MENU_MOVIES, lang)), KeyboardButton(text=t(MENU_AI, lang))],
-            [KeyboardButton(text=t(MENU_PROFILE, lang)), KeyboardButton(text=t(MENU_PREMIUM, lang))],
-            [KeyboardButton(text=t(MENU_ORDERS, lang)), KeyboardButton(text=t(MENU_SETTINGS, lang))],
-        ],
-        resize_keyboard=True,
-        is_persistent=True,
+    """
+    Persistent bottom reply keyboard shown after /start.
+
+    Three things only: open the app, read the guide, change the language.
+    Everything else moved into the Mini App — see FROZEN_MENU_KEYS.
+
+    The Web App button is omitted, not faked, when no base URL is
+    configured (local development), because Telegram refuses a non-https
+    Web App button and would reject the whole keyboard with it.
+    """
+    url = mini_app_url()
+    rows: list[list[KeyboardButton]] = []
+    if url:
+        rows.append([KeyboardButton(text=t(MENU_MINI_APP, lang), web_app=WebAppInfo(url=url))])
+    rows.append(
+        [KeyboardButton(text=t(MENU_GUIDE, lang)), KeyboardButton(text=t(MENU_SETTINGS, lang))]
     )
+    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
 
 
 def get_mini_app_inline_keyboard(lang: UILanguage) -> InlineKeyboardMarkup:
     """Inline button that launches the Telegram Mini Web App."""
-    web_app_url = f"{settings.WEBHOOK_BASE_URL}/miniapp" if settings.WEBHOOK_BASE_URL else "https://example.com"
+    # Unchanged behaviour: the placeholder is kept here because this
+    # keyboard is sent as a message rather than attached to the chat, and
+    # existing callers rely on it always returning a markup.
+    web_app_url = mini_app_url() or "https://example.com"
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [InlineKeyboardButton(text=t(MENU_MINI_APP, lang), web_app=WebAppInfo(url=web_app_url))]

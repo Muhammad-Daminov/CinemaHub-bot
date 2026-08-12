@@ -12,10 +12,10 @@
   "menu.premium": "⭐ Premium",
   "menu.orders": "🧾 Buyurtmalarim",
   "menu.settings": "⚙️ Sozlamalar",
-  "start.welcome": "👋 CinemaHub Pro'ga xush kelibsiz, {name}!\n\nKinolarni ko'ring, AI tavsiyalarini oling yoki to'liq ilovani oching.",
+  "start.welcome": "👋 CinemaHub Pro'ga xush kelibsiz, {name}!",
   "start.friend": "do'stim",
   "start.quick_access": "Tezkor kirish:",
-  "help.text": "ℹ️ <b>CinemaHub Pro — Yordam</b>\n\n🎬 Kinolar — katalogni ko'rish\n🤖 AI Yordamchi — shaxsiy tavsiyalar olish\n📱 Ilovani ochish — to'liq Mini App tajribasi\n👤 Profil — balans, obuna, referal kod\n⭐ Premium — cheksiz AI va imtiyozlar\n🧾 Buyurtmalarim — to'lov va buyurtmalar tarixi\n⚙️ Sozlamalar — tilni o'zgartirish\n\n💳 /topup — balansni to'ldirish\n🎟️ /promo — promokodni faollashtirish",
+  "help.text": "📖 <b>Qanday foydalanish kerak</b>\n\n1️⃣ <b>Ilovani oching</b>\nPastdagi «📱 Ilovani ochish» tugmasi orqali kinolarni qidiring, to'plamlarni ko'ring va obuna oling.\n\n2️⃣ <b>Kod orqali qidirish</b>\nKino kodini shu yerga yozing — masalan <code>1000</code> — va kino kartasi darhol chiqadi.\n\n3️⃣ <b>Tomosha qilish</b>\nKarta ostidagi «Tomosha qilish» tugmasini bosing, bot kinoni shu chatga yuboradi.\n\n4️⃣ <b>Til</b>\n«⚙️ Sozlamalar» orqali tilni istalgan vaqtda o'zgartiring.\n\n💳 /topup — balansni to'ldirish\n🎟️ /promo — promokodni faollashtirish",
   "profile.text": "👤 <b>Profil</b>\nBalans: {balance}\nReferal kod: <code>{code}</code>\nPremium: {premium}",
   "catalog.menu_prompt": "🎬 Katalog — qanday izlaymiz?",
   "catalog.btn_search": "🔍 Qidirish",
@@ -333,5 +333,6 @@
   "app.code_label": "Kod",
   "app.premium_cta": "Obuna olish",
   "catalog.btn_subscribe": "⭐ Obuna olish",
-  "payment.already_subscribed": "Sizda faol obuna bor — bu kino allaqachon ochiq."
+  "payment.already_subscribed": "Sizda faol obuna bor — bu kino allaqachon ochiq.",
+  "menu.guide": "📖 Qo'llanma"
 }
