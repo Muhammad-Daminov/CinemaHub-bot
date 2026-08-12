@@ -11,7 +11,7 @@
  * which is why "remove" is safe to offer without a confirmation.
  */
 import { ImageUp, RefreshCw, Trash2 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { ApiError } from "../lib/api";
 import { useAuthedImage } from "../lib/useAuthedImage";
 import { Button, Notice } from "./ui";
@@ -63,7 +63,14 @@ export function PosterPicker({
   // The stored poster, resolved to something an <img> can actually show:
   // an uploaded one is behind the authenticated image endpoint, a TMDB URL
   // is used as-is. Shared with the catalog rather than duplicated here.
-  const storedUrl = useAuthedImage(currentUrl);
+  // The failure is reported, not swallowed: an administrator who has just
+  // uploaded a poster needs to know the difference between "there is no
+  // poster" and "the poster cannot be loaded".
+  const onImageError = useCallback(
+    () => setError("Saqlangan posterni ko'rsatib bo'lmadi."),
+    [],
+  );
+  const storedUrl = useAuthedImage(currentUrl, { onError: onImageError });
   const input = useRef<HTMLInputElement | null>(null);
 
   // Object URLs leak until revoked, and replacing the file makes a new one.
