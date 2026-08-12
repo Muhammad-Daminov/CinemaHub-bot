@@ -75,21 +75,26 @@ def get_main_menu_keyboard(lang: UILanguage) -> ReplyKeyboardMarkup:
     """
     Persistent bottom reply keyboard shown after /start.
 
-    Three things only: open the app, read the guide, change the language.
-    Everything else moved into the Mini App — see FROZEN_MENU_KEYS.
+    Two things only: read the guide, change the language. Everything else
+    moved into the Mini App — see FROZEN_MENU_KEYS.
 
-    The Web App button is omitted, not faked, when no base URL is
-    configured (local development), because Telegram refuses a non-https
-    Web App button and would reject the whole keyboard with it.
+    **The Mini App is deliberately not on this keyboard.** It is opened
+    from BotFather's Main App / Menu Button, which Telegram renders in its
+    own chrome, and from the inline launcher sent with the guide. A third
+    entry point on the reply keyboard only duplicated those and took a row
+    from a keyboard whose whole point is being short.
+
+    Nothing about the Mini App itself changes here: `mini_app_url()` and
+    `get_mini_app_inline_keyboard` are untouched and still used, so the
+    URL and the launcher stay exactly as they were.
     """
-    url = mini_app_url()
-    rows: list[list[KeyboardButton]] = []
-    if url:
-        rows.append([KeyboardButton(text=t(MENU_MINI_APP, lang), web_app=WebAppInfo(url=url))])
-    rows.append(
-        [KeyboardButton(text=t(MENU_GUIDE, lang)), KeyboardButton(text=t(MENU_SETTINGS, lang))]
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text=t(MENU_GUIDE, lang)), KeyboardButton(text=t(MENU_SETTINGS, lang))]
+        ],
+        resize_keyboard=True,
+        is_persistent=True,
     )
-    return ReplyKeyboardMarkup(keyboard=rows, resize_keyboard=True, is_persistent=True)
 
 
 def get_mini_app_inline_keyboard(lang: UILanguage) -> InlineKeyboardMarkup:
