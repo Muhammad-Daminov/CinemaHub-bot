@@ -31,6 +31,7 @@ from app.db.models.content import (
     Collection,
     ContentType,
     Episode,
+    Favorite,
     MediaFile,
     PendingUpload,
     TITLE_CODE_SEQUENCE,
@@ -38,6 +39,7 @@ from app.db.models.content import (
     TitleTranslation,
     TranslationSource,
     VideoQuality,
+    WatchHistory,
     title_collections,
 )
 from app.db.models.payment import PaymentReceipt, PaymentStatus
@@ -196,6 +198,24 @@ class AdminContentService:
         exists = (await session.execute(select(Title.id).where(Title.id == title_id))).scalar_one_or_none()
         if exists is None:
             return False
+
+        # Viewer-owned rows first. These were missed, and the omission is
+        # why deleting a title silently did nothing: chp_watch_history
+        # points at both the title *and* its episodes, and neither foreign
+        # key cascades, so as soon as one person had watched or saved the
+        # film the episode delete below raised ForeignKeyViolationError.
+        # The request 500'd, the admin panel swallowed it, and the title
+        # was still there after the list refreshed.
+        #
+        # A title nobody had touched deleted perfectly, which is exactly
+        # why this survived: it only fails for films that have an audience.
+        await session.execute(delete(WatchHistory).where(WatchHistory.title_id == title_id))
+        await session.execute(delete(Favorite).where(Favorite.title_id == title_id))
+        # The association carries no data of its own, so the rows go with
+        # the title rather than the collections, which outlive it.
+        await session.execute(
+            delete(title_collections).where(title_collections.c.title_id == title_id)
+        )
 
         episode_ids = list(
             (await session.execute(select(Episode.id).where(Episode.title_id == title_id))).scalars()

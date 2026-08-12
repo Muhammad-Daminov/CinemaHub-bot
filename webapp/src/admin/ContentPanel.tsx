@@ -70,7 +70,17 @@ export function ContentPanel() {
 
   const handleDelete = async (item: AdminTitleListItem) => {
     if (!window.confirm(`"${item.name}" o'chirilsinmi? Qismlari ham o'chadi.`)) return;
-    await adminApi.deleteTitle(item.id).catch(() => undefined);
+    // The failure is shown rather than swallowed. This previously ended in
+    // `.catch(() => undefined)` and then reloaded the list, so when the
+    // delete 500'd the panel looked like it had worked and simply put the
+    // title back — which is how a server-side delete bug stayed invisible.
+    // A refusal an operator cannot see is worse than a visible error.
+    try {
+      await adminApi.deleteTitle(item.id);
+      setError(null);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "O'chirib bo'lmadi.");
+    }
     load();
   };
 

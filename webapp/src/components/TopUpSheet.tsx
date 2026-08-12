@@ -207,7 +207,13 @@ export function TopUpSheet({ onClose, onSubmitted, suggestedAmount }: Props) {
           <input
             ref={fileInput}
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            // Broad on purpose, exactly as the admin poster picker is: a
+            // Telegram WebView gallery filtered to three MIME types hides
+            // HEIC photos and the many entries reported as
+            // application/octet-stream, so the receipt could not be picked
+            // at all. The backend decodes and re-encodes the bytes, which is
+            // the real check — and the payment flow behind it is untouched.
+            accept="image/*"
             className="hidden"
             onChange={(e) => {
               setFile(e.target.files?.[0] ?? null);

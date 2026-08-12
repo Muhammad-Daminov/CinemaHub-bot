@@ -1,6 +1,7 @@
 import { Info, Play } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useT } from "../lib/i18n";
+import { useAuthedImage } from "../lib/useAuthedImage";
 import type { BannerSlide, Movie } from "../types/movie";
 
 interface Props {
@@ -123,18 +124,9 @@ export function HeroBanner({ movies, onWatch, onDetails, slides }: Props) {
     // a scroll as readily as a tap, and treating it as engagement is what
     // used to kill autoplay on the first swipe.
     <div className="relative aspect-[3/4] w-full overflow-hidden sm:aspect-[16/9]">
-      {movies.map((movie, slide) =>
-        movie.poster_url ? (
-          <img
-            key={movie.id}
-            src={movie.poster_url}
-            alt=""
-            className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
-              slide === index ? "opacity-100" : "opacity-0"
-            }`}
-          />
-        ) : null,
-      )}
+      {movies.map((movie, slide) => (
+        <HeroSlideImage key={movie.id} movie={movie} visible={slide === index} />
+      ))}
 
       <div className="absolute inset-0 bg-gradient-to-t from-bg via-bg/40 to-transparent" />
 
@@ -204,5 +196,28 @@ export function HeroBanner({ movies, onWatch, onDetails, slides }: Props) {
         )}
       </div>
     </div>
+  );
+}
+
+/**
+ * One cross-fading slide.
+ *
+ * Its own component because `useAuthedImage` is a hook and the slides are
+ * produced by a `.map()`. All slides stay mounted so the opacity
+ * transition has something to fade between, so each one resolves its own
+ * poster — an uploaded poster needs an authenticated fetch, a TMDB URL
+ * does not, and the hook decides which.
+ */
+function HeroSlideImage({ movie, visible }: { movie: Movie; visible: boolean }) {
+  const src = useAuthedImage(movie.poster_url);
+  if (!src) return null;
+  return (
+    <img
+      src={src}
+      alt=""
+      className={`absolute inset-0 h-full w-full object-cover transition-opacity duration-700 ${
+        visible ? "opacity-100" : "opacity-0"
+      }`}
+    />
   );
 }

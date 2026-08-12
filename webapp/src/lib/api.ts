@@ -214,6 +214,35 @@ function toQuery(params: object): string {
   return query ? `?${query}` : "";
 }
 
+/**
+ * Fetches an uploaded image and returns an object URL for it.
+ *
+ * `/api/movies/images/{id}` is behind `get_active_user`, so it needs the
+ * `X-Telegram-Init-Data` header — and an `<img src>` cannot send headers.
+ * Pointing an img straight at that path therefore always failed, which is
+ * why an uploaded poster appeared to vanish: it was stored correctly and
+ * simply could not be rendered.
+ *
+ * Fetching it here with the header and handing back a blob URL keeps the
+ * endpoint authenticated. The alternative — making poster bytes public —
+ * is a security decision on its own and is recorded as open in TASKS.md
+ * P2-16, so it is not one to take as a side effect of a display bug.
+ *
+ * The caller owns the returned URL and must revoke it.
+ */
+export async function fetchImageObjectUrl(path: string): Promise<string> {
+  // Callers hold app-absolute paths ("/api/movies/images/7") while every
+  // other request here is written relative to API_BASE.
+  const relative = path.startsWith(API_BASE) ? path.slice(API_BASE.length) : path;
+  const response = await fetch(`${API_BASE}${relative}`, {
+    headers: { "X-Telegram-Init-Data": getInitData() },
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, "Rasmni yuklab bo'lmadi");
+  }
+  return URL.createObjectURL(await response.blob());
+}
+
 /** Shared multipart POST for image uploads. */
 async function uploadImage(path: string, field: string, file: File) {
   const body = new FormData();

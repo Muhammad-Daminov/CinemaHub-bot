@@ -1,5 +1,6 @@
 import { Crown, Heart, Lock, Star } from "lucide-react";
 import { useT } from "../lib/i18n";
+import { useAuthedImage } from "../lib/useAuthedImage";
 import type { Movie } from "../types/movie";
 
 interface Props {
@@ -18,6 +19,10 @@ interface Props {
 export function MovieCard({ movie, onSelect, isFavorite, onToggleFavorite }: Props) {
   const t = useT();
   const saved = isFavorite ?? movie.is_favorite;
+  // An uploaded poster is served from an authenticated endpoint; a TMDB
+  // one is returned unchanged. Without this an uploaded poster rendered
+  // as a broken image on every card.
+  const posterSrc = useAuthedImage(movie.poster_url);
 
   return (
     <button
@@ -31,9 +36,9 @@ export function MovieCard({ movie, onSelect, isFavorite, onToggleFavorite }: Pro
         style={{ borderRadius: "var(--radius-card, 0.5rem)" }}
         className="relative aspect-[2/3] overflow-hidden bg-surface-hi shadow-sm transition-transform duration-200 ease-out group-hover:-translate-y-1 group-hover:shadow-marquee"
       >
-        {movie.poster_url ? (
+        {posterSrc ? (
           <img
-            src={movie.poster_url}
+            src={posterSrc}
             alt={movie.title}
             loading="lazy"
             className="h-full w-full object-cover"

@@ -13,6 +13,7 @@
 import { ImageUp, RefreshCw, Trash2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 import { ApiError } from "../lib/api";
+import { useAuthedImage } from "../lib/useAuthedImage";
 import { Button, Notice } from "./ui";
 
 interface Props {
@@ -27,7 +28,24 @@ interface Props {
   disabled?: boolean;
 }
 
-const ACCEPT = "image/jpeg,image/png,image/webp";
+/**
+ * Deliberately `image/*` rather than a list of three MIME types.
+ *
+ * The narrow list was the reason a gallery pick failed on a phone: this
+ * panel runs inside a Telegram WebView, and a picker filtered to exactly
+ * jpeg/png/webp hides or greys out everything it cannot label — an
+ * iPhone's HEIC photos, and the many Android gallery entries reported as
+ * `application/octet-stream`. The admin could not select their photo at
+ * all, so nothing was ever uploaded and there was no error to read.
+ *
+ * Widening this loses no safety, because the accept attribute was never
+ * the check. `store_image` treats the declared type as an unverified
+ * claim and decides by decoding the bytes with Pillow, then re-encodes
+ * everything to JPEG or PNG — which is also what neutralises a disguised
+ * file. Anything undecodable is refused there with a message about the
+ * file, and the 8MB limit is enforced server-side too.
+ */
+const ACCEPT = "image/*";
 
 export function PosterPicker({
   currentUrl,
@@ -42,6 +60,10 @@ export function PosterPicker({
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // The stored poster, resolved to something an <img> can actually show:
+  // an uploaded one is behind the authenticated image endpoint, a TMDB URL
+  // is used as-is. Shared with the catalog rather than duplicated here.
+  const storedUrl = useAuthedImage(currentUrl);
   const input = useRef<HTMLInputElement | null>(null);
 
   // Object URLs leak until revoked, and replacing the file makes a new one.
@@ -69,7 +91,7 @@ export function PosterPicker({
     }
   };
 
-  const shown = previewUrl ?? currentUrl;
+  const shown = previewUrl ?? storedUrl;
 
   return (
     <div className="space-y-2">
@@ -122,7 +144,7 @@ export function PosterPicker({
           )}
 
           <p className="font-body text-[10px] leading-tight text-ink-dim">
-            JPG · PNG · WEBP — avtomatik siqiladi.
+            Rasm tanlang — avtomatik siqiladi (8MB gacha).
             {hasCustom && fallbackUrl ? " O'chirilsa TMDB posteri qaytadi." : ""}
           </p>
         </div>
