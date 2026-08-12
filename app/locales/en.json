@@ -334,5 +334,10 @@
   "app.premium_cta": "Get a subscription",
   "catalog.btn_subscribe": "⭐ Get a subscription",
   "payment.already_subscribed": "You already have an active subscription — this title is unlocked.",
-  "menu.guide": "📖 Guide"
+  "menu.guide": "📖 Guide",
+  "app.membership_title": "Join the channel",
+  "app.membership_text": "You need to join the channel to watch this title.",
+  "app.membership_join": "📢 Join the channel",
+  "app.membership_check": "✅ Check subscription",
+  "app.membership_still_not": "❌ You have not joined the channel yet."
 }

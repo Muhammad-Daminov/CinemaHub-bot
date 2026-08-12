@@ -63,6 +63,17 @@ export interface Episode {
   watched: boolean;
 }
 
+/** Mirrors MembershipStatusOut in app/api/movies.py. */
+export interface MembershipStatus {
+  /** False when this platform requires no channel at all. */
+  required: boolean;
+  channel: string | null;
+  /** Null for a numeric chat id, which cannot be turned into a link. */
+  invite_url: string | null;
+  /** Decided by Telegram server-side. A rendering hint, never the gate. */
+  is_member: boolean;
+}
+
 export interface EpisodePage {
   episodes: Episode[];
   page: number;

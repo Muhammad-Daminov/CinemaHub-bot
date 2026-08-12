@@ -334,5 +334,10 @@
   "app.premium_cta": "Оформить подписку",
   "catalog.btn_subscribe": "⭐ Оформить подписку",
   "payment.already_subscribed": "У вас есть активная подписка — этот фильм уже доступен.",
-  "menu.guide": "📖 Инструкция"
+  "menu.guide": "📖 Инструкция",
+  "app.membership_title": "Подпишитесь на канал",
+  "app.membership_text": "Чтобы смотреть фильм, нужно подписаться на канал.",
+  "app.membership_join": "📢 Подписаться на канал",
+  "app.membership_check": "✅ Проверить подписку",
+  "app.membership_still_not": "❌ Вы ещё не подписаны на канал."
 }

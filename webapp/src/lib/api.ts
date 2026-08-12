@@ -6,6 +6,7 @@ import type {
   EpisodePage,
   HeldSubscription,
   Movie,
+  MembershipStatus,
   MovieCollection,
   MovieContentType,
   PaymentCard,
@@ -146,6 +147,11 @@ export const api = {
   similar: (movieId: number, limit = 10, audio_language?: AudioLanguageFilter) =>
     request<Movie[]>(`/movies/${movieId}/similar${toQuery({ limit, audio_language })}`),
   collections: () => request<MovieCollection[]>("/movies/collections"),
+  /** Whether the caller still owes the required channel a join. */
+  membership: () => request<MembershipStatus>("/movies/membership"),
+  /** "I have joined" — drops the cached answer and re-asks Telegram. */
+  recheckMembership: () =>
+    request<MembershipStatus>("/movies/membership/recheck", { method: "POST" }),
   /** Hero slides for the calling user. Empty means "no campaigns" and the
    *  app falls back to deriving a banner from the newest/top rows. */
   banners: () => request<BannerSlide[]>("/movies/banners"),

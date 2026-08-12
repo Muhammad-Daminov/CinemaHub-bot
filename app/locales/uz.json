@@ -334,5 +334,10 @@
   "app.premium_cta": "Obuna olish",
   "catalog.btn_subscribe": "⭐ Obuna olish",
   "payment.already_subscribed": "Sizda faol obuna bor — bu kino allaqachon ochiq.",
-  "menu.guide": "📖 Qo'llanma"
+  "menu.guide": "📖 Qo'llanma",
+  "app.membership_title": "Kanalga a'zo bo'ling",
+  "app.membership_text": "Filmni ko'rish uchun kanalga a'zo bo'lishingiz kerak.",
+  "app.membership_join": "📢 Kanalga a'zo bo'lish",
+  "app.membership_check": "✅ Obunani tekshirish",
+  "app.membership_still_not": "❌ Siz hali kanalga a'zo bo'lmagansiz."
 }

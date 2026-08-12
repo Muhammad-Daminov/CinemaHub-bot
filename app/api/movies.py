@@ -40,6 +40,11 @@ from app.services.banners import resolve_for_user
 from app.services.personalization import get_profile
 from app.services.images import get_image
 from app.services.access import access_message_key, check_title_access, unlocks_premium
+# Imported as a module, matching services/access.py: `is_channel_member` is
+# the seam the test suite patches, and binding it by name here would bypass
+# every one of those patches.
+from app.services import membership as membership_module
+from app.services.settings_store import get_membership_config
 from app.services.streaming import streaming_service
 
 logger = logging.getLogger(__name__)
@@ -329,6 +334,79 @@ async def list_collections(
         needle = q.strip().lower()
         summaries = [s for s in summaries if needle in s.collection.name.lower()]
     return [_collection_out(item) for item in summaries]
+
+
+class MembershipStatusOut(BaseModel):
+    """What the Mini App needs to draw the join-the-channel gate."""
+
+    # Whether this platform requires membership at all. False means the
+    # gate is never shown and the other fields are meaningless.
+    required: bool
+    # The configured channel, exactly as an administrator entered it.
+    channel: str | None
+    # Where to send the user to join. Built from the same configuration —
+    # there is no second place a channel address is stored, and nothing
+    # here is hardcoded. Null for a numeric chat id, which cannot be
+    # turned into a link; the client then shows the name without a button
+    # rather than a button that goes nowhere.
+    invite_url: str | None
+    # Whether *this* caller is currently in it. Decided by Telegram
+    # through the existing service, never by the client.
+    is_member: bool
+
+
+async def _membership_status(session: AsyncSession, user: User) -> MembershipStatusOut:
+    config = await get_membership_config(session)
+    if not config.active:
+        return MembershipStatusOut(
+            required=False, channel=None, invite_url=None, is_member=True
+        )
+    joined = await membership_module.is_channel_member(bot, config.channel, user.telegram_id)
+    return MembershipStatusOut(
+        required=True,
+        channel=config.channel,
+        invite_url=config.invite_url,
+        is_member=joined,
+    )
+
+
+@router.get("/membership", response_model=MembershipStatusOut)
+async def membership_status(
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_active_user),
+) -> MembershipStatusOut:
+    """
+    Whether the caller still needs to join the required channel.
+
+    The Mini App asks this after a refused watch, so it can name the
+    channel and offer a way in rather than showing a message the viewer
+    cannot act on. Identity comes from verified initData, so a caller
+    cannot ask about anybody else.
+
+    Only ever a *rendering* input: `POST /watch` re-decides on its own and
+    is what actually withholds the file.
+    """
+    return await _membership_status(session, user)
+
+
+@router.post("/membership/recheck", response_model=MembershipStatusOut)
+async def membership_recheck(
+    session: AsyncSession = Depends(get_db_session),
+    user: User = Depends(get_active_user),
+) -> MembershipStatusOut:
+    """
+    "I have joined" — re-asks Telegram instead of trusting the tap.
+
+    The cached answer is dropped first, exactly as the bot's own recheck
+    button does: a user pressing this is telling us the previous answer is
+    stale, and that cuts both ways. Someone who has *left* is caught here
+    too, because the next check is made against Telegram rather than
+    against a remembered yes.
+    """
+    config = await get_membership_config(session)
+    if config.active:
+        await membership_module.clear_membership_cache(config.channel, user.telegram_id)
+    return await _membership_status(session, user)
 
 
 @router.get("", response_model=list[MovieOut])

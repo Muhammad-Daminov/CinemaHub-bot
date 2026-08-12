@@ -1,5 +1,5 @@
 import { Home, Settings, Shield } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AdminDashboard } from "./admin/AdminDashboard";
 import { AudioFilter } from "./components/AudioFilter";
 import { HeroBanner } from "./components/HeroBanner";
@@ -8,6 +8,7 @@ import { LanguagePicker } from "./components/LanguagePicker";
 import { MovieCard } from "./components/MovieCard";
 import { MovieDetailSheet } from "./components/MovieDetailSheet";
 import { MovieRow } from "./components/MovieRow";
+import { MembershipGate } from "./components/MembershipGate";
 import { PlansSheet } from "./components/PlansSheet";
 import { TopUpSheet } from "./components/TopUpSheet";
 import { Navbar } from "./components/Navbar";
@@ -22,6 +23,7 @@ import type {
   AudioLanguageFilter,
   BannerSlide,
   Episode,
+  MembershipStatus,
   Movie,
   MovieContentType,
   UserProfile,
@@ -142,6 +144,11 @@ function Shell({
   const [selectedMovie, setSelectedMovie] = useState<Movie | null>(null);
   const [toast, setToast] = useState<{ message: string; tone: "success" | "error" } | null>(null);
   const [plansOpen, setPlansOpen] = useState(false);
+  // The channel gate, plus the watch it interrupted. Holding the action is
+  // the whole point: a viewer who joins and comes back should get the film
+  // they asked for, not be dropped back at the catalog to find it again.
+  const [gate, setGate] = useState<MembershipStatus | null>(null);
+  const pendingWatch = useRef<{ movie: Movie; episode?: Episode } | null>(null);
   // Bumped when something changes what this viewer may watch — today, only
   // closing the plans sheet. Every catalog row keys off it, because
   // `is_locked` is decided server-side per request: after a purchase the
@@ -335,8 +342,34 @@ function Shell({
       const response = await api.watchMovie(movie.id, episode?.id);
       setToast({ message: response.message, tone: "success" });
     } catch (error) {
+      // A refusal can mean two different things, and only one of them has
+      // a way forward inside the app. Ask the server which it was rather
+      // than parsing the message: the channel gate can be resolved here,
+      // a premium refusal cannot.
+      if (error instanceof ApiError && error.status === 403) {
+        const status = await api.membership().catch(() => null);
+        if (status?.required && !status.is_member) {
+          pendingWatch.current = { movie, episode };
+          setGate(status);
+          return;
+        }
+      }
       setToast({ message: errorMessage(error, t), tone: "error" });
     }
+  };
+
+  /**
+   * Resumes the watch the gate interrupted.
+   *
+   * Called only after the *server* confirmed the join. It replays the
+   * original request, so the film is delivered by the same path with the
+   * same checks — nothing is skipped because the gate was satisfied.
+   */
+  const resumeAfterJoin = () => {
+    const pending = pendingWatch.current;
+    pendingWatch.current = null;
+    setGate(null);
+    if (pending) void handleWatch(pending.movie, pending.episode);
   };
 
   const handleChangeLanguage = async (language: Language) => {
@@ -560,6 +593,19 @@ function Shell({
             // the balance changes when an administrator approves it. The
             // refetch is so the payment history below shows it pending.
             void api.me().then(setProfile).catch(() => undefined);
+          }}
+        />
+      )}
+      {gate && (
+        <MembershipGate
+          status={gate}
+          onJoined={resumeAfterJoin}
+          onClose={() => {
+            // Dismissing abandons the action rather than queueing it: a
+            // film that silently starts later is worse than one that did
+            // not start.
+            pendingWatch.current = null;
+            setGate(null);
           }}
         />
       )}
