@@ -21,24 +21,65 @@ from app.core.config import settings
 from app.main import app
 
 
+class FakePipeline:
+    """
+    Queues commands and applies them on execute, like the real client.
+
+    Models the two the limiter issues — SET NX EX and INCR — against the
+    parent's dicts, so every assertion about `values` and `expiries` in
+    this file keeps describing the same state it always did.
+    """
+
+    def __init__(self, parent: "FakeRedis"):
+        self.parent = parent
+        self.queued: list[tuple] = []
+
+    def set(self, key: str, value: int, ex: int | None = None, nx: bool = False):
+        self.queued.append(("set", key, value, ex, nx))
+        return self
+
+    def incr(self, key: str):
+        self.queued.append(("incr", key))
+        return self
+
+    async def execute(self) -> list:
+        if self.parent.fail:
+            raise ConnectionError("redis is down")
+        results = []
+        for command in self.queued:
+            if command[0] == "set":
+                _, key, value, ex, nx = command
+                # NX: absent keys only. This is what keeps the window fixed
+                # — an existing counter keeps the expiry it was created with.
+                if nx and key in self.parent.values:
+                    results.append(None)
+                    continue
+                self.parent.values[key] = value
+                if ex is not None:
+                    self.parent.expiries[key] = ex
+                results.append(True)
+            else:
+                key = command[1]
+                self.parent.values[key] = self.parent.values.get(key, 0) + 1
+                results.append(self.parent.values[key])
+        self.queued.clear()
+        return results
+
+
 class FakeRedis:
-    """INCR/EXPIRE with the semantics the limiter relies on."""
+    """The commands the limiter relies on, with their real semantics."""
 
     def __init__(self, fail: bool = False):
         self.values: dict[str, int] = {}
         self.expiries: dict[str, int] = {}
         self.fail = fail
+        self.round_trips = 0
 
-    async def incr(self, key: str) -> int:
-        if self.fail:
-            raise ConnectionError("redis is down")
-        self.values[key] = self.values.get(key, 0) + 1
-        return self.values[key]
-
-    async def expire(self, key: str, seconds: int) -> None:
-        if self.fail:
-            raise ConnectionError("redis is down")
-        self.expiries[key] = seconds
+    def pipeline(self, transaction: bool = True) -> FakePipeline:
+        # One execute() is one round trip, which is the property the
+        # pipelining exists to hold down.
+        self.round_trips += 1
+        return FakePipeline(self)
 
 
 @pytest.fixture
@@ -84,6 +125,45 @@ async def test_a_refusal_says_when_to_retry(client, redis, monkeypatch):
 
     retry_after = int(response.headers["Retry-After"])
     assert 0 < retry_after <= module.WINDOW_SECONDS
+
+
+async def test_each_request_costs_exactly_one_round_trip(client, redis, monkeypatch):
+    """
+    Redis is a remote service, so a request's cost here is round trips, not
+    commands. The counter and its expiry go out together in one pipeline;
+    the previous shape spent a second trip on EXPIRE whenever a window
+    opened, which was the first request of every minute for every caller.
+    """
+    monkeypatch.setattr(settings, "API_RATE_LIMIT_PER_MINUTE", 10)
+
+    for _ in range(4):
+        await client.get(PATH)
+
+    assert redis.round_trips == 4
+
+
+async def test_the_window_is_fixed_not_sliding(client, redis, monkeypatch):
+    """
+    The expiry is stamped once, when the counter is created, and no later
+    request pushes it forward — otherwise a caller who keeps asking would
+    hold the window open and the count would never reset.
+
+    SET NX is what preserves this now that the conditional EXPIRE is gone.
+    """
+    monkeypatch.setattr(settings, "API_RATE_LIMIT_PER_MINUTE", 10)
+
+    await client.get(PATH)
+    key = next(iter(redis.values))
+    assert redis.expiries[key] == module.WINDOW_SECONDS
+
+    # Later requests in the same window increment, and leave the deadline —
+    # and the counter's identity — exactly where they were.
+    redis.expiries[key] = 3
+    for _ in range(3):
+        await client.get(PATH)
+
+    assert redis.expiries[key] == 3, "an existing counter must not be re-stamped"
+    assert redis.values[key] == 4, "and it must keep counting, not reset"
 
 
 async def test_redis_being_down_lets_the_request_through(client, monkeypatch):

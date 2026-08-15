@@ -122,11 +122,26 @@ class RateLimitMiddleware:
 
         try:
             redis = get_redis()
-            count = await redis.incr(key)
-            if count == 1:
-                # Only on creation: re-setting it every request would slide
-                # the window forward and never let the counter reset.
-                await redis.expire(key, WINDOW_SECONDS)
+            # One round trip, not two. Redis is a remote service here, so a
+            # request's cost is dominated by round trips rather than by the
+            # commands themselves — and the previous shape spent a second
+            # one every time a window opened.
+            #
+            # SET NX creates the counter *with* its TTL and does nothing if
+            # it already exists, so the window is still fixed: the expiry is
+            # stamped once at creation and never slid forward by a later
+            # request. That is the same guarantee the conditional EXPIRE
+            # gave, minus the round trip — and it closes a gap, since a
+            # counter created by INCR previously had no TTL at all until the
+            # follow-up landed.
+            #
+            # transaction=False: these two need to run in order against one
+            # key, which a pipeline already guarantees. MULTI/EXEC would add
+            # nothing but bytes.
+            pipe = redis.pipeline(transaction=False)
+            pipe.set(key, 0, ex=WINDOW_SECONDS, nx=True)
+            pipe.incr(key)
+            _, count = await pipe.execute()
         except Exception:  # noqa: BLE001 — see module docstring: fail open
             logger.warning("Rate limiter unavailable, allowing request to %s", path, exc_info=True)
             return await self.app(scope, receive, send)

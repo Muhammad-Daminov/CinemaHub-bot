@@ -21,7 +21,7 @@
  * check below is untouched: the grouping is a rearrangement of the same
  * thirteen sections, and a hidden group is a courtesy, never a boundary.
  */
-import { useState } from "react";
+import { useState, type ReactElement } from "react";
 import { ChevronLeft, ChevronRight } from "lucide-react";
 import { CardsPanel } from "./CardsPanel";
 import { CollectionsPanel } from "./CollectionsPanel";
@@ -53,6 +53,48 @@ type TabId =
   | "admins";
 
 type GroupId = "content" | "people" | "finance" | "analytics" | "system";
+
+/**
+ * Which component each section renders. Static elements, so the record can
+ * live out here — nothing in it depends on a prop or on state.
+ *
+ * Replaces thirteen `{tab === "x" && <XPanel />}` lines. Same components,
+ * same order; the list is now something the mounting rule below can walk.
+ */
+const PANELS: Record<TabId, ReactElement> = {
+  stats: <StatsPanel />,
+  content: <ContentPanel />,
+  collections: <CollectionsPanel />,
+  uploads: <UploadsPanel />,
+  receipts: <ReceiptsPanel />,
+  cards: <CardsPanel />,
+  promo: <PromoPanel />,
+  users: <UsersPanel />,
+  plans: <PlansPanel />,
+  broadcast: <BroadcastPanel />,
+  appearance: <AppearancePanel />,
+  settings: <SettingsPanel />,
+  admins: <AdminsPanel />,
+};
+
+/**
+ * Sections that must re-read every time they are opened, rather than being
+ * kept mounted.
+ *
+ * These four show state that other surfaces change while the panel is not
+ * looking: a receipt can be approved from the bot's inline buttons, and
+ * balances, plans and user records move with it. Showing an operator a
+ * remembered list would invite them to act twice on a payment that has
+ * already been settled — so for these the extra request is the point, not
+ * waste. Everything else describes the catalog, which only changes from
+ * this panel.
+ */
+const ALWAYS_FRESH: ReadonlySet<TabId> = new Set<TabId>([
+  "receipts",
+  "cards",
+  "plans",
+  "users",
+]);
 
 /**
  * Each tab names the permission that backs it. The API enforces the same
@@ -135,12 +177,20 @@ export function AdminDashboard({ permissions, isSuperAdmin }: Props) {
   // menu is showing. Ignored from `md` up, where both are always visible.
   const [menuOnTop, setMenuOnTop] = useState(true);
 
+  // Sections already opened in this session. A panel that has been opened
+  // stays mounted and is merely hidden when another is showing, so coming
+  // back to it costs nothing: every panel fetches on mount, and unmounting
+  // on each tab switch meant Uploads -> Content -> Uploads was three full
+  // loads of the same data.
+  const [visited, setVisited] = useState<Set<TabId>>(() => new Set([firstTab]));
+
   const activeTab = visibleTabs.find((item) => item.id === tab);
   const activeGroup = GROUPS.find((group) => group.id === activeTab?.group);
 
   const openSection = (id: TabId) => {
     setTab(id);
     setMenuOnTop(false);
+    setVisited((current) => (current.has(id) ? current : new Set(current).add(id)));
   };
 
   const menu = (
@@ -228,19 +278,23 @@ export function AdminDashboard({ permissions, isSuperAdmin }: Props) {
         </p>
 
         <div className="p-4 md:p-0">
-          {tab === "stats" && <StatsPanel />}
-          {tab === "content" && <ContentPanel />}
-          {tab === "collections" && <CollectionsPanel />}
-          {tab === "uploads" && <UploadsPanel />}
-          {tab === "receipts" && <ReceiptsPanel />}
-          {tab === "cards" && <CardsPanel />}
-          {tab === "promo" && <PromoPanel />}
-          {tab === "users" && <UsersPanel />}
-          {tab === "plans" && <PlansPanel />}
-          {tab === "broadcast" && <BroadcastPanel />}
-          {tab === "appearance" && <AppearancePanel />}
-          {tab === "settings" && <SettingsPanel />}
-          {tab === "admins" && <AdminsPanel />}
+          {visibleTabs.map(({ id }) => {
+            const isActive = id === tab;
+            // ALWAYS_FRESH sections keep the old mount-on-open behaviour, so
+            // they still re-read on every visit rather than showing what was
+            // true the last time they were opened.
+            if (ALWAYS_FRESH.has(id)) return isActive ? <div key={id}>{PANELS[id]}</div> : null;
+            if (!isActive && !visited.has(id)) return null;
+            return (
+              // Hidden rather than unmounted: the panel keeps its loaded data,
+              // its scroll position and any half-filled form. `display` is set
+              // inline because a utility class here would be one more thing a
+              // panel's own layout could override.
+              <div key={id} style={isActive ? undefined : { display: "none" }}>
+                {PANELS[id]}
+              </div>
+            );
+          })}
         </div>
       </div>
     </div>
