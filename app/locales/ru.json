@@ -176,6 +176,8 @@
   "app.settings_copied": "Скопировано",
   "app.settings_language": "Язык",
   "app.settings_language_saved": "Язык изменён.",
+  "app.settings_about": "Приложение",
+  "app.settings_version": "Версия",
   "app.audio_filter": "Язык озвучки",
   "app.audio_all": "Все",
   "audio.uz_dub": "Узбекский дубляж",

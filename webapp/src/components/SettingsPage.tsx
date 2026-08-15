@@ -162,6 +162,20 @@ export function SettingsPage({ profile, onChangeLanguage, onOpenPlans, onOpenTop
           })}
         </div>
       </section>
+
+      {/* Last, and deliberately plain. It exists so a deploy can be
+          confirmed from the phone that is actually running the app —
+          `__APP_VERSION__` is compiled into this bundle, so what it shows
+          is the build in front of you rather than what the server says it
+          serves. `/health` reports the same number as `app_version`. */}
+      <section>
+        <h2 className="mb-1 font-display text-sm font-medium tracking-wide text-ink-dim">
+          {t("app.settings_about")}
+        </h2>
+        <div className="rounded-xl border border-surface-hi bg-surface px-3">
+          <Row label={t("app.settings_version")} value={__APP_VERSION__} />
+        </div>
+      </section>
     </div>
   );
 }

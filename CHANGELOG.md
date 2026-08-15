@@ -1,11 +1,36 @@
 # CHANGELOG
 
 Notable changes to CinemaHub Pro.
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/). The project does not yet tag releases, so entries are grouped by date and commit.
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
+
+Releases are versioned with [Semantic Versioning](https://semver.org/) and tagged `vMAJOR.MINOR.PATCH`. The root `VERSION` file is the single source of truth: `app/core/version.py` reads it for `/health`'s `app_version`, and `vite.config.ts` bakes it into the Mini App bundle shown in Settings. See `CLAUDE.md` §6 for when each part is bumped.
+
+Entries below `1.0.0` predate versioning and are grouped by date and commit, as they were written.
 
 ---
 
 ## [Unreleased]
+
+_Nothing yet._
+
+---
+
+## [1.0.0] — 2026-08-15
+
+**The first versioned release.** It does not introduce features: it names the platform that was already running in production after ten phases of work, so that everything from here has something to be measured against. The sections below are the history that produced it, preserved exactly as written.
+
+### Added
+- **Release versioning.** A root `VERSION` file as the one source of truth, `app_version` on `/health`, and the number shown in the Mini App under Settings → Ilova. The Settings value is compiled into the bundle rather than fetched, so it reports the build actually running in the browser — which is what a stale cached bundle would otherwise hide.
+
+### Notes
+- `webapp/package.json` no longer carries a `version` field. It was a stale `0.1.0` that nothing read, and leaving it would have been a second version free to drift from the first. The package is `private`, so npm does not require one.
+- `/health`'s `status`, `commit` and `version` are unchanged. `version` remains the short commit — build identity — because external systems may already read it; `app_version` is the release. Comparing the two is how a deploy is confirmed.
+
+### Shipped before versioning, previously undocumented here
+- **Phase 11 — Mini App loading performance.** The home screen was fetched twice on every cold load (`I18nProvider` rendered children against an empty catalog, so `t` changed identity and every catalog request re-fired); admin panels reloaded on every tab switch; the rate limiter spent two Redis round trips whenever a window opened. Measured in Chrome: 25 requests with 10 duplicated, down to 15 with none.
+- **Phase 10 — the Mini App button was removed from the bot's reply keyboard.** It duplicated BotFather's menu button and the inline launcher, and took a row from a keyboard whose point is being short.
+- **Phase 9 — the Mini App gained the channel-membership gate**, so a refused watch offers the channel and a re-check instead of only an error. Enforcement stays in `POST /watch`; the gate only decides what to draw.
+- **Phase 8 — authenticated posters render, and deleting a title works.** An uploaded poster is served from `/api/movies/images/{id}` behind auth, which an `<img>` cannot reach; `useAuthedImage` fetches it with the init-data header and hands back a blob URL. Deletion now removes watch history, favourites and collection links first, child-first via Core `delete()`.
 
 ### Access control, trial and movie code search (2026-08-11, `1082711`)
 

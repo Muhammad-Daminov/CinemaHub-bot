@@ -147,3 +147,49 @@ Database-backed tests skip silently without `TEST_DATABASE_URL`, so a green run 
 - `pyflakes` reports `date` in `app/api/admin.py` as unused. It is **not** — `ActivityPointOut.date: date` shadows it, and removing it breaks OpenAPI generation while leaving `import app.main` green. It was deleted once on that advice and shipped broken; `tests/test_api_schema.py` now catches it.
 - **An index that exists only in a migration does not exist under test.** The suite builds its schema with `metadata.create_all` from the models, so `uq_balance_history_event` — declared in migration `a3f1c92d7e04` alone — was absent from every test database, and the tests asserting "this credit cannot happen twice" were passing against a schema that could not enforce it. It is now on the model too. Any constraint carrying a correctness guarantee must be declared in both places.
 - Delivered videos are **never** auto-removed. The 15-minute auto-delete engine was removed in Phase 3 — do not reintroduce timers, Redis delay queues, or deletion notices.
+---
+
+## 6. Versioning and releases (mandatory)
+
+**The root `VERSION` file is the single source of truth.** Nothing else
+carries a release number. `app/core/version.py` reads it for `/health`'s
+`app_version`; `webapp/vite.config.ts` bakes it into the Mini App bundle
+as `__APP_VERSION__`, shown under Settings → Ilova. Never introduce a
+second version — `webapp/package.json` had a stale `0.1.0` that nothing
+read, and it was removed rather than kept in sync, because two numbers
+free to drift are worse than one.
+
+`/health` reports both: `version` is **build identity** (the short commit,
+unchanged and possibly read by external systems) and `app_version` is the
+**release**. Comparing them is how a deploy is confirmed.
+
+### Bump on every release-worthy change, without being asked
+
+This is not something to wait for a request on. When a change set is ready
+to commit, decide its bump, update `VERSION`, write the `CHANGELOG.md`
+entry, and tag — **all in the same commit as the code**.
+
+| Bump | For this project |
+|---|---|
+| **MAJOR** | Breaking API, schema or contract change needing a coordinated deploy: removing an endpoint, changing a response shape the Mini App reads, a migration not backwards compatible with the running build. |
+| **MINOR** | A new backwards-compatible capability, viewer- or admin-facing. |
+| **PATCH** | Bug fixes, performance work, security fixes — any backwards-compatible correction. |
+| **No bump** | Docs-only, comments-only, CI-only, and intermediate commits inside one change set. |
+
+**One logical change set is one bump**, however many files it touches. A
+feature spanning twelve files is a single MINOR, not twelve PATCHes. If a
+set contains both a feature and a fix, the higher bump wins.
+
+**If the right bump is genuinely unclear, stop and explain the reasoning
+rather than silently picking one.**
+
+### Release mechanics
+
+- Tag every release `vMAJOR.MINOR.PATCH`, annotated, on the release commit.
+- Never make a standalone "update version" commit. The version bump, the
+  changelog entry and the code are one release and belong together.
+- The commit message should make the release understandable on its own.
+- `CHANGELOG.md` uses version headings (`## [1.1.0] — date`) with
+  `[Unreleased]` for work in flight. Entries below `1.0.0` predate
+  versioning and keep their original date-and-commit grouping — as
+  everywhere else here, history is superseded, never deleted.

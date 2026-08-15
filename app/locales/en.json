@@ -176,6 +176,8 @@
   "app.settings_copied": "Copied",
   "app.settings_language": "Language",
   "app.settings_language_saved": "Language changed.",
+  "app.settings_about": "App",
+  "app.settings_version": "Version",
   "app.audio_filter": "Audio language",
   "app.audio_all": "All",
   "audio.uz_dub": "Uzbek dub",

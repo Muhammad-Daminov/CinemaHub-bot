@@ -39,6 +39,7 @@ from app.bot.middlewares.db import DbSessionMiddleware
 from app.bot.middlewares.i18n import I18nMiddleware
 from app.bot.middlewares.throttling import ThrottlingMiddleware
 from app.core.config import settings
+from app.core.version import APP_VERSION
 from app.db.session import check_db_connection, db_session_ctx
 from app.services.ai import ai_service
 from app.services.permissions import ensure_super_admin
@@ -230,6 +231,14 @@ async def health_check() -> dict[str, str]:
     "unknown" locally, where RENDER_GIT_COMMIT is not injected — a
     developer machine has no commit to report, and inventing one (from
     git, say) would report the checkout rather than what is deployed.
+
+    Two different questions, hence two fields. `version` is **build
+    identity** — the short commit — and keeps that meaning exactly, since
+    something outside this repository may already read it. `app_version`
+    is the **release** version from the root VERSION file, the same number
+    the Mini App shows in Settings. Comparing the two is how a deploy is
+    verified: matching numbers mean the release is live, a stale
+    `app_version` means the deploy did not land.
     """
     await check_db_connection()
     commit = settings.RENDER_GIT_COMMIT or "unknown"
@@ -237,6 +246,7 @@ async def health_check() -> dict[str, str]:
         "status": "ok",
         "commit": commit,
         "version": commit[:7] if commit != "unknown" else "development",
+        "app_version": APP_VERSION,
     }
 
 
